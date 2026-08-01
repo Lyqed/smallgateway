@@ -1,0 +1,37 @@
+# Metrics Service + optional ServiceMonitor. The operator serves Prometheus
+# metrics (controller-runtime's registry: reconcile counts, queue depth,
+# work-duration histograms) on the metrics port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gateway-operator.fullname" . }}-metrics
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gateway-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.operator.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gateway-operator.fullname" . }}
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "gateway-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      path: /metrics
+{{- end }}

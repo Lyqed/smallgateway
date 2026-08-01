@@ -1,0 +1,48 @@
+{{- if .Values.sampleGateway.enabled }}
+# Optional sample LLMGateway, installed only when sampleGateway.enabled=true.
+# Proves the operator end-to-end: it reconciles this into a gatewayctl control
+# plane + gatewayd data plane(s), enforcing GB-1 attribution and metering. The
+# providers point at an in-cluster mock (gateway-mock) reachable cross-pod
+# because mock_upstream is run with `--bind 0.0.0.0` (see deploy/samples/mock.yaml).
+apiVersion: gateway.thegatewayproject.io/v1alpha1
+kind: LLMGateway
+metadata:
+  name: {{ .Values.sampleGateway.name }}
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+spec:
+  providers:
+    openai-demo:
+      kind: openai
+      upstream:
+        host: {{ .Values.sampleGateway.upstream.host | quote }}
+        port: {{ .Values.sampleGateway.upstream.port }}
+  # GB-1 required key `team`; GB-3 pins env=prod (a caller-forged x-attr-env is
+  # overwritten before the upstream ever sees it).
+  fleet:
+    attribution:
+      requiredKeys: [team]
+      pinned:
+        env: prod
+  routes:
+    - name: openai
+      prefix: /openai
+      provider: openai-demo
+  # GB-4: operator-owned rejection bodies. Placeholders {{ "{{key}}" }} / {{ "{{route}}" }}
+  # are rendered by the data plane at rejection time.
+  rejections:
+    missingAttribution:
+      status: 428
+      contentType: application/json
+      body: '{"error":"attribution_required","missing":"{{ "{{key}}" }}","route":"{{ "{{route}}" }}"}'
+      streaming:
+        event: error
+        data: '{"error":"attribution_required","missing":"{{ "{{key}}" }}"}'
+    unknownRoute:
+      status: 404
+      contentType: application/json
+      body: '{"error":"unknown_route","path":"{{ "{{route}}" }}"}'
+  dataPlanes:
+    replicas: {{ .Values.sampleGateway.dataPlaneReplicas }}
+    listenPort: 8080
+{{- end }}

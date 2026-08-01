@@ -1,0 +1,70 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gateway-operator.serviceAccountName" . }}
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+---
+# LEAST-PRIVILEGE ClusterRole: only the resources the operator actually manages.
+# - LLMGateway (the CRD it owns) + its /status and /finalizers subresources
+# - Deployments/Services/ConfigMaps/Secrets it creates as owned children
+# - Events for surfacing reconcile outcomes
+# - leases only when leader election is enabled
+# It does NOT get cluster-admin, does NOT get Pods write, does NOT get Nodes,
+# and does NOT get arbitrary Secret access beyond what it creates in-namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gateway-operator.fullname" . }}
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+rules:
+  # The CRD this operator reconciles.
+  - apiGroups: ["gateway.thegatewayproject.io"]
+    resources: ["llmgateways"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["gateway.thegatewayproject.io"]
+    resources: ["llmgateways/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["gateway.thegatewayproject.io"]
+    resources: ["llmgateways/finalizers"]
+    verbs: ["update"]
+  # Owned children: the control plane, data planes, their Services, the config
+  # repo ConfigMap, and the join-token Secret.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Observe pod/deployment readiness for status (read-only on pods).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Surface reconcile outcomes as Events.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- if .Values.operator.leaderElection.enabled }}
+  # Leader election (only when enabled).
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gateway-operator.fullname" . }}
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gateway-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateway-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

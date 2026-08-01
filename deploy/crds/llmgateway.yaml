@@ -1,0 +1,414 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: llmgateways.gateway.thegatewayproject.io
+  labels:
+    app.kubernetes.io/part-of: the-gateway-project
+    app.kubernetes.io/component: crd
+spec:
+  group: gateway.thegatewayproject.io
+  scope: Namespaced
+  names:
+    kind: LLMGateway
+    listKind: LLMGatewayList
+    plural: llmgateways
+    singular: llmgateway
+    shortNames:
+      - llmgw
+    categories:
+      - gateway
+      - the-gateway-project
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        # Status is a subresource: the operator writes status via the /status
+        # endpoint and RBAC can grant status-write separately from spec-write.
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Data-Planes
+          type: string
+          jsonPath: .status.dataPlanes
+        - name: Config-Hash
+          type: string
+          jsonPath: .status.renderedConfigHash
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            LLMGateway is the Kubernetes-native config surface for The Gateway
+            Project. Its spec expresses the desired cost-attribution gateway:
+            providers, routes, the fleet attribution contract (GB-1 required
+            keys, GB-3 operator pins), operator-owned rejection bodies (GB-4),
+            spend caps (GB-5), and the control-plane / data-plane topology. The
+            operator translates this spec 1:1 into the existing gatewayctl
+            config-repo layout and reconciles it into a running control plane
+            (gatewayctl) plus one or more data planes (gatewayd) joined over
+            gRPC. This spec does NOT invent a parallel policy model: every field
+            maps onto a fragment of the gateway config the standalone data plane
+            already reads (crates/gateway-core config model).
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - providers
+                - routes
+              properties:
+                # --- Provider set (config `providers:`) --------------------
+                providers:
+                  type: object
+                  minProperties: 1
+                  description: >-
+                    Named upstream providers. Maps directly onto the gateway
+                    config `providers:` map. Routes reference a provider by name.
+                  additionalProperties:
+                    type: object
+                    required:
+                      - kind
+                      - upstream
+                    properties:
+                      kind:
+                        type: string
+                        enum: [openai, anthropic, bedrock, vertex]
+                        description: Provider wire dialect / adapter.
+                      upstream:
+                        type: object
+                        required:
+                          - host
+                          - port
+                        properties:
+                          host:
+                            type: string
+                          port:
+                            type: integer
+                            minimum: 1
+                            maximum: 65535
+                          tls:
+                            type: boolean
+                            default: false
+                          sni:
+                            type: string
+                            description: SNI override for TLS upstreams; defaults to host.
+
+                # --- Fleet-scope attribution (config `fleet:`) -------------
+                fleet:
+                  type: object
+                  description: >-
+                    Scope 1: fleet-wide attribution contract inherited by every
+                    route. requiredKeys is GB-1 (a request missing any key is
+                    rejected); pinned is GB-3 (the gateway overwrites these keys,
+                    a caller-forged value is never believed).
+                  properties:
+                    attribution:
+                      type: object
+                      properties:
+                        requiredKeys:
+                          type: array
+                          items:
+                            type: string
+                          description: GB-1 required attribution keys.
+                        pinned:
+                          type: object
+                          additionalProperties:
+                            type: string
+                          description: GB-3 operator-assigned key/value pins.
+
+                # --- Routes (config `routes:`) -----------------------------
+                routes:
+                  type: array
+                  minItems: 1
+                  description: >-
+                    Scope 3: path-prefix routes. Longest prefix wins. Maps onto
+                    one routes/<name>.route.yaml fragment each.
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - prefix
+                      - provider
+                    properties:
+                      name:
+                        type: string
+                        pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+                        description: >-
+                          Stable route identifier; also names the generated
+                          routes/<name>.route.yaml fragment (sorted for
+                          deterministic route order).
+                      prefix:
+                        type: string
+                        pattern: '^/'
+                        description: Path prefix, matched on segment boundaries.
+                      provider:
+                        type: string
+                        description: Name of a provider in spec.providers.
+                      project:
+                        type: string
+                        description: Optional project scope this route opts into.
+                      match:
+                        type: string
+                        description: Optional CEL route-match condition beyond the prefix.
+                      attribution:
+                        type: object
+                        description: >-
+                          Route-scope attribution override. Use "<base>" inside
+                          requiredKeys to splice the inherited fleet list.
+                        properties:
+                          requiredKeys:
+                            type: array
+                            items:
+                              type: string
+                          pinned:
+                            type: object
+                            additionalProperties:
+                              type: string
+
+                # --- Projects (config `projects:`) -------------------------
+                projects:
+                  type: object
+                  description: >-
+                    Scope 2: named project chains routes can opt into via
+                    route.project. Maps onto projects/<name>/base.chain.yaml.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      attribution:
+                        type: object
+                        properties:
+                          requiredKeys:
+                            type: array
+                            items:
+                              type: string
+                          pinned:
+                            type: object
+                            additionalProperties:
+                              type: string
+
+                # --- Rejection templates (config `rejections:`, GB-4) ------
+                rejections:
+                  type: object
+                  description: >-
+                    GB-4: the operator owns every rejection body, returned
+                    verbatim. Both reasons are required by the data plane; if
+                    omitted here the operator supplies conservative JSON
+                    defaults. Placeholders {{key}} and {{route}} are honored by
+                    the data plane, not by the operator.
+                  properties:
+                    missingAttribution:
+                      type: object
+                      required: [status, contentType, body]
+                      properties:
+                        status:
+                          type: integer
+                        contentType:
+                          type: string
+                        body:
+                          type: string
+                        streaming:
+                          type: object
+                          required: [data]
+                          properties:
+                            event:
+                              type: string
+                            data:
+                              type: string
+                    unknownRoute:
+                      type: object
+                      required: [status, contentType, body]
+                      properties:
+                        status:
+                          type: integer
+                        contentType:
+                          type: string
+                        body:
+                          type: string
+                        streaming:
+                          type: object
+                          required: [data]
+                          properties:
+                            event:
+                              type: string
+                            data:
+                              type: string
+
+                # --- Spend caps (GB-5) -------------------------------------
+                spendCaps:
+                  type: object
+                  description: >-
+                    GB-5 fleet spend caps. Rendered into the control plane's
+                    budget config (budget.yaml). A cap is a ceiling on
+                    attributed spend for a key/value selector over a window.
+                  properties:
+                    caps:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - key
+                          - value
+                          - limitUsd
+                        properties:
+                          key:
+                            type: string
+                            description: Attribution key the cap is scoped to (e.g. team).
+                          value:
+                            type: string
+                            description: Attribution value the cap applies to.
+                          limitUsd:
+                            type: string
+                            description: Ceiling in USD (string to avoid float drift).
+                          window:
+                            type: string
+                            default: day
+                            enum: [minute, hour, day, month]
+
+                # NOTE: GB-2 JWT auth is NOT part of v1alpha1. It is project-
+                # deferred (see README "Follow-ups"); no `auth` field is exposed
+                # so a CR can never claim JWT enforcement the operator will not
+                # deliver. It will be added only when the resolve->auth.yaml path
+                # is implemented and verified.
+
+                # --- Topology: control plane + data planes -----------------
+                controlPlane:
+                  type: object
+                  description: Control-plane (gatewayctl) topology.
+                  properties:
+                    image:
+                      type: string
+                      description: gatewayctl container image (defaults to operator flag).
+                    replicas:
+                      type: integer
+                      default: 1
+                      minimum: 1
+                      maximum: 1
+                      description: >-
+                        Control-plane replicas. Pinned to 1 in v1alpha1: the
+                        runtime store (acks, budgets) is in-memory and single
+                        authority; HA control plane is a documented follow-up.
+                    resources:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                      description: Standard corev1.ResourceRequirements.
+
+                dataPlanes:
+                  type: object
+                  description: >-
+                    Data-plane (gatewayd) topology. The operator provisions one
+                    gatewayd Deployment joined to gatewayctl over gRPC with a
+                    join token from the operator-managed Secret.
+                  properties:
+                    image:
+                      type: string
+                      description: gatewayd container image (defaults to operator flag).
+                    replicas:
+                      type: integer
+                      default: 1
+                      minimum: 1
+                      description: Number of gatewayd data-plane pods.
+                    listenPort:
+                      type: integer
+                      default: 8080
+                      minimum: 1
+                      maximum: 65535
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: >-
+                        Failure-domain labels (region/cluster/cloud) carried to
+                        gatewayctl at join; wave plans and GatewaySets select on
+                        them. Applied via the join token's label binding.
+                    resources:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                      description: Standard corev1.ResourceRequirements.
+
+                # --- Standard Gateway API alignment (optional) -------------
+                gatewayClassName:
+                  type: string
+                  description: >-
+                    OPTIONAL. If set, the operator claims this gateway.networking
+                    .k8s.io GatewayClass and translates matching standard Gateway
+                    / HTTPRoute objects into routes (the standards path). In M1
+                    this is an ADAPTER, not full Gateway API conformance: see
+                    deploy/README.md "Gateway API mapping" for exactly what is
+                    native-CRD vs standard. Leave unset for the native-CRD path.
+
+            status:
+              type: object
+              description: >-
+                Reflects the real cluster state the operator reconciles the CR
+                into. observedGeneration guards staleness; conditions carry
+                Ready/Degraded; renderedConfigHash is the operator's hash over
+                the rendered config-repo fragments (the config identity fed to
+                gatewayctl); dataPlanes is a ready/desired string; nodes carries
+                per-node ack state where available.
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                renderedConfigHash:
+                  type: string
+                  description: >-
+                    SHA-256 (lowercase hex) over the rendered config-repo
+                    fragments the operator wrote for gatewayctl. This is the
+                    operator's config-input identity; it changes iff the desired
+                    config changes. It is NOT a claim to have read gatewayctl's
+                    internal per-node ack hash (that lives on the fleet gRPC
+                    stream); node acks are surfaced separately under .nodes when
+                    an ack query path is available.
+                dataPlanes:
+                  type: string
+                  description: Ready/desired data-plane pods, e.g. "2/2".
+                controlPlaneReady:
+                  type: boolean
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                nodes:
+                  type: array
+                  description: >-
+                    Per-node ack state as tracked by the fleet. Populated when
+                    an ack-query path from gatewayctl is available; empty
+                    otherwise (M1: readiness is derived from Deployment status).
+                  items:
+                    type: object
+                    properties:
+                      nodeId:
+                        type: string
+                      ackedVersion:
+                        type: integer
+                        format: int64
+                      ackedHash:
+                        type: string
+                      healthy:
+                        type: boolean

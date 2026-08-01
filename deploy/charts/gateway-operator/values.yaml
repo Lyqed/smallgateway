@@ -1,0 +1,83 @@
+# Default values for the gateway-operator chart.
+# `helm install gateway-operator ./deploy/charts/gateway-operator` with ZERO
+# overrides installs the CRD, the operator Deployment, its RBAC, and (off by
+# default) a sample LLMGateway CR. Images are `k3d image import`-ed for the dev
+# cluster; set your registry for real clusters.
+
+# Operator controller image and defaults it passes to the workloads it manages.
+operator:
+  image:
+    repository: thegatewayproject/gateway-operator
+    tag: smoke
+    # IfNotPresent because the image is imported into k3d, never pulled.
+    # Set to Always (and a real registry) for a pullable production image.
+    pullPolicy: IfNotPresent
+  # -- Replicas. 1 is correct without leader election; set >1 only with
+  # leaderElection.enabled.
+  replicaCount: 1
+  # -- Leader election. Off by default (single replica). Turn on for HA.
+  leaderElection:
+    enabled: false
+  # -- Default images the operator stamps into the gatewayctl / gatewayd
+  # Deployments it creates. A CR may override per-instance via
+  # spec.controlPlane.image / spec.dataPlanes.image.
+  defaultImages:
+    gatewayctl: thegatewayproject/gatewayctl:smoke
+    gatewayd: thegatewayproject/gatewayd:smoke
+  # -- Controller resource requests/limits. The operator is lightweight.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # -- Pod-level securityContext (non-root, no privilege escalation).
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  # -- Health/readiness probe ports the operator's manager exposes.
+  healthProbePort: 8081
+  # -- Metrics endpoint (controller-runtime). Scraped via the annotations /
+  # ServiceMonitor below.
+  metricsPort: 8080
+
+# RBAC: a ServiceAccount + ClusterRole + binding scoped to exactly the
+# resources the operator manages. See templates/rbac.yaml.
+rbac:
+  # -- Create the ServiceAccount + ClusterRole + binding. Disable only if you
+  # manage RBAC out-of-band.
+  create: true
+
+# Metrics exposure. The controller serves Prometheus metrics on metricsPort.
+metrics:
+  # -- Add prometheus.io scrape annotations to the operator pod.
+  scrapeAnnotations: true
+  serviceMonitor:
+    # -- Create a Prometheus-Operator ServiceMonitor. Off by default (the CRD
+    # may be absent); turn on when prometheus-operator is installed.
+    enabled: false
+    interval: 30s
+
+# Optionally install a sample LLMGateway CR alongside the operator. Off by
+# default so the chart installs cleanly on a cluster without provider access;
+# the k3d verification and quick-starts turn it on.
+sampleGateway:
+  enabled: false
+  # -- Name of the sample CR.
+  name: demo
+  # -- Data-plane replicas for the sample.
+  dataPlaneReplicas: 1
+  # -- Mock-upstream host:port the sample's providers point at. For the k3d
+  # smoke path this is a mock_upstream Service the sample deploys as a sidecar
+  # is not used; instead the sample points at an in-cluster mock Service. See
+  # deploy/samples for the standalone mock.
+  upstream:
+    host: gateway-mock
+    port: 6190

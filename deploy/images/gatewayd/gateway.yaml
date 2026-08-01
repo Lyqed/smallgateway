@@ -1,0 +1,47 @@
+# Baked fallback config (in-cluster smoke test). The Helm chart's ConfigMap
+# renders the real one from values.yaml and mounts it over /etc/gateway;
+# this copy only makes a bare `docker run` behave sensibly.
+#
+# Derived from crates/gatewayd/demo/gateway.yaml, trimmed to the scopes the
+# smoke test proves (GB-1 required tag, GB-3 operator pin, GB-4 operator
+# rejection bodies, and the streaming meter) with every upstream pointed at
+# the mock_upstream running as a sidecar on 127.0.0.1:6190.
+
+providers:
+  openai-demo:
+    kind: openai
+    upstream: { host: 127.0.0.1, port: 6190 }
+  anthropic-demo:
+    kind: anthropic
+    upstream: { host: 127.0.0.1, port: 6190 }
+  bedrock-demo:
+    kind: bedrock
+    upstream: { host: 127.0.0.1, port: 6190 }
+
+# GB-1 (required attribution key: team) + GB-3 (operator pins env=prod).
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: { env: prod }
+
+routes:
+  - prefix: /openai
+    provider: openai-demo
+  - prefix: /anthropic
+    provider: anthropic-demo
+  - prefix: /bedrock
+    provider: bedrock-demo
+
+# GB-4: the operator owns every rejection body, verbatim.
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send x-attr-<key> request headers"}'
+    streaming:
+      event: error
+      data: '{"error":"attribution_required","missing":"{{key}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}","hint":"no configured route prefix matches this path"}'

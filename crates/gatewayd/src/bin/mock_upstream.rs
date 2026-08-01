@@ -38,6 +38,11 @@ const BEDROCK_CHUNK: usize = 96;
 
 fn main() {
     let mut port = 6190u16;
+    // Bind address. Defaults to 127.0.0.1 so every existing caller (the demo,
+    // the tests, the in-pod sidecar) keeps loopback-only behavior unchanged.
+    // A k8s data-plane Deployment reaching the mock as a cross-pod Service
+    // passes `--bind 0.0.0.0`.
+    let mut bind = String::from("127.0.0.1");
     let mut fixture = String::from("../../spikes/event-model/fixtures/openai.sse");
     let mut provider = String::from("openai");
     let mut delay_ms = 80u64;
@@ -57,6 +62,7 @@ fn main() {
                 std::process::exit(2);
             }
             "--port" => port = args[i + 1].parse().expect("port"),
+            "--bind" => bind = args[i + 1].clone(),
             "--fixture" => fixture = args[i + 1].clone(),
             "--provider" => provider = args[i + 1].clone(),
             "--delay-ms" => delay_ms = args[i + 1].parse().expect("delay-ms"),
@@ -89,13 +95,14 @@ fn main() {
         ("text/event-stream", frames)
     };
 
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
+    let listener = TcpListener::bind((bind.as_str(), port))
+        .unwrap_or_else(|e| panic!("bind {bind}:{port}: {e}"));
     eprintln!(
-        "[mock] serving {} ({} frames, {}ms apart) on 127.0.0.1:{}{}",
+        "[mock] serving {} ({} frames, {}ms apart) on {}:{}{}",
         fixture,
         frames.len(),
         delay_ms,
+        bind,
         port,
         if require_sigv4 { " [sigv4 required]" } else { "" },
     );

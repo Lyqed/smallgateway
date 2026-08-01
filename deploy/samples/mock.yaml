@@ -1,0 +1,76 @@
+# Standalone in-cluster mock upstream for the operator sample / k3d verification.
+#
+# The gatewayd smoke image ships mock_upstream. Run as its OWN Deployment with
+# `--bind 0.0.0.0` so it is reachable CROSS-POD (the standalone gatewayd data
+# planes the operator provisions are not sidecars). Fronted by a Service named
+# `gateway-mock` on 6190 — which is exactly what the sample LLMGateway's
+# provider upstream points at.
+#
+# This resolves the smoke-test finding that mock_upstream hardcoded 127.0.0.1:
+# a minimal, backward-compatible `--bind` flag (default 127.0.0.1) now lets it
+# serve a routable address. See deploy/README.md "Crate change".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-mock
+  labels:
+    app.kubernetes.io/name: gateway-mock
+    app.kubernetes.io/part-of: the-gateway-project
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-mock
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-mock
+    spec:
+      containers:
+        - name: mock-upstream
+          image: thegatewayproject/gatewayd:smoke
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/mock_upstream"]
+          args:
+            - --bind
+            - 0.0.0.0
+            - --port
+            - "6190"
+            - --fixture
+            - /opt/gateway/fixtures/openai.sse
+            - --provider
+            - openai
+            - --delay-ms
+            - "20"
+          ports:
+            - name: mock
+              containerPort: 6190
+          readinessProbe:
+            tcpSocket:
+              port: mock
+            initialDelaySeconds: 1
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-mock
+  labels:
+    app.kubernetes.io/name: gateway-mock
+    app.kubernetes.io/part-of: the-gateway-project
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway-mock
+  ports:
+    - name: mock
+      port: 6190
+      targetPort: mock
+      protocol: TCP

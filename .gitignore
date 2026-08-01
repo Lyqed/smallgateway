@@ -1,1 +1,8 @@
 target/
+
+# Image build contexts: binaries and fixtures copied in by
+# deploy/images/build.sh, never committed.
+deploy/images/gatewayd/gatewayd
+deploy/images/gatewayd/mock_upstream
+deploy/images/gatewayd/fixtures/
+deploy/images/gatewayctl/gatewayctl

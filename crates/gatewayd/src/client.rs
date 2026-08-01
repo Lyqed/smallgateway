@@ -134,8 +134,13 @@ async fn supervise(
     // last-known fleet_version"). 0 until the first push binds.
     let last_fleet_version = Arc::new(AtomicU64::new(0));
 
-    // First connection: dial, join, bind the first push. A failure here is
-    // fatal (a node with no config never serves) and reported to the caller.
+    // First connection: dial, join, bind the first push, then SIGNAL READY (so
+    // the main thread starts pingora) and keep running the same stream until it
+    // ends. The ready signal fires from INSIDE connect_once the moment the first
+    // push binds — NOT after the stream ends — so the data plane starts serving
+    // immediately while this stream stays live for later pushes. Passing
+    // `Some(ready_tx)` here is what distinguishes the first connection; on a
+    // dial/join failure connect_once fires it with the Err before returning.
     let reloader = match connect_once(
         &endpoint,
         &node_id,
@@ -143,19 +148,20 @@ async fn supervise(
         None,
         &last_fleet_version,
         &budgets,
+        Some(ready_tx.clone()),
     )
     .await
     {
+        // The first stream bound (ready already fired from inside connect_once)
+        // and then ended; keep the reloader for the reconnect loop.
         Ok(reloader) => reloader,
         Err(e) => {
+            // Dial/join/first-bind failed; report it so the blocked bootstrap
+            // unblocks with the error (a node with no config never serves).
             let _ = ready_tx.send(Err(e));
             return;
         }
     };
-    if ready_tx.send(Ok(reloader.shared())).is_err() {
-        // The caller went away; nothing to serve.
-        return;
-    }
 
     // Supervised reconnect loop. The snapshot keeps serving throughout; we only
     // re-establish the control channel so future pushes are received again.
@@ -183,6 +189,7 @@ async fn supervise(
             Some(reloader.clone()),
             &last_fleet_version,
             &budgets,
+            None,
         )
         .await
         {
@@ -217,6 +224,12 @@ async fn connect_once(
     existing: Option<Arc<Reloader>>,
     last_fleet_version: &Arc<AtomicU64>,
     budgets: &Arc<NodeBudgets>,
+    // First-connection ONLY: fired exactly once the moment the first push binds
+    // (so the caller starts pingora immediately while this stream keeps running).
+    // `None` on every reconnect. If the dial/join fails before the first bind on
+    // the first connection, the Err is surfaced to the supervisor, which fires
+    // this channel with the error instead.
+    on_ready: Option<std_mpsc::Sender<Result<SharedSnapshot, String>>>,
 ) -> Result<Arc<Reloader>, String> {
     let mut client = FleetServiceClient::connect(endpoint.to_string())
         .await
@@ -258,7 +271,18 @@ async fn connect_once(
             let (reloader, first_version) =
                 wait_first_push(&mut inbound, &out_tx, node_id).await?;
             last_fleet_version.store(first_version, Ordering::Relaxed);
-            Arc::new(reloader)
+            let reloader = Arc::new(reloader);
+            // The node has a valid config bound: SIGNAL READY now so the main
+            // thread starts pingora and begins serving, while THIS task keeps
+            // running the stream below for subsequent pushes. Fires exactly once.
+            if let Some(ready) = on_ready {
+                if ready.send(Ok(reloader.shared())).is_err() {
+                    // The caller (main thread) went away before we bound; there
+                    // is nothing to serve, so end this stream.
+                    return Ok(reloader);
+                }
+            }
+            reloader
         }
     };
 

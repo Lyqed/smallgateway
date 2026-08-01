@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gateway-operator.fullname" . }}
+  labels:
+    {{- include "gateway-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "gateway-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gateway-operator.selectorLabels" . | nindent 8 }}
+      {{- if .Values.metrics.scrapeAnnotations }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.operator.metricsPort }}"
+        prometheus.io/path: "/metrics"
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "gateway-operator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.operator.securityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          args:
+            - --health-probe-bind-address=:{{ .Values.operator.healthProbePort }}
+            - --metrics-bind-address=:{{ .Values.operator.metricsPort }}
+            - --leader-elect={{ .Values.operator.leaderElection.enabled }}
+            - --gatewayctl-image={{ .Values.operator.defaultImages.gatewayctl }}
+            - --gatewayd-image={{ .Values.operator.defaultImages.gatewayd }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.operator.metricsPort }}
+            - name: health
+              containerPort: {{ .Values.operator.healthProbePort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.operator.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
