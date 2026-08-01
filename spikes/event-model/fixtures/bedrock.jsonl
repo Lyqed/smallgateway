@@ -1,0 +1,7 @@
+{"event":"messageStart","payload":{"role":"assistant"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"The Gateway"}}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Project keeps"}}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" truth in Git."}}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":0}}
+{"event":"messageStop","payload":{"stopReason":"end_turn"}}
+{"event":"metadata","payload":{"usage":{"inputTokens":14,"outputTokens":9,"totalTokens":23},"metrics":{"latencyMs":412}}}

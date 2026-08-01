@@ -1,0 +1,9 @@
+[package]
+name = "spike-event-model"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde_json = "1"
+crc32fast = "1"

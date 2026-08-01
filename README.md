@@ -47,9 +47,13 @@ lifetime.
 
 ## Status
 
-Design phase. No code yet — the first code is the two-week spike described in
-[04-build-plan.md](docs/04-build-plan.md), and it does not start until the
-design questions in doc 01 have answers we are willing to own.
+Phase 0. **Spike A is running** in
+[spikes/event-model/](spikes/event-model/): the canonical event model over
+three wire formats (OpenAI SSE, Anthropic events, Bedrock event-stream with
+real binary framing), with chunking-invariance and cross-provider conformance
+tests green. Remaining before Spike A closes: the measured metering error
+bound from real transcripts. Spike B (the Pingora vs agentgateway bake-off)
+has not started.
 
 License: to be chosen before the repo goes public (Apache-2.0 is the working
 assumption, matching the ecosystem we intend to upstream into). Deferred,
