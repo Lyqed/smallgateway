@@ -114,7 +114,7 @@ export function Principles() {
               <div aria-hidden className="mt-6 flex items-end gap-3">
                 <HandArrow className="h-10 w-12 -scale-x-100" />
                 <p className="marker rotate-[2deg] pb-1 text-2xl text-violet">
-                  you don&rsquo;t need to buy anything, yet
+                  you don&rsquo;t need to buy anything
                 </p>
               </div>
               {/* drips off the torn edge, low-left */}
