@@ -260,6 +260,41 @@ section[id] {
  * nothing here animates for reduced-motion users.
  * ------------------------------------------------------------------ */
 
+/* Feathered edge for paint fields whose element box would otherwise crop
+ * the wash into a hard rectangle (slice-cropped SVGs). Every edge of the
+ * element dissolves into the ground instead of terminating in a line. */
+.feather {
+  -webkit-mask-image: radial-gradient(
+    ellipse 72% 68% at 48% 46%,
+    black 52%,
+    transparent 98%
+  );
+  mask-image: radial-gradient(
+    ellipse 72% 68% at 48% 46%,
+    black 52%,
+    transparent 98%
+  );
+}
+
+/* Horizontal-band variant: fades only top and bottom, for arc bundles
+ * that are meant to run off the left/right viewport edges. */
+.feather-y {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 18%,
+    black 82%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 18%,
+    black 82%,
+    transparent 100%
+  );
+}
+
 /* Body copy that must sit near paint gets a legible surface. The scrim
  * is a near-opaque panel with a soft edge so the paint bleeds up to it
  * without ever crossing under the text. */
@@ -282,18 +317,23 @@ section[id] {
   position: absolute;
   left: 0;
   right: 0;
-  top: -14px;
-  height: 18px;
+  top: -16px;
+  height: 24px;
   background: var(--torn-color, var(--monarch));
-  /* ragged lower edge via a polygon mask — the tear line */
+  /* irregular multi-scale tear: uneven spacing, mixed depths, a few long
+   * fibrous spikes — never a repeating zigzag */
   clip-path: polygon(
-    0 0, 4% 60%, 8% 20%, 13% 75%, 18% 30%, 23% 80%, 28% 25%, 33% 70%,
-    38% 15%, 43% 78%, 48% 22%, 53% 68%, 58% 18%, 63% 74%, 68% 28%,
-    73% 66%, 78% 20%, 83% 76%, 88% 24%, 93% 70%, 97% 30%, 100% 62%,
-    100% 0
+    0 0, 2% 46%, 3.5% 22%, 6% 71%, 7% 38%, 9.5% 55%, 12% 18%, 13% 64%,
+    16% 42%, 17.5% 88%, 20% 30%, 23% 52%, 26.5% 24%, 28% 78%, 31% 45%,
+    34% 61%, 36% 15%, 39.5% 69%, 42% 35%, 44% 93%, 47% 41%, 50% 58%,
+    52.5% 20%, 55% 73%, 58% 33%, 61.5% 50%, 63% 82%, 66% 27%, 69% 63%,
+    72% 44%, 74.5% 16%, 77% 70%, 80% 39%, 82% 86%, 85.5% 31%, 88% 57%,
+    91% 23%, 93.5% 75%, 96% 47%, 98% 66%, 100% 28%, 100% 0
   );
-  opacity: 0.9;
+  opacity: 0.92;
   pointer-events: none;
+  /* the torn strip casts a sliver of shadow onto the panel it rips open */
+  filter: drop-shadow(0 2px 1px oklch(0% 0 0 / 0.14));
 }
 
 /* Film grain over paint — pure CSS radial dithering, no external asset.
@@ -354,6 +394,109 @@ section[id] {
   font-family: var(--font-hand);
   font-weight: 400;
   line-height: 1.15;
+}
+
+/* ------------------------------------------------------------------ *
+ * NEWSPRINT LAYER — torn clippings wheatpasted on the machined wall.
+ * Tears are irregular multi-scale polygons (three variants so no two
+ * neighboring clippings share an edge); the shadow lives on a wrapper
+ * with drop-shadow so it follows the torn silhouette, not the box.
+ * ------------------------------------------------------------------ */
+
+.voice-print {
+  font-family: Georgia, "Times New Roman", ui-serif, serif;
+  letter-spacing: -0.01em;
+}
+
+/* Slightly yellowed paper with a faint halftone so it reads as newsprint
+ * against the cool machined panels. */
+.newsprint {
+  position: relative;
+  background: oklch(95.5% 0.014 95);
+  color: var(--ink);
+}
+.newsprint::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(oklch(30% 0.02 95 / 0.5) 0.5px, transparent 0.6px);
+  background-size: 4px 4px;
+  opacity: 0.05;
+}
+
+/* Torn-silhouette shadow carrier. */
+.tear-shadow {
+  filter: drop-shadow(4px 6px 0 oklch(from var(--steel) l c h / 0.5));
+}
+.polished-floor .tear-shadow,
+.dark-wall .tear-shadow {
+  filter: drop-shadow(4px 6px 0 oklch(0% 0 0 / 0.45));
+}
+
+/* Irregular tears, all four edges, three fingerprints. */
+.clip-tear-a {
+  clip-path: polygon(
+    0.6% 2.1%, 5% 0.4%, 11% 1.8%, 17% 0.2%, 24% 1.5%, 31% 0.5%, 39% 1.9%,
+    47% 0.3%, 55% 1.6%, 63% 0.6%, 71% 1.8%, 79% 0.2%, 87% 1.4%, 94% 0.5%,
+    99.5% 1.9%, 98.9% 9%, 99.8% 18%, 98.6% 28%, 99.7% 39%, 98.8% 51%,
+    99.9% 63%, 98.7% 74%, 99.6% 85%, 98.9% 94%, 99.4% 98.2%, 93% 99.7%,
+    85% 98.4%, 76% 99.8%, 66% 98.6%, 56% 99.6%, 46% 98.3%, 36% 99.7%,
+    27% 98.5%, 18% 99.8%, 10% 98.6%, 3% 99.5%, 0.4% 97.9%, 1.3% 88%,
+    0.2% 77%, 1.4% 65%, 0.3% 53%, 1.2% 41%, 0.2% 30%, 1.3% 19%, 0.4% 9%
+  );
+}
+.clip-tear-b {
+  clip-path: polygon(
+    0.3% 1.2%, 7% 1.9%, 14% 0.3%, 22% 1.7%, 30% 0.4%, 37% 1.8%, 45% 0.2%,
+    53% 1.5%, 61% 0.5%, 69% 1.9%, 77% 0.3%, 85% 1.6%, 92% 0.4%, 99.6% 1.4%,
+    98.8% 12%, 99.9% 24%, 98.6% 37%, 99.8% 49%, 98.7% 61%, 99.7% 72%,
+    98.5% 83%, 99.8% 93%, 98.9% 98.8%, 91% 98.3%, 82% 99.9%, 72% 98.4%,
+    62% 99.7%, 52% 98.2%, 42% 99.8%, 32% 98.5%, 23% 99.6%, 14% 98.4%,
+    6% 99.8%, 0.5% 98.6%, 1.4% 90%, 0.3% 79%, 1.5% 67%, 0.2% 55%,
+    1.3% 44%, 0.3% 33%, 1.5% 21%, 0.2% 10%
+  );
+}
+.clip-tear-c {
+  clip-path: polygon(
+    1.1% 0.4%, 9% 1.6%, 18% 0.2%, 27% 1.8%, 36% 0.5%, 44% 1.4%, 52% 0.3%,
+    60% 1.7%, 68% 0.4%, 76% 1.9%, 84% 0.3%, 92% 1.5%, 99.4% 0.6%,
+    99.9% 10%, 98.7% 21%, 99.8% 33%, 98.5% 46%, 99.9% 58%, 98.6% 70%,
+    99.7% 81%, 98.8% 91%, 99.5% 99.1%, 90% 98.6%, 80% 99.9%, 70% 98.3%,
+    60% 99.8%, 49% 98.5%, 39% 99.7%, 29% 98.2%, 19% 99.6%, 9% 98.5%,
+    2% 99.9%, 0.2% 92%, 1.4% 82%, 0.3% 70%, 1.2% 58%, 0.2% 46%,
+    1.4% 34%, 0.3% 22%, 1.2% 11%
+  );
+}
+
+/* A strip of wheatpaste tape holding a clipping to the wall. */
+.tape {
+  position: absolute;
+  background: oklch(90% 0.025 95 / 0.72);
+  box-shadow: 0 1px 2px oklch(0% 0 0 / 0.12);
+  pointer-events: none;
+}
+
+/* A rubber stamp: inked, slightly rotated, never perfectly crisp. */
+.stamp {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  border: 3px solid currentColor;
+  border-radius: 3px;
+  padding: 0.15rem 0.55rem;
+  opacity: 0.82;
+  -webkit-mask-image: radial-gradient(
+    ellipse 100% 100% at 50% 50%,
+    black 62%,
+    oklch(0% 0 0 / 0.72) 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 100% 100% at 50% 50%,
+    black 62%,
+    oklch(0% 0 0 / 0.72) 100%
+  );
 }
 
 @media (prefers-reduced-motion: reduce) {

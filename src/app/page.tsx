@@ -1,5 +1,6 @@
 import { PerforatedRail } from "@/components/art/marks";
 import { SplashArcs } from "@/components/art/PaintField";
+import { SpaceBand } from "@/components/art/SpaceBand";
 import { Hero } from "@/components/sections/Hero";
 import { Principles } from "@/components/sections/Principles";
 import { Architecture } from "@/components/sections/Architecture";
@@ -29,7 +30,7 @@ export default function HomePage() {
       <MuralJoint id="joint-a" railId="rail-a" />
       <Principles />
       <Architecture />
-      <MuralJoint id="joint-b" railId="rail-b" />
+      <SpaceBand />
       <BuildStatus />
       <Ownership />
       <Contribute />

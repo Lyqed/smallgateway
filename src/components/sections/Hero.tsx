@@ -28,14 +28,16 @@ export function Hero() {
       className="skylight-band relative overflow-x-clip"
     >
       {/* full-color paint bloom, bleeding from the right, behind the art */}
+      {/* on small screens the bloom retreats right and dims so body copy
+          never sits on paint; full strength from sm up */}
       <PaintBloom
         id="hero-bloom"
-        className="paint-live pointer-events-none absolute -right-40 -top-40 h-[70rem] w-[70rem] max-w-[120vw] opacity-70 sm:-right-24"
+        className="feather paint-live pointer-events-none absolute -right-72 -top-56 h-[70rem] w-[70rem] max-w-[150vw] opacity-40 sm:-right-24 sm:-top-40 sm:max-w-[120vw] sm:opacity-70"
       />
       {/* splash arcs sweeping across the whole hero, ignoring the grid */}
       <SplashArcs
         id="hero-arcs"
-        className="paint-live-slow pointer-events-none absolute -left-10 top-16 h-[26rem] w-[130%] opacity-70"
+        className="feather-y paint-live-slow pointer-events-none absolute -left-10 top-16 h-[26rem] w-[130%] opacity-70"
       />
       {/* the circular gallery, cropped by the viewport (kept, machined) */}
       <RingMotif className="pointer-events-none absolute -right-56 -top-72 size-[46rem] opacity-60 sm:-right-40 sm:size-[54rem]" />
@@ -45,12 +47,19 @@ export function Hero() {
           {/* painted wall behind the headline only, so body text never
               sits on paint (MURAL-DIRECTION non-negotiable) */}
           <div className="relative">
-            <BrushField className="pointer-events-none absolute -left-56 -top-2 h-[125%] w-[26rem] max-w-[75vw] opacity-90 sm:-left-44" />
+            <BrushField className="feather pointer-events-none absolute -left-56 -top-10 h-[140%] w-[28rem] max-w-[80vw] opacity-90 sm:-left-44" />
+            {/* deliberate stack: "Open Source" stays intact on its own line */}
+            {/* sized so "Open Source" holds one line; local cap, the shared
+                --text-hero token stays binding for the sister site */}
             <h1
               id="hero-heading"
-              className="voice-display relative mt-6 max-w-[13ch] text-[length:var(--text-hero)]"
+              className="voice-display relative mt-6 text-[length:clamp(2.75rem,1.1rem+5.6vw,6rem)] [text-wrap:initial]"
             >
-              The Open Source Gateway
+              The
+              <br />
+              Open Source
+              <br />
+              Gateway
             </h1>
           </div>
 
@@ -104,10 +113,11 @@ export function Hero() {
         <div className="relative mx-auto w-full max-w-[30rem] lg:mx-0">
           <Astronaut className="paint-live pointer-events-none relative z-10 w-full drop-shadow-[6px_10px_0_oklch(from_var(--steel)_l_c_h/0.35)]" />
           {/* a sprayed color word behind the astronaut's shoulder */}
+          {/* violet so the word holds against the warm bloom behind it */}
           <p
             aria-hidden
             className="spray-word absolute -left-2 top-2 -rotate-6 text-5xl sm:text-6xl"
-            style={{ ["--spray" as string]: "var(--gold)" }}
+            style={{ ["--spray" as string]: "var(--violet)" }}
           >
             reach
           </p>

@@ -210,75 +210,92 @@ export function BuildStatus() {
           </div>
         </Reveal>
 
-        {/* The roadmap — vertical mono timeline */}
-        <Reveal className="mt-14">
-          <div className="grid gap-10 lg:grid-cols-[1fr_20rem]">
-            <ol aria-label="Phase roadmap" className="relative space-y-0">
-              {PHASES.map((phase, i) => (
-                <li
-                  key={phase.id}
-                  className="relative grid grid-cols-[2rem_1fr] gap-4 pb-8"
-                >
-                  {/* rail */}
-                  {i < PHASES.length - 1 && (
-                    <span
-                      aria-hidden
-                      className="absolute left-[0.9375rem] top-7 h-full w-px bg-steel"
-                    />
-                  )}
+        {/* The record — six phases wheatpasted on the wall as torn
+            newsprint clippings. Each clipping keeps its clean paper ground
+            (facts never sit on paint); the tears, tape, and stamps carry
+            the collage energy. */}
+        <Reveal className="mt-16">
+          {/* masthead */}
+          <div className="border-y-2 border-ink py-2">
+            <p className="voice-mono text-center text-[0.7rem] uppercase tracking-[0.3em] text-ink">
+              the build record · six phases · each verified by adversarial
+              critique
+            </p>
+          </div>
+
+          <ol
+            aria-label="Phase record"
+            className="mt-12 grid gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3"
+          >
+            {PHASES.map((phase, i) => {
+              const tear = ["clip-tear-a", "clip-tear-b", "clip-tear-c"][i % 3];
+              const tilt = ["-rotate-1", "rotate-[0.75deg]", "rotate-[-0.5deg]", "rotate-1", "rotate-[-1.25deg]", "rotate-[0.5deg]"][i];
+              const drop = ["", "sm:translate-y-4", "sm:-translate-y-2", "sm:translate-y-2", "", "sm:translate-y-3"][i];
+              return (
+                <li key={phase.id} className={`relative ${tilt} ${drop}`}>
+                  {/* tape holding the clipping to the wall */}
                   <span
                     aria-hidden
-                    className="relative z-10 mt-1 flex size-8 items-center justify-center rounded-full border-2 border-teal bg-atrium"
-                  >
-                    <span className="voice-mono text-xs text-ink">
-                      {phase.id}
-                    </span>
-                  </span>
-                  <div className="pt-1">
-                    <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <span className="voice-mono text-sm font-medium text-ink">
-                        phase {phase.id} · {phase.title.toLowerCase()}
-                      </span>
-                      <span className="voice-mono text-[0.7rem] text-teal-deep">
-                        ● done
-                      </span>
-                    </p>
-                    <p className="mt-1 max-w-xl text-sm text-steel-dark">
-                      {phase.note}
-                    </p>
+                    className="tape left-1/2 top-0 z-10 h-6 w-20 -translate-x-1/2 -translate-y-1/2 rotate-[-3deg]"
+                  />
+                  <div className="tear-shadow h-full">
+                    <article className={`newsprint ${tear} flex h-full flex-col p-6 pb-7`}>
+                      {/* dateline */}
+                      <p className="voice-mono border-b border-ink/60 pb-2 text-[0.65rem] uppercase tracking-[0.18em] text-steel-dark">
+                        phase {phase.id} · closed · august 2026
+                      </p>
+                      <h4 className="voice-print mt-3 text-2xl font-bold leading-tight">
+                        {phase.title}
+                      </h4>
+                      <p className="voice-print mt-3 text-[0.9rem] leading-relaxed text-ink/80">
+                        {phase.note}
+                      </p>
+                      {/* the verification, stamped */}
+                      <div className="mt-auto flex justify-end pt-5">
+                        <span className="stamp -rotate-6 text-[0.65rem] text-teal-deep">
+                          verified
+                        </span>
+                      </div>
+                    </article>
                   </div>
                 </li>
-              ))}
-            </ol>
+              );
+            })}
+          </ol>
 
-            <aside className="lg:pt-1">
-              <p className="voice-mono text-xs text-steel-dark">legend</p>
-              <ul className="voice-mono mt-3 space-y-2 text-xs text-steel-dark">
-                <li className="flex items-center gap-2">
-                  <span aria-hidden className="size-2 rounded-full bg-teal" />
-                  done · all six phases, adversarially verified
-                </li>
-              </ul>
-
-              <div className="mt-10 border-t border-steel pt-6">
-                <p className="voice-mono text-xs text-steel-dark">
-                  next and deferred, stated plainly
+          {/* classifieds: the deferred items, stated plainly, small print */}
+          <aside
+            aria-label="Deferred work"
+            className="relative mx-auto mt-16 max-w-3xl rotate-[0.5deg]"
+          >
+            <span
+              aria-hidden
+              className="tape -top-3 left-8 z-10 h-6 w-16 rotate-[4deg]"
+            />
+            <span
+              aria-hidden
+              className="tape -top-3 right-10 z-10 h-6 w-16 rotate-[-5deg]"
+            />
+            <div className="tear-shadow">
+              <div className="newsprint clip-tear-b p-6 sm:p-8">
+                <p className="voice-mono border-b-2 border-ink pb-2 text-center text-[0.7rem] uppercase tracking-[0.3em] text-ink">
+                  classifieds · deferred, stated plainly
                 </p>
-                <ul className="mt-3 space-y-4">
+                <ul className="mt-5 columns-1 gap-8 sm:columns-2 [&>li]:break-inside-avoid">
                   {DEFERRED.map((item) => (
-                    <li key={item.name}>
-                      <p className="voice-mono text-xs font-medium text-ink">
+                    <li key={item.name} className="mb-5">
+                      <p className="voice-mono text-xs font-semibold uppercase tracking-wide text-ink">
                         {item.name}
                       </p>
-                      <p className="mt-0.5 text-xs leading-relaxed text-steel-dark">
+                      <p className="voice-print mt-1 text-[0.85rem] leading-relaxed text-ink/75">
                         {item.body}
                       </p>
                     </li>
                   ))}
                 </ul>
               </div>
-            </aside>
-          </div>
+            </div>
+          </aside>
         </Reveal>
       </div>
     </section>

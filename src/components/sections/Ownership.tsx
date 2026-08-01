@@ -15,24 +15,26 @@ export function Ownership() {
   return (
     <section
       aria-labelledby="ownership-heading"
-      className="relative overflow-x-clip pb-[var(--space-section)] pt-[clamp(7rem,42svh,26rem)]"
+      className="relative overflow-x-clip py-[var(--space-section)]"
     >
-      {/* The generous top gap keeps the dark build band out of this section's
-          viewport. Paint bleeds up into that gap and off both edges. */}
       <PaintBloom
         id="own-bloom"
-        className="paint-live pointer-events-none absolute -left-40 top-0 h-[52rem] w-[52rem] max-w-[110vw] opacity-60"
+        className="feather paint-live pointer-events-none absolute -left-40 -top-24 h-[52rem] w-[52rem] max-w-[110vw] opacity-60"
       />
       <SplashArcs
         id="own-arcs"
-        className="paint-live-slow pointer-events-none absolute -right-10 top-24 h-[24rem] w-[125%] opacity-60"
+        className="feather-y paint-live-slow pointer-events-none absolute -right-10 top-24 h-[24rem] w-[125%] opacity-60"
       />
 
       <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
-        <div className="relative border-y border-steel py-16 sm:py-20">
-          {/* the monarch on its deep-blue planet — the once-per-site mural */}
-          <MonarchPlanet className="pointer-events-none absolute -bottom-24 right-0 aspect-square w-56 rotate-6 sm:-bottom-28 sm:right-6 sm:w-72" />
+        <div className="relative grid gap-10 border-y border-steel py-16 sm:py-20 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
+          <div className="relative order-2 mx-auto w-full max-w-[24rem] lg:order-none lg:col-start-2 lg:row-span-2 lg:max-w-none">
+            {/* the monarch on its deep-blue planet — the once-per-site
+                mural, now a full column, not a corner sticker */}
+            <MonarchPlanet className="pointer-events-none relative aspect-square w-full rotate-3" />
+          </div>
 
+          <div className="lg:col-start-1 lg:row-start-1">
           <div className="relative inline-block">
             <p className="voice-mono text-sm font-medium uppercase tracking-[0.2em] text-monarch-deep sm:text-base">
               The ownership contract
@@ -61,8 +63,8 @@ export function Ownership() {
             </p>
           </Reveal>
 
-          <div className="mt-10 grid max-w-4xl gap-8 lg:grid-cols-2">
-            <p className="leading-relaxed text-steel-dark">
+          <div className="mt-10 grid max-w-4xl gap-8 sm:grid-cols-2">
+            <p className="text-lg leading-relaxed text-ink">
               You show up, you diagnose, you fix or revert, and the postmortem
               names the mechanism, not the person. This is the community&rsquo;s
               contract, and it shapes the technical design directly: Git as
@@ -74,6 +76,7 @@ export function Ownership() {
               life. A gateway owned end to end by the people who run it, open
               from the first commit, with nothing held back behind a paywall.
             </p>
+          </div>
           </div>
         </div>
       </div>
