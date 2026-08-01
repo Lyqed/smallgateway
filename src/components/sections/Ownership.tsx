@@ -29,9 +29,9 @@ export function Ownership() {
               className="voice-display max-w-4xl text-3xl leading-[1.05] sm:text-5xl"
             >
               If something breaks because of a change you made six months ago —{" "}
-              <span className="relative inline-block whitespace-nowrap">
+              <span className="relative inline-block whitespace-nowrap pt-[0.12em]">
                 you are responsible.
-                <HandCircle className="pointer-events-none absolute -left-[6%] -top-[14%] h-[130%] w-[114%]" />
+                <HandCircle className="pointer-events-none absolute -left-[5%] top-[0.06em] h-[112%] w-[112%]" />
               </span>
             </h2>
             <p aria-hidden className="voice-hand mt-5 rotate-[-2deg] text-xl">
