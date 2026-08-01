@@ -1,0 +1,36 @@
+# Tier-2 extensibility: signed WASM policy modules on wasmtime (Phase 4).
+# A LIBRARY, not a binary — the two-binary budget (gatewayd + gatewayctl)
+# holds; gatewayd embeds this host, gatewayctl calls its signature verifier
+# at admission. wasmtime is the one new dependency family this phase adds.
+[package]
+name = "gateway-wasm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Signed WASM policy modules: fuel/epoch-bounded host, atomic module binding, counter migration (GB-9)"
+
+[dependencies]
+# The canonical event model and rejection templates the ABI marshals.
+gateway-core = { path = "../gateway-core" }
+# The WASM runtime with the two bounds this phase is built on: per-invocation
+# fuel budgets and epoch-based preemption. Default features off, then the two
+# we use: `cranelift` (compile guest modules) and `runtime`. `wat` support
+# rides along so `.wat` fixtures load without an external toolchain.
+wasmtime = { version = "27", default-features = false, features = ["cranelift", "runtime", "wat"] }
+# Module signing: HMAC-SHA256 over the module bytes, the same primitive the
+# GB-2 JWT path already verifies with — no new crypto dependency family.
+hmac = "0.12"
+sha2 = "0.10"
+# The bounded host<->guest boundary is serializable JSON (already in-tree).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+[dev-dependencies]
+# The hot-path measurement (criterion is a dev-only dependency; the bench is
+# not part of either shipped binary).
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "hotpath"
+harness = false

@@ -146,6 +146,33 @@ pub(crate) fn resolve_policy(
     )
 }
 
+/// Resolve a request's attribution in two phases (extracted from the request
+/// hook): phase 1 is the composed fleet→project→route policy, deliberately
+/// lenient; phase 2 re-resolves under route⊕app when the RESOLVED value of
+/// `apps.key` selects an override (which may add/satisfy requirements, override
+/// pins/templates/labels). Returns the FINAL policy the hook enforces against
+/// and its resolution. `route` outlives the borrow.
+pub(crate) fn resolve_with_app_scope<'r>(
+    route: &'r gateway_core::config::Route,
+    apps: Option<&gateway_core::config::Apps>,
+    caller: &BTreeMap<String, String>,
+    claims: Option<&serde_json::Map<String, serde_json::Value>>,
+    cel_ctx: &EvalCtx,
+) -> (&'r EffectivePolicy, attribution::Resolution) {
+    let mut policy = route.policy();
+    let mut resolution = resolve_policy(policy, caller, claims, cel_ctx, &route.prefix);
+    if let Some(apps) = apps {
+        let app_value = resolution.value(&apps.key).map(str::to_string);
+        if let Some(app_policy) = app_value.as_deref().and_then(|value| route.app_policy(value)) {
+            let value = app_value.expect("checked above");
+            info!("[app {}] {}={value} -> app override", route.prefix, apps.key);
+            policy = app_policy;
+            resolution = resolve_policy(policy, caller, claims, cel_ctx, &route.prefix);
+        }
+    }
+    (policy, resolution)
+}
+
 /// GB-7: session tags from RESOLVED attribution values. Static config
 /// values pass through; `from_attribution` reads the adjudicated tag —
 /// and re-checks (defense in depth; config validation already guarantees
@@ -174,6 +201,89 @@ pub(crate) fn resolve_session_tags(
         out.push((spec.key.clone(), value));
     }
     Ok(out)
+}
+
+/// GB-8: resolve the effective Vertex billing labels for a request — build the
+/// attribution map from resolved tags, extend the CEL context with it, and
+/// resolve every label (static / from_attribution / CEL). Extracted from the
+/// proxy hook so it stays focused; the hook owns the async GB-4 rejection on
+/// the `Err` path. Returns the resolved `(key, value)` pairs or the offending
+/// label's [`gateway_core::labels::LabelError`].
+pub(crate) fn resolve_vertex_labels(
+    labels: &[gateway_core::scope::EffectiveLabel],
+    tags: &[Tag],
+    cel_ctx: &EvalCtx,
+) -> std::result::Result<Vec<(String, String)>, gateway_core::labels::LabelError> {
+    let attribution: BTreeMap<String, String> = tags
+        .iter()
+        .map(|t| (t.key.clone(), t.value.clone()))
+        .collect();
+    let mut label_ctx = cel_ctx.clone();
+    label_ctx.attribution = attribution.clone();
+    gateway_core::labels::resolve(labels, &attribution, &label_ctx)
+}
+
+/// Dot-segment defense (GB-1/GB-2): resolve `.`/`..` (literal and %2e-encoded)
+/// and merge duplicate slashes, then REWRITE the request URI so the upstream
+/// sees the same resolved path. Returns the normalized path on success, or the
+/// unrepresentable target string on the (statically unreachable) failure the
+/// hook rejects with the GB-4 `unknown_route` template. Extracted from the
+/// request hook so it stays focused; a traversal spelling can never select a
+/// weaker attribution contract because gateway and upstream agree on the path.
+pub(crate) fn normalize_and_rewrite(
+    session: &mut Session,
+    raw_path: &str,
+    cfg_version: u64,
+) -> std::result::Result<String, ()> {
+    let path = gateway_core::config::normalize_path(raw_path);
+    if path == raw_path {
+        return Ok(path);
+    }
+    let query = session.req_header().uri.query().map(str::to_owned);
+    let target = match &query {
+        Some(q) => format!("{path}?{q}"),
+        None => path.clone(),
+    };
+    match http::Uri::try_from(target.as_str()) {
+        Ok(uri) => {
+            info!("[req] path normalized: {raw_path} -> {path} cfg=v{cfg_version}");
+            session.req_header_mut().set_uri(uri);
+            Ok(path)
+        }
+        Err(_) => Err(()),
+    }
+}
+
+/// A GB-7 credential-resolution failure, distinguishing the two fail-closed
+/// paths: an attribution/session-tag problem is a GB-4 rejection (the operator
+/// template), a credential EXCHANGE failure is a 502 (an infrastructure fault,
+/// loudly logged — not the operator's body).
+pub(crate) enum Gb7Failure {
+    /// A session tag could not be resolved: reject with the GB-4 template,
+    /// naming `key`.
+    Reject { key: String, reason: String },
+    /// The AssumeRole exchange itself failed: a 502.
+    Exchange(String),
+}
+
+/// GB-7: resolve session tags from ATTRIBUTION values and mint (or cache-hit)
+/// the session-tagged credentials. Extracted from the proxy hook so it stays
+/// focused; the hook maps [`Gb7Failure`] onto its rejection/502 responses. On
+/// success returns `(creds, region, session_tags, cache_hit)` for the caller to
+/// log and carry to `upstream_request_filter`.
+pub(crate) async fn resolve_gb7_credentials(
+    cache: &gateway_core::aws::CredentialCache,
+    sts: &StsConfig,
+    tags: &[Tag],
+    now: u64,
+) -> std::result::Result<(gateway_core::aws::Credentials, String, Vec<(String, String)>, bool), Gb7Failure>
+{
+    let session_tags = resolve_session_tags(sts, tags)
+        .map_err(|(key, reason)| Gb7Failure::Reject { key, reason })?;
+    let (creds, cached) = crate::aws_auth::credentials_for(cache, sts, &session_tags, now)
+        .await
+        .map_err(|e| Gb7Failure::Exchange(e.to_string()))?;
+    Ok((creds, sts.region.clone(), session_tags, cached))
 }
 
 /// Render an `Option<u64>` token count for a log line (`-` when absent).

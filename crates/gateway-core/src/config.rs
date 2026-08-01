@@ -55,7 +55,20 @@ pub struct Config {
     /// GB-2 (optional): JWT verification for claim-mapped attribution.
     #[serde(default)]
     pub auth: Option<Auth>,
+    /// Tier-2 (optional, Phase 4): signed WASM policy modules. The DECLARATIVE
+    /// half lives here — name, module source, signature, which hooks, and the
+    /// counter schema version — so gateway-core (and the control-plane
+    /// admission gate) can reason about the module set with NO wasmtime
+    /// dependency. The data plane (`gatewayd`, via `gateway-wasm`) verifies the
+    /// signature and compiles the bytes; this crate never links a wasm runtime,
+    /// keeping the two-binary budget intact.
+    #[serde(default)]
+    pub wasm: WasmConfig,
 }
+
+// Tier-2 WASM config types (Phase 4) live in `wasm_config` and are re-exported
+// here so `Config::wasm` and every caller keep one import surface.
+pub use crate::wasm_config::{WasmConfig, WasmHook, WasmModule};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -726,6 +739,11 @@ rejections:
         // An erroring condition (absent header lookup) never selects.
         assert!(cfg.match_route("/cond/x", &ctx()).is_none());
     }
+
+    // The WASM config block's parse + structural validation (defaults, no-hooks,
+    // duplicate names) is exercised in `tests/wasm_config.rs` to keep this file
+    // focused; the types live in `crate::wasm_config`, validation in
+    // `crate::validate::validate_wasm`.
 
     #[test]
     fn bad_cel_condition_fails_config_load() {

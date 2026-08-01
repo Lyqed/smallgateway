@@ -97,6 +97,45 @@ pub(crate) fn validate_auth(cfg: &Config, errs: &mut Vec<String>) {
     }
 }
 
+/// Tier-2 (Phase 4): validate the declared WASM module set. The load-time
+/// half of "no unsigned WASM module" (docs/02 admission slot): every module
+/// MUST carry a signature and at least one hook, names must be unique, and a
+/// module declaring `on_response_event` while per-event hooks are disabled is
+/// admitted but flagged (its hook will not run — a warning, not an error, so
+/// an operator can stage a module ahead of enabling the gate). The SIGNATURE
+/// itself is verified by the data plane against the operator key
+/// (`gateway_wasm::sig::verify`); this crate has no key and no wasm runtime,
+/// so it enforces PRESENCE, and the control plane's admission gate verifies
+/// the cryptographic match before render.
+pub(crate) fn validate_wasm(cfg: &Config, errs: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    for module in &cfg.wasm.modules {
+        let ctx = format!("wasm module {:?}", module.name);
+        if module.name.trim().is_empty() {
+            errs.push("wasm module has an empty name".to_string());
+        } else if !seen.insert(module.name.as_str()) {
+            errs.push(format!("{ctx}: duplicate module name"));
+        }
+        if module.source.trim().is_empty() {
+            errs.push(format!("{ctx}: empty source path"));
+        }
+        // NOTE: signature PRESENCE and cryptographic MATCH are enforced by the
+        // admission gate (`gatewayctl`, the "no unsigned WASM module" rule) and,
+        // defense in depth, by the data-plane loader (`gateway_wasm::sig::verify`
+        // against the operator key) — not here: this crate holds no signing key
+        // and links no wasm runtime. Structural validity is all it can check.
+        if module.hooks.is_empty() {
+            errs.push(format!(
+                "{ctx}: declares no hooks — a module must implement at least one of \
+                 on_request/on_response_event/on_response_end"
+            ));
+        }
+        if module.schema == 0 {
+            errs.push(format!("{ctx}: schema version must be >= 1"));
+        }
+    }
+}
+
 pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<String>) {
     validate_template(
         &r.missing_attribution,

@@ -19,6 +19,9 @@ path = "src/bin/mock_sts.rs"
 
 [dependencies]
 gateway-core = { path = "../gateway-core" }
+# Phase 4: the signed-WASM policy host (wasmtime-embedded, fuel/epoch-bounded).
+# A library — gatewayd stays one of the two binaries; the wasm runtime links in.
+gateway-wasm = { path = "../gateway-wasm" }
 # Phase 2 M1: the fleet wire contract, for control-plane client mode.
 gateway-proto = { path = "../gateway-proto" }
 serde_json = "1"

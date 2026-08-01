@@ -1,38 +1,19 @@
 //! The config-driven Pingora proxy: route resolution (path prefix + CEL
-//! conditions), the scoped attribution contract (GB-1 required keys, GB-2
-//! proven claims, GB-3 assigned pins, CEL-derived values, app-scope
-//! overrides), operator-defined rejections (GB-4), Vertex billing-label
-//! injection (GB-8), STS session-tag credentials + SigV4 signing for
-//! Bedrock (GB-7), and the streaming tap — every response chunk flows
-//! through the provider's adapter and the meter while the identical bytes
-//! stream on to the client, nothing buffered whole.
+//! conditions), the scoped attribution contract (GB-1/2/3 + CEL-derived +
+//! app-scope), operator rejections (GB-4), Vertex labels (GB-8), STS
+//! session-tag credentials + SigV4 (GB-7), tier-2 signed-WASM policy hooks
+//! (Phase 4), and the streaming tap — every chunk flows through the adapter
+//! and the meter while the identical bytes stream on, nothing buffered whole.
 //!
-//! Milestone 2: every request binds one `Arc<Snapshot>` at request start
-//! (`new_ctx`) and consults ONLY that snapshot for its whole lifetime,
-//! streaming included — no torn reads, and an old version drains out with
-//! its last in-flight stream (docs/03-hot-swap.md). Every `[req]` and
-//! `[meter]` line carries `cfg=vN`.
-//!
-//! Milestone 3 request flow (request_filter):
-//! 1. normalize the path, build the CEL context (request meta + verified
-//!    claims), select the route (prefix + condition);
-//! 2. resolve attribution against the route's composed fleet→project→route
-//!    policy (derived CEL values evaluated here; failures leave the key
-//!    unresolved — required keys then reject, fail closed);
-//! 3. if the resolved value of `apps.key` selects an app override,
-//!    re-resolve under the composed route⊕app policy (its templates and
-//!    labels included);
-//! 4. GB-8 (vertex): resolve the effective labels (static /
-//!    from_attribution / CEL); any failure → the effective GB-4
-//!    `missing_attribution` rejection. The merge into the request BODY
-//!    happens in `request_body_filter` (the body is buffered for labeled
-//!    vertex routes only — a malformed JSON body there is refused with a
-//!    plain 400 before any spend can occur);
-//! 5. GB-7 (bedrock + sts): resolve session tags from ATTRIBUTION values
-//!    (never caller-raw — enforced statically at config load and
-//!    re-checked here), get credentials (per-tag-set cache, else one
-//!    AssumeRole exchange), then SigV4-sign the upstream request in
-//!    `upstream_request_filter`.
+//! Every request binds one `Arc<Snapshot>` at request start (`new_ctx`) and,
+//! Phase 4, the WASM module set paired with it, consulting ONLY that binding
+//! for its whole life — no torn reads, and the old version drains out with its
+//! last in-flight stream (docs/03-hot-swap.md). Every `[req]`/`[meter]` line
+//! carries `cfg=vN`. request_filter: normalize path → CEL context → route →
+//! resolve attribution (fleet→project→route, then route⊕app) → GB-1 → GB-5
+//! admit → GB-8 labels → GB-7 credentials → WASM on_request. The per-request
+//! helpers live in `proxy_support`/`proxy_stream`/`proxy_wasm` to keep this
+//! module focused on the `ProxyHttp` trait impl.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -47,25 +28,31 @@ use pingora::prelude::*;
 use gateway_core::adapters::Adapter;
 use gateway_core::attribution::Tag;
 use gateway_core::aws::{CredentialCache, Credentials};
-use gateway_core::budget::{CapId, Verdict};
-use gateway_core::config::{self, ProviderKind, ATTR_HEADER_PREFIX};
+use gateway_core::budget::CapId;
+use gateway_core::config::{ProviderKind, ATTR_HEADER_PREFIX};
 use gateway_core::event::Event;
 use gateway_core::labels;
 use gateway_core::metering::Meter;
 use gateway_core::snapshot::Snapshot;
 
+use gateway_wasm::{BoundModules, Hook};
+
 use crate::aws_auth;
-use crate::budget::{MeterOutcome, NodeBudgets};
+use crate::budget::NodeBudgets;
 use crate::proxy_support::{
-    caller_attrs, eval_ctx, now_unix, opt, resolve_policy, resolve_session_tags, respond_rejection,
-    verified_claims,
+    caller_attrs, eval_ctx, now_unix, respond_rejection, verified_claims,
 };
 use crate::reload::SharedSnapshot;
+use crate::wasm_runtime::WasmRuntime;
 
 pub struct Gateway {
     /// The swap cell. Touched exactly once per request, in `new_ctx`;
     /// every later hook reads the request's own pinned snapshot instead.
     shared: SharedSnapshot,
+    /// Tier-2 (Phase 4): the signed-WASM policy runtime. Bound ONCE per request
+    /// in `new_ctx`, paired atomically with the snapshot version — config vN and
+    /// module set vN together, no torn read (docs/04). `None` -> no runtime.
+    wasm: Option<WasmRuntime>,
     /// GB-7: credentials per unique (role, endpoint, tag-set). Lives
     /// across config swaps on purpose — the key carries every input that
     /// changes the minted credentials.
@@ -95,14 +82,23 @@ impl Gateway {
     }
 
     /// Build with a shared [`NodeBudgets`] — control-plane mode passes the same
-    /// `Arc` the client loop reports/rebalances through.
+    /// `Arc` the client loop reports/rebalances through. No wasm runtime.
     pub fn with_budgets(shared: SharedSnapshot, budgets: Arc<NodeBudgets>) -> Self {
         Gateway {
             shared,
+            wasm: None,
             sts_cache: CredentialCache::new(),
             budgets,
         }
     }
+
+    /// Attach the tier-2 WASM runtime (Phase 4). `main` builds it from the
+    /// bootstrap snapshot and the config dir, then calls this.
+    pub fn with_wasm(mut self, wasm: WasmRuntime) -> Self {
+        self.wasm = Some(wasm);
+        self
+    }
+
 }
 
 /// What the matched route pins down for the rest of the request's life.
@@ -152,10 +148,30 @@ pub struct ReqCtx {
     /// GB-5: set once a mid-stream cut fires. Further chunks are suppressed and
     /// the operator's terminal event is emitted in place of continued content.
     cut: bool,
+    /// Phase 4: the WASM module set bound to THIS request, paired atomically
+    /// with `snapshot` and held for the request's life so an in-flight stream
+    /// keeps its module version until it drains (docs/03 limitation 2). `None`
+    /// -> no wasm runtime.
+    modules: Option<BoundModules>,
+    /// Phase 4: header mutations a WASM `on_request` hook returned, applied in
+    /// `upstream_request_filter` after the resolved-tag insertion.
+    wasm_header_set: BTreeMap<String, String>,
+    wasm_header_remove: Vec<String>,
+    /// Phase 4: whether the per-event WASM hook runs (config gate AND a module
+    /// implements on_response_event), resolved ONCE at bind — the hot loop does
+    /// one bool check, not a lookup per event.
+    wasm_per_event: bool,
 }
 
 impl ReqCtx {
-    fn bound(snapshot: Arc<Snapshot>) -> Self {
+    fn bound(snapshot: Arc<Snapshot>, modules: Option<BoundModules>, per_event: bool) -> Self {
+        // The per-event hot-path gate resolved ONCE: the config must enable
+        // per-event hooks AND a bound module must implement on_response_event.
+        // Either false -> the tap never touches wasm per event (zero cost).
+        let wasm_per_event = per_event
+            && modules
+                .as_ref()
+                .is_some_and(|m| m.wants(Hook::OnResponseEvent));
         ReqCtx {
             snapshot,
             route: None,
@@ -171,6 +187,10 @@ impl ReqCtx {
             caps: Vec::new(),
             last_metered_est: 0,
             cut: false,
+            modules,
+            wasm_header_set: BTreeMap::new(),
+            wasm_header_remove: Vec::new(),
+            wasm_per_event,
         }
     }
 
@@ -223,13 +243,20 @@ impl ProxyHttp for Gateway {
         // Atomic per-request binding: ONE load of the current snapshot at
         // request start; every later hook reads ctx.snapshot, so this
         // request can never observe two config versions.
-        ReqCtx::bound(self.shared.load())
+        let snapshot = self.shared.load();
+        // Phase 4: bind the module set for EXACTLY this snapshot version. The
+        // runtime stored vN's modules before advancing the snapshot cell to vN,
+        // so config and modules bind together — no torn read (docs/04).
+        let (modules, per_event) = match &self.wasm {
+            Some(rt) => (Some(rt.bind(snapshot.version, now_unix())), rt.per_event_enabled()),
+            None => (None, false),
+        };
+        ReqCtx::bound(snapshot, modules, per_event)
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
-        // The pinned snapshot, cloned out of ctx so the borrow checker lets
-        // the rejection paths below take &mut ctx state (an Arc clone: same
-        // snapshot, refcount bump).
+        // The pinned snapshot, cloned out of ctx (an Arc clone) so the rejection
+        // paths below can take &mut ctx state.
         let snap = ctx.snapshot.clone();
         let cfg = &snap.config;
         let v = snap.version;
@@ -238,44 +265,21 @@ impl ProxyHttp for Gateway {
         let method = head.method.clone();
         let raw_path = head.uri.path().to_owned();
 
-        // Dot-segment defense (GB-1/GB-2): resolve `.`/`..` (literal and
-        // %2e-encoded) and merge duplicate slashes BEFORE choosing a route,
-        // then rewrite the request so the upstream sees the same resolved
-        // path. Otherwise `/openai/../claims/...` matches the weaker
-        // /openai contract while an upstream that collapses dot-segments
-        // serves /claims/... — a caller-chosen contract downgrade that
-        // smuggles forged x-attr-* tags past the /claims route's rules.
-        let path = config::normalize_path(&raw_path);
-        if path != raw_path {
-            let query = session.req_header().uri.query().map(str::to_owned);
-            let target = match &query {
-                Some(q) => format!("{path}?{q}"),
-                None => path.clone(),
-            };
-            match http::Uri::try_from(target.as_str()) {
-                Ok(uri) => {
-                    info!("[req] path normalized: {raw_path} -> {path} cfg=v{v}");
-                    session.req_header_mut().set_uri(uri);
-                }
-                Err(e) => {
-                    // Unreachable for a path assembled from valid path
-                    // bytes, but a request-path panic is never acceptable:
-                    // refuse to route what we cannot represent (GB-4
-                    // template, operator's body).
-                    info!(
-                        "[req] {method} {raw_path} -> unrepresentable after normalization ({e}) \
-                         (rejecting: unknown_route) cfg=v{v}"
-                    );
-                    respond_rejection(
-                        session,
-                        &cfg.rejections.unknown_route,
-                        &[("route", raw_path.as_str())],
-                    )
+        // Dot-segment defense (GB-1/GB-2): the helper normalizes + rewrites the
+        // URI so a traversal spelling can never select a weaker contract; the
+        // unrepresentable case rejects with the GB-4 unknown_route template.
+        let path = match crate::proxy_support::normalize_and_rewrite(session, &raw_path, v) {
+            Ok(path) => path,
+            Err(()) => {
+                info!(
+                    "[req] {method} {raw_path} -> unrepresentable after normalization \
+                     (rejecting: unknown_route) cfg=v{v}"
+                );
+                respond_rejection(session, &cfg.rejections.unknown_route, &[("route", raw_path.as_str())])
                     .await?;
-                    return Ok(true);
-                }
+                return Ok(true);
             }
-        }
+        };
 
         // Verified claims feed claim mappings, CEL conditions/derivations,
         // and label expressions alike.
@@ -296,27 +300,16 @@ impl ProxyHttp for Gateway {
         };
         let caller = caller_attrs(session.req_header());
 
-        // Phase 1 of resolution: the composed fleet→project→route policy.
-        // Deliberately LENIENT — enforcement waits for the final policy of
-        // the chain, because the app scope (selected by a RESOLVED value)
-        // may itself satisfy a still-missing requirement (e.g. pin it).
-        let mut policy = route.policy();
-        let mut resolution =
-            resolve_policy(policy, &caller, claims.as_ref(), &cel_ctx, &route.prefix);
-
-        // Phase 2: the app scope. The RESOLVED value of apps.key selects
-        // the override; the request re-resolves under route⊕app (which may
-        // add requirements, satisfy them, override pins, templates, labels).
-        if let Some(apps) = &cfg.apps {
-            let app_value = resolution.value(&apps.key).map(str::to_string);
-            if let Some(app_policy) = app_value.as_deref().and_then(|value| route.app_policy(value)) {
-                let value = app_value.expect("checked above");
-                info!("[app {}] {}={value} -> app override cfg=v{v}", route.prefix, apps.key);
-                policy = app_policy;
-                resolution =
-                    resolve_policy(policy, &caller, claims.as_ref(), &cel_ctx, &route.prefix);
-            }
-        }
+        // Two-phase resolution (fleet→project→route, then route⊕app if the
+        // resolved apps.key value selects an override) — the loop lives in the
+        // helper; `policy` is the FINAL policy enforcement runs against.
+        let (policy, resolution) = crate::proxy_support::resolve_with_app_scope(
+            route,
+            cfg.apps.as_ref(),
+            &caller,
+            claims.as_ref(),
+            &cel_ctx,
+        );
 
         // GB-1 enforcement against the FINAL policy: every required key
         // satisfied (assigned, proven, derived, or caller) or the request
@@ -337,55 +330,31 @@ impl ProxyHttp for Gateway {
         }
         let tags = resolution.tags;
 
-        // GB-5: for each resolved tag that this policy caps, admit the request
-        // against the node-local budget BEFORE it reaches the upstream. A value
-        // already at its cap is rejected with the effective GB-4
-        // `missing_attribution` template (the same operator body that makes the
-        // hard cap livable, per GB-4), naming the exhausted spender. The common
-        // path is one in-memory check per capped tag — no control-plane hop.
-        let mut caps: Vec<(CapId, u64)> = Vec::new();
-        for tag in &tags {
-            if let Some(cap) = policy.cap_for(&tag.key, &tag.value) {
-                let id = CapId::new(&tag.key, &tag.value);
-                match self.budgets.admit(&id, Some(cap)) {
-                    Verdict::Deny { cap } => {
-                        let spent = self
-                            .budgets
-                            .snapshot(&id)
-                            .map(|(_, _, s)| s)
-                            .unwrap_or(cap);
-                        info!(
-                            "[gb5 {}] {id} DENIED at admission: spent {spent}/{cap} tokens \
-                             (rejecting: missing_attribution) cfg=v{v}",
-                            route.prefix
-                        );
-                        respond_rejection(
-                            session,
-                            &policy.missing_attribution,
-                            &[
-                                ("key", id.to_string().as_str()),
-                                ("route", route.prefix.as_str()),
-                                ("cap", cap.to_string().as_str()),
-                                ("spend", spent.to_string().as_str()),
-                            ],
-                        )
-                        .await?;
-                        return Ok(true);
-                    }
-                    Verdict::Escalate => {
-                        // Near the local-share limit: keep serving this request,
-                        // but flag it so the control-plane client escalates to a
-                        // synchronous check before the next spend crosses the cap.
-                        info!(
-                            "[gb5 {}] {id} at/above ~90% of local share; will escalate cfg=v{v}",
-                            route.prefix
-                        );
-                        caps.push((id, cap));
-                    }
-                    Verdict::Allow => caps.push((id, cap)),
-                }
+        // GB-5: admit against the node-local budget for every capped tag before
+        // the upstream (loop in the helper); a value at its cap rejects with the
+        // GB-4 template, naming the exhausted spender.
+        let caps = match crate::proxy_stream::admit_caps(&self.budgets, policy, &tags, &route.prefix, v) {
+            Ok(caps) => caps,
+            Err(d) => {
+                info!(
+                    "[gb5 {}] {} DENIED at admission: spent {}/{} tokens \
+                     (rejecting: missing_attribution) cfg=v{v}",
+                    route.prefix, d.id, d.spent, d.cap
+                );
+                respond_rejection(
+                    session,
+                    &policy.missing_attribution,
+                    &[
+                        ("key", d.id.to_string().as_str()),
+                        ("route", route.prefix.as_str()),
+                        ("cap", d.cap.to_string().as_str()),
+                        ("spend", d.spent.to_string().as_str()),
+                    ],
+                )
+                .await?;
+                return Ok(true);
             }
-        }
+        };
 
         let kind = cfg.providers[&route.provider].kind;
 
@@ -393,13 +362,7 @@ impl ProxyHttp for Gateway {
         // upstream sees anything. The body merge happens in
         // request_body_filter.
         if kind == ProviderKind::Vertex && !policy.labels.is_empty() {
-            let attribution = tags
-                .iter()
-                .map(|t| (t.key.clone(), t.value.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let mut label_ctx = cel_ctx.clone();
-            label_ctx.attribution = attribution.clone();
-            match labels::resolve(&policy.labels, &attribution, &label_ctx) {
+            match crate::proxy_support::resolve_vertex_labels(&policy.labels, &tags, &cel_ctx) {
                 Ok(resolved) => {
                     info!(
                         "[gb8 {}] labels{{{}}} cfg=v{v}",
@@ -428,11 +391,27 @@ impl ProxyHttp for Gateway {
             }
         }
 
-        // GB-7: session-tag credentials for bedrock providers with sts.
+        // GB-7: session-tag credentials for bedrock providers with sts. The
+        // resolution + exchange live in the helper; here we map its two
+        // fail-closed paths (GB-4 reject vs 502) onto responses.
         if let Some(sts) = &cfg.providers[&route.provider].sts {
-            let session_tags = match resolve_session_tags(sts, &tags) {
-                Ok(t) => t,
-                Err((key, reason)) => {
+            use crate::proxy_support::{resolve_gb7_credentials, Gb7Failure};
+            match resolve_gb7_credentials(&self.sts_cache, sts, &tags, now_unix()).await {
+                Ok((creds, region, session_tags, cached)) => {
+                    info!(
+                        "[gb7 {}] session_tags{{{}}} access_key={} cache={} cfg=v{v}",
+                        route.prefix,
+                        session_tags
+                            .iter()
+                            .map(|(k, val)| format!("{k}={val}"))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        creds.access_key_id,
+                        if cached { "hit" } else { "miss" },
+                    );
+                    ctx.aws = Some(AwsSigning { creds, region });
+                }
+                Err(Gb7Failure::Reject { key, reason }) => {
                     info!(
                         "[req] {method} {path} -> route={} (rejecting: session tag: {reason}) cfg=v{v}",
                         route.prefix
@@ -445,28 +424,9 @@ impl ProxyHttp for Gateway {
                     .await?;
                     return Ok(true);
                 }
-            };
-            match aws_auth::credentials_for(&self.sts_cache, sts, &session_tags, now_unix()).await
-            {
-                Ok((creds, cached)) => {
-                    info!(
-                        "[gb7 {}] session_tags{{{}}} access_key={} cache={} cfg=v{v}",
-                        route.prefix,
-                        session_tags
-                            .iter()
-                            .map(|(k, val)| format!("{k}={val}"))
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        creds.access_key_id,
-                        if cached { "hit" } else { "miss" },
-                    );
-                    ctx.aws = Some(AwsSigning { creds, region: sts.region.clone() });
-                }
-                Err(e) => {
-                    // Fail closed: a request whose invoice-grade identity
-                    // cannot be minted never reaches Bedrock. This is an
-                    // exchange failure, not an attribution failure, so it
-                    // is a 502, loudly logged — not a GB-4 template.
+                Err(Gb7Failure::Exchange(e)) => {
+                    // A minted-identity failure is a 502 (infra), loudly logged
+                    // — never the operator's GB-4 body.
                     error!("[gb7 {}] credential exchange FAILED: {e} cfg=v{v}", route.prefix);
                     return Err(Error::explain(
                         HTTPStatus(502),
@@ -493,6 +453,38 @@ impl ProxyHttp for Gateway {
         ctx.tags = tags;
         ctx.caps = caps;
         info!("[attr {}] {} cfg=v{v}", route.prefix, ctx.tag_summary());
+
+        // Phase 4: tier-2 WASM `on_request` chain (adjudicated request in,
+        // continue/mutate/reject out; a fault fails CLOSED to reject). Runs
+        // AFTER attribution; the decision lives in the helper, the async GB-4
+        // reject stays here.
+        let wasm_outcome = ctx.modules.as_ref().and_then(|modules| {
+            crate::proxy_wasm::apply_on_request(
+                modules,
+                method.as_str(),
+                &path,
+                &cel_ctx.headers,
+                &ctx.tags,
+                &route.prefix,
+                v,
+            )
+        });
+        match wasm_outcome {
+            Some(crate::proxy_wasm::RequestOutcome::Proceed { header_set, header_remove }) => {
+                ctx.wasm_header_set = header_set;
+                ctx.wasm_header_remove = header_remove;
+            }
+            Some(crate::proxy_wasm::RequestOutcome::Reject { reason }) => {
+                respond_rejection(
+                    session,
+                    &policy.missing_attribution,
+                    &[("key", reason.as_str()), ("route", route.prefix.as_str())],
+                )
+                .await?;
+                return Ok(true);
+            }
+            None => {}
+        }
         Ok(false)
     }
 
@@ -543,6 +535,14 @@ impl ProxyHttp for Gateway {
             upstream_request
                 .insert_header(format!("{ATTR_HEADER_PREFIX}{}", tag.key), tag.value.clone())?;
         }
+
+        // Phase 4: apply the WASM `on_request` header transform on the
+        // adjudicated request (removals then sets).
+        crate::proxy_wasm::apply_header_mutations(
+            upstream_request,
+            &ctx.wasm_header_set,
+            &ctx.wasm_header_remove,
+        )?;
 
         // GB-8: the body will be rewritten in request_body_filter, so its
         // length changes — switch the upstream leg to chunked framing.
@@ -606,17 +606,11 @@ impl ProxyHttp for Gateway {
         }
     }
 
-    /// The tap (promoted from Spike B), now the GB-5 mid-stream enforcement
-    /// point too. Pingora hands each body chunk as `&mut Option<Bytes>` on its
-    /// way downstream; we feed a copy of the bytes to the adapter and the meter,
-    /// then charge the INCREMENT of estimated output tokens against every capped
-    /// spender for this request. When a spender's running tally crosses the
-    /// bound (the cap, or the held share under partition) the stream is CUT: the
-    /// operator's GB-4 terminal event (the typed streaming template) replaces
-    /// the outgoing content and every later chunk is suppressed. A cap tightened
-    /// mid-stream does NOT retroactively apply — this meters the version the
-    /// request bound (docs/03 limitation 2); the live estimate is reconciled to
-    /// the provider's terminal usage frame at stream end.
+    /// The tap (promoted from Spike B): feed each downstream body chunk to the
+    /// adapter + meter, run the gated per-event WASM hook, and charge/cut GB-5
+    /// spenders. A cap tightened mid-stream does NOT retroactively apply — this
+    /// meters the version the request bound (docs/03 limitation 2); the live
+    /// estimate reconciles to the provider's terminal frame at stream end.
     fn response_body_filter(
         &self,
         _session: &mut Session,
@@ -637,6 +631,10 @@ impl ProxyHttp for Gateway {
             return Ok(None);
         }
 
+        // Phase 4: the per-event WASM decision, collected while the adapter
+        // borrow is held, applied after. A cut from a module short-circuits
+        // exactly like GB-5's mid-stream cut (shared machinery).
+        let mut wasm_cut_reason: Option<String> = None;
         if let Some(chunk) = body.as_ref() {
             if !chunk.is_empty() {
                 ctx.body_bytes += chunk.len();
@@ -647,62 +645,64 @@ impl ProxyHttp for Gateway {
                         ctx.meter.observe(&event);
                         ctx.count(&event);
                         info!("[tap {}] {:?}", kind.name(), event);
+
+                        // The HOT-PATH WASM hook, DOUBLE-GATED (config
+                        // per_event_hooks AND a module implements the hook,
+                        // resolved once into `wasm_per_event`). Off -> one bool
+                        // check, zero marshalling: the measured budget gate
+                        // (docs/04; ~12.7us/event when on, see gateway-wasm README).
+                        if ctx.wasm_per_event && wasm_cut_reason.is_none() {
+                            if let Some(modules) = &ctx.modules {
+                                wasm_cut_reason = crate::proxy_wasm::event_cut_reason(
+                                    modules,
+                                    &event,
+                                    ctx.meter.estimated_output_tokens(),
+                                );
+                            }
+                        }
                     }
                 }
                 ctx.adapter = adapter;
             }
         }
 
+        // A WASM per-event cut and the GB-5 mid-stream cut both use the SAME
+        // GB-4 terminal-event machinery: replace the outgoing chunk with the
+        // operator's streaming template and latch `ctx.cut` so later chunks are
+        // suppressed. The bound snapshot's streaming template is shared by both.
+        let streaming = ctx
+            .snapshot
+            .config
+            .rejections
+            .missing_attribution
+            .streaming
+            .clone();
+        let route_prefix = ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
+        if let Some(reason) = wasm_cut_reason {
+            if !ctx.cut {
+                error!(
+                    "[wasm {route_prefix}] on_response_event -> CUT ({reason}); GB-4 terminal \
+                     event cfg=v{}",
+                    ctx.snapshot.version
+                );
+                *body = Some(crate::proxy_wasm::render_wasm_cut(streaming.as_ref(), &reason, &route_prefix));
+                ctx.cut = true;
+            }
+        }
+
         // GB-5 mid-stream enforcement: charge the estimated-output-token
-        // INCREMENT since the last tap against every capped spender, and cut on
-        // the first that crosses its bound.
+        // increment against every capped spender; the first to cross its bound
+        // cuts (the loop lives in the helper so this hot method stays focused).
         if !ctx.caps.is_empty() && !ctx.cut {
             let est = ctx.meter.estimated_output_tokens();
             let delta = est.saturating_sub(ctx.last_metered_est);
             ctx.last_metered_est = est;
-            if delta > 0 {
-                let route_prefix =
-                    ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
-                // Clone the caps out so the &mut ctx borrow for the cut below
-                // is free of the immutable caps borrow.
-                let caps = ctx.caps.clone();
-                for (id, cap) in &caps {
-                    match self.budgets.meter(id, Some(*cap), delta) {
-                        MeterOutcome::Cut { id, cap } => {
-                            let spent = self
-                                .budgets
-                                .snapshot(&id)
-                                .map(|(_, _, s)| s)
-                                .unwrap_or(cap);
-                            error!(
-                                "[gb5 {route_prefix}] {id} EXCEEDED mid-stream: spent \
-                                 {spent}/{cap} tokens; CUTTING the stream with the GB-4 \
-                                 terminal event cfg=v{}",
-                                ctx.snapshot.version
-                            );
-                            // Replace the outgoing chunk with the operator's
-                            // GB-4 terminal event and latch the cut so every
-                            // later chunk is suppressed.
-                            let streaming = ctx
-                                .snapshot
-                                .config
-                                .rejections
-                                .missing_attribution
-                                .streaming
-                                .as_ref();
-                            *body = Some(crate::proxy_support::render_cut_event(
-                                streaming,
-                                &id,
-                                cap,
-                                spent,
-                                &route_prefix,
-                            ));
-                            ctx.cut = true;
-                            break;
-                        }
-                        MeterOutcome::Continue => {}
-                    }
-                }
+            let caps = ctx.caps.clone();
+            if let Some(cut) = crate::proxy_stream::charge_caps_and_cut(
+                &self.budgets, &caps, delta, streaming.as_ref(), &route_prefix, ctx.snapshot.version,
+            ) {
+                *body = Some(cut);
+                ctx.cut = true;
             }
         }
 
@@ -713,25 +713,29 @@ impl ProxyHttp for Gateway {
             // cfg=vN names the version that metered THIS stream — the
             // bounded-staleness evidence during a drain overlap.
             let report = ctx.meter.report();
-            info!(
-                "[meter {}] cfg=v{} provider={}({}) attribution{{{}}} events{{{}}} chunks={} bytes={} \
-                 est_output_tokens={} auth_input_tokens={} auth_output_tokens={} est_err={}",
-                binding.prefix,
+            crate::proxy_stream::log_meter_report(
+                &binding.prefix,
                 ctx.snapshot.version,
-                binding.provider,
+                &binding.provider,
                 binding.kind.name(),
-                ctx.tag_summary(),
-                ctx.event_summary(),
+                &ctx.tag_summary(),
+                &ctx.event_summary(),
                 ctx.body_chunks,
                 ctx.body_bytes,
-                report.estimated_output_tokens,
-                opt(report.authoritative_input_tokens),
-                opt(report.authoritative_output_tokens),
-                report
-                    .error_pct
-                    .map(|p| format!("{p:+.1}%"))
-                    .unwrap_or_else(|| "n/a".to_string()),
+                &report,
             );
+
+            // Phase 4: the `on_response_end` WASM hook — the terminal counts
+            // (reconciled) handed to any module that wants them (custom billing
+            // emit, audit). Observability, not enforcement; never Continue.
+            if let Some(modules) = &ctx.modules {
+                crate::proxy_wasm::run_on_response_end(
+                    modules,
+                    &report,
+                    &binding.prefix,
+                    ctx.snapshot.version,
+                );
+            }
 
             // GB-5: reconcile each capped spender's live estimate for THIS
             // stream to the provider's authoritative terminal frame (docs/01

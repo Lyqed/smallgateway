@@ -157,6 +157,7 @@ impl AdmissionPolicy {
         failures.extend(builtin::rejection_templates_present(&cfg));
         failures.extend(builtin::no_forbidden_construct(flat_yaml));
         failures.extend(builtin::override_governance(&cfg, self.factor()));
+        failures.extend(builtin::no_unsigned_wasm_module(&cfg));
 
         // CEL rules over the candidate document.
         let doc = candidate_to_json(flat_yaml);
@@ -373,6 +374,35 @@ pub mod builtin {
                         ),
                     });
                 }
+            }
+        }
+        out
+    }
+
+    /// "No unsigned WASM module" (docs/02 admission slot; docs/04 Phase 4).
+    /// Every declared tier-2 module MUST carry a signature — a module with an
+    /// absent or blank signature is BLOCKED at admission, before it can be
+    /// rendered into a snapshot. Cryptographic MATCH (the signature actually
+    /// verifying against the operator key over the module bytes) is checked by
+    /// the data-plane loader at config load (`gateway_wasm::sig::verify`),
+    /// which holds the key and the bytes; admission owns the presence gate,
+    /// which is a pure function of the candidate and thus deterministic in CI.
+    pub fn no_unsigned_wasm_module(cfg: &Config) -> Vec<RuleFailure> {
+        let mut out = Vec::new();
+        for module in &cfg.wasm.modules {
+            let signed = module
+                .signature
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty());
+            if !signed {
+                out.push(RuleFailure {
+                    rule: "no-unsigned-wasm-module".to_string(),
+                    detail: format!(
+                        "wasm module {:?} carries no signature — unsigned WASM modules are \
+                         rejected at admission; sign it with the operator key (docs/02)",
+                        module.name
+                    ),
+                });
             }
         }
         out
@@ -642,6 +672,10 @@ rejections:
             verdict.failures()
         );
     }
+
+    // The "no unsigned WASM module" admission rule is exercised end to end in
+    // `tests/admission_wasm.rs` (an integration test, to keep this file
+    // focused); the built-in itself lives in `builtin::no_unsigned_wasm_module`.
 
     #[test]
     fn a_broken_cel_rule_blocks_rather_than_silently_passing() {

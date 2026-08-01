@@ -1,0 +1,57 @@
+Gateway Project — Phase 4 WASM policy SDK + GB-9 hot-swap demo
+(real wasmtime host; fuel + epoch bounds; signed modules only)
+
+========== [1] signed module loaded and ENFORCING ==========
+  loaded signed module 'header-policy' (on_request header transform)
+  on_request -> MutateHeaders set={"x-policy": "enforced"} remove=[]
+  loaded signed module 'org-rule' (on_request custom rejection)
+  on_request -> Reject reason="blocked-by-policy" (fails to the GB-4 template)
+  RESULT: a signed module enforces header transforms and custom rejections.
+
+========== [2] unsigned module REJECTED at admission ==========
+  attempting to load module 'unsigned' with NO signature...
+  REJECTED: module "unsigned" rejected: module carries no signature (unsigned)
+  attempting to load a TAMPERED module (bytes changed after signing)...
+  REJECTED: module "tampered" rejected: module signature does not match the configured signing key
+  RESULT: unsigned and tampered modules never load (fail closed).
+
+========== [3] fuel-burning module TERMINATED, fails CLOSED (not hanging) ==========
+  loaded 'burner' (infinite loop on_request), fuel budget = 500000
+  direct host call returned in 190.344µs: Err(OutOfFuel) (terminated, did NOT hang)
+  BoundModules decision -> Reject { reason: "wasm-module-fault:burner" }
+  RESULT: a looping module is fuel-terminated and fails the route to GB-4 — never Continue, never a hang.
+
+========== [4] MEASURED per-event hot-path cost (the named risk) ==========
+  events/stream=203 iters=2000 (fresh-instance isolation model)
+  baseline (no wasm) : 0.002 us/event  (374360199 events/s)
+  wasm per-event     : 10.887 us/event  (91846 events/s)
+  ADDED per event    : 10.885 us  (10885 ns)
+  throughput delta   : +100.0%
+  HONEST CALL: 10.885 us/event is TOO EXPENSIVE for the per-event streaming path.
+  -> per-event hooks are GATED OFF by default (config wasm.per_event_hooks=false).
+     on_request and on_response_end (once per request/stream) are promised;
+     per-event streaming hooks stay behind the measured budget (docs/04, README).
+
+========== [5] atomic module+config swap; in-flight stream keeps OLD version (drain) ==========
+  in-flight request bound module-set v1 -> Continue
+  ...config swaps v1 -> v2 (mutate module) mid-stream...
+  in-flight request (still bound v1) -> Continue  [pinned, no torn read]
+  new request (bound v2)             -> MutateHeaders { set: {"x-policy": "enforced"}, remove: [] }
+  RESULT: two module versions live at once; the in-flight stream drains on its bound version.
+
+========== [6] stateful-module MIGRATION across a swap (docs/03 limitation 3) ==========
+  bind v1 (schema 1): Initialized { schema: 1 }
+  module accrues counter tenant-a=42
+  swap (schema 1->1, new code): Inherited { schema: 1, keys: 1 } -> counter tenant-a=42
+  swap (schema 1->2, migration x10): Migrated { from: 1, to: 2, keys: 1 } -> counter tenant-a=420
+  swap (schema 2->3, NO migration): Reset { from: 2, to: 3, window_secs: 30 }
+  reset modules (bounded-overspend surface): ["quota"]
+  RESULT: counters inherit / migrate on schema bump, or RESET with a STATED bounded window — limitation 3 addressed.
+
+========== [7] break-glass with TTL (visible, temporary, auto-reverting) ==========
+  break-glass pinned until unix=200 (empty set = all modules disabled)
+  within window (now=100) -> Continue  [modules disabled]
+  after expiry (now=250) -> MutateHeaders { set: {"x-policy": "enforced"}, remove: [] }  [auto-reverted to the desired module]
+  RESULT: break-glass disables modules for a bounded TTL, then auto-reverts to desired.
+
+========== ALL PROOFS COMPLETE ==========

@@ -28,3 +28,4 @@ pub mod snapshot;
 pub mod sse;
 pub mod template;
 pub mod validate;
+pub mod wasm_config;

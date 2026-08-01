@@ -67,8 +67,9 @@ and the run writes the machine-readable summary `target/conformance.json`
 | GB-6 native alerts | **Implemented** (soft 80% + hard cap fire from the enforcement layer; log + webhook-shaped sink) | `gateway_core::budget` (`AlertLatch`), `gatewayd::budget` (`alerts_fire_from_the_meter_at_soft_then_hard`), `gatewayctl::tests::budget` (`a_fleet_wide_spend_crossing_fires_a_gb6_alert_from_the_ingest`) |
 | GB-7 invoice-grade attribution on AWS | **Mechanism implemented** (mock-verified; live AWS is a documented follow-up, below) | `gb7_session_tags_ride_the_credentials_to_bedrock`, `gb7_credentials_cached_per_tag_set_with_expiry`, `gb7_caller_raw_session_tag_rejected_at_config_load` |
 | GB-8 invoice-grade attribution on Vertex | **Implemented** (same semantics as our upstream agentgateway PR, native) | `gb8_operator_labels_merged_into_body_operator_wins`, `gb8_unresolvable_label_fails_closed_with_gb4_template` |
-| GB-9 hot-swappable config | **Implemented** (single node; fleet distribution via control-plane client mode is Phase 2 M1 — the same reload path, one more trigger) | reload/proxy unit tests + demo scenarios 7-9; control-plane-mode reload tests; `../gatewayctl/scripts/fleet-demo.sh` |
+| GB-9 hot-swappable config | **Implemented — full doc-03 semantics (Phase 4)**: atomic config+**module** binding per snapshot, per-stream drain, versioned counter schemas with migration hooks, break-glass with TTL. Single node; fleet distribution is the control-plane phase (same reload path, one more trigger). | reload/proxy unit tests + demo scenarios 7-9; `wasm_runtime` tests (atomic module bind, drain, unsigned-fails-bootstrap, break-glass revert); `../gateway-wasm/scripts/demo.sh` |
 | Tier-1 CEL (conditions, derivations, label exprs) | **Implemented** (compile-at-load, depth/cost limits, comprehensions banned, sandboxed) | `cel_route_condition_gates_matching_beyond_prefix`, `cel_derived_attribution_value_from_claim_transform`, `cel_comprehension_label_rejected_at_config_load` |
+| Tier-2 WASM policy modules | **Implemented (Phase 4, `crates/gateway-wasm`)**: signed modules only (fuel + epoch bounded, no ambient I/O), `on_request`/`on_response_end` hooks promised; per-event streaming hooks **gated off by default** behind the measured ~11.7 µs/event budget (the named risk, measured — see `../gateway-wasm/README.md`). | `gateway-wasm` unit + `sandbox_and_bounds` integration tests; `wasm_runtime` tests; `../gateway-wasm/scripts/demo.sh` |
 | Scoped chain composition | **Implemented** (exhaustive precedence tests in `gateway-core/tests/scope_precedence.rs`) | `scope_chain_composes_fleet_project_route_app` |
 
 ## A note on GB-2 (identity from a verified login)
@@ -295,15 +296,19 @@ The doc-03 semantics (`docs/03-hot-swap.md`), made real for a single node:
   started with. This is doc 03, limitation 2 — a bounded-staleness
   semantic to state, not a bug to fix. The `cfg=vN` on the `[meter]` line
   is the error bound made visible.
-- **No stateful-policy migration yet.** Anything that owns counters
-  (budgets, rate limits, quota shares) is a state-migration problem across
-  a swap — inherit versioned counters or reset them (doc 03, limitation 3).
-  GB-5 budget counters deliberately live OUTSIDE snapshots (like the GB-7
-  credential cache): a config swap changes the *cap* a request reads from its
-  pinned policy, never the running counters, so the counter keeps accruing
-  across the swap. **Versioned counter schemas with migration hooks across a
-  hot-swap stay deferred to Phase 4** (doc 03 limitation 3) — today a swap
-  carries the counter forward as-is rather than migrating a changed schema.
+- **Stateful-policy migration — DELIVERED in Phase 4** (`crates/gateway-wasm`
+  `state.rs`, and `wasm_runtime.rs` here). A WASM module that owns counters
+  gets a versioned counter schema and a migration hook: on a swap,
+  `ModulePlan::diff` **inherits** counters on an unchanged schema, **migrates**
+  them (transformed) on a schema bump with a declared migration, or **resets**
+  them with a **stated bounded window** on a bump with none — never silent
+  (doc 03 limitation 3, now addressed). The counters live OUTSIDE snapshots
+  (like GB-5's budget counters and the GB-7 credential cache), so they survive
+  the swap and migrate per the module's declared schema. GB-5 budget counters
+  themselves still carry forward as-is (their cap is per-pinned-policy, not a
+  migratable schema). The migration *catalog* (declaring per-module migration
+  chains) is a wired seam (`migrations_for`), empty today — so an undeclared
+  schema bump resets with the stated window, the honest default.
 - **GB-5 durable counters are in-memory.** Postgres-backed durable spend
   counters are deferred and, per docs/07, never truth; wipe the state and the
   next round of usage telemetry rebuilds the shares. Richer GB-6 alert sinks

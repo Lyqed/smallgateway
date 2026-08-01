@@ -14,8 +14,11 @@ mod aws_auth;
 mod budget;
 mod client;
 mod proxy;
+mod proxy_stream;
 mod proxy_support;
+mod proxy_wasm;
 mod reload;
+mod wasm_runtime;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,6 +37,10 @@ use reload::{Reloader, SharedSnapshot};
 /// Poll watcher default: "a few seconds" of staleness for file-edit-only
 /// operators; SIGHUP is the immediate path.
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 3;
+
+/// Phase 4 break-glass: a SIGUSR1 disables all WASM modules for this bounded,
+/// auto-reverting window (docs/04 item 3, "visible, temporary, auto-reverting").
+const WASM_BREAK_GLASS_TTL_SECS: u64 = 300;
 
 /// Where a node's config comes from. `File` is the standalone Phase 1 mode
 /// (a local YAML, SIGHUP + poll); `ControlPlane` is the Phase 2 fleet mode
@@ -164,6 +171,10 @@ fn main() {
     // source was chosen. In BOTH modes the snapshot is a validated v1 that must
     // exist before serving — a node with no valid config never serves a
     // request (fail-fast, unchanged from milestone 1).
+    // Phase 4: the WASM runtime, built from the bootstrap snapshot in file
+    // mode and shared with the proxy. Attached below via Gateway::with_wasm.
+    let mut wasm_runtime: Option<wasm_runtime::WasmRuntime> = None;
+
     let shared = match &cli.source {
         ConfigSource::File(path) => {
             let reloader = match Reloader::bootstrap(path.clone()) {
@@ -175,6 +186,30 @@ fn main() {
             };
             let shared = reloader.shared();
             log_active_routes(&shared, &format!("file {}", path.display()));
+
+            // Phase 4: build the tier-2 WASM runtime from the bootstrap
+            // snapshot (loads + verifies + compiles the declared module set,
+            // fail-fast: a bad module set never serves). The config dir is the
+            // base for each module's `source` path. Then install the swap hook
+            // so every subsequent reload rebinds the module set atomically.
+            let base_dir = path.parent().map(|p| p.to_path_buf());
+            let boot = reloader.shared().load();
+            match wasm_runtime::WasmRuntime::bootstrap(&boot, base_dir) {
+                Ok(rt) => {
+                    let rt_for_hook = rt.clone();
+                    reloader.set_swap_hook(Box::new(move |old, next| {
+                        rt_for_hook.on_swap(old, next).map(|_| ())
+                    }));
+                    // Break-glass: SIGUSR1 disables all modules for a bounded
+                    // window (docs/04 item 3), auto-reverting on expiry.
+                    rt.clone().spawn_break_glass_listener(WASM_BREAK_GLASS_TTL_SECS);
+                    wasm_runtime = Some(rt);
+                }
+                Err(e) => {
+                    eprintln!("gatewayd: WASM module set failed to load: {e}");
+                    std::process::exit(1);
+                }
+            }
 
             // File-mode triggers: SIGHUP + poll, funneling through
             // Reloader::reload; in-flight requests keep their bound snapshot.
@@ -230,8 +265,11 @@ fn main() {
     let mut server = Server::new(None).expect("pingora server init");
     server.bootstrap();
 
-    let mut service =
-        http_proxy_service(&server.configuration, Gateway::with_budgets(shared, budgets));
+    let mut gateway = Gateway::with_budgets(shared, budgets);
+    if let Some(rt) = wasm_runtime {
+        gateway = gateway.with_wasm(rt);
+    }
+    let mut service = http_proxy_service(&server.configuration, gateway);
     service.add_tcp(&cli.listen);
     server.add_service(service);
     server.run_forever();

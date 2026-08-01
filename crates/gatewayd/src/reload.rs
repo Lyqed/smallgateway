@@ -78,6 +78,14 @@ pub struct Reloader {
     /// them in the wrong order — a version regression the lock makes
     /// impossible.
     reload_lock: Mutex<()>,
+    /// Phase 4: an optional swap observer run UNDER the reload lock, AFTER a
+    /// successful render but BEFORE the snapshot cell advances. It binds the
+    /// new snapshot's WASM module set (paired atomically with the version) and
+    /// may FAIL — a module that will not verify/compile NACKs the whole
+    /// snapshot, so config and modules bind together or not at all (docs/04
+    /// atomic module binding). `None` -> no wasm runtime.
+    #[allow(clippy::type_complexity)]
+    swap_hook: Mutex<Option<Box<dyn Fn(u64, &Snapshot) -> Result<(), String> + Send + Sync>>>,
 }
 
 impl Reloader {
@@ -91,6 +99,7 @@ impl Reloader {
             renderer,
             path: Some(path),
             reload_lock: Mutex::new(()),
+            swap_hook: Mutex::new(None),
         })
     }
 
@@ -106,11 +115,23 @@ impl Reloader {
             renderer,
             path: None,
             reload_lock: Mutex::new(()),
+            swap_hook: Mutex::new(None),
         })
     }
 
     pub fn shared(&self) -> SharedSnapshot {
         self.shared.clone()
+    }
+
+    /// Install the Phase 4 swap observer (the WASM module-set binder). Called
+    /// once at startup after the runtime is built; runs under the reload lock
+    /// on every subsequent swap, before the snapshot cell advances.
+    #[allow(clippy::type_complexity)]
+    pub fn set_swap_hook(
+        &self,
+        hook: Box<dyn Fn(u64, &Snapshot) -> Result<(), String> + Send + Sync>,
+    ) {
+        *self.swap_hook.lock().expect("swap hook lock") = Some(hook);
     }
 
     /// The file path in file mode; `None` in control-plane mode.
@@ -179,6 +200,23 @@ impl Reloader {
         match self.renderer.render_text(text, source) {
             Ok(next) => {
                 let (old, new) = (active.version, next.version);
+                // Phase 4: bind the new snapshot's WASM module set BEFORE the
+                // snapshot cell advances (the store below). The hook stores
+                // vN's modules keyed by version so a later vN reader finds
+                // them — atomic config+module binding. A module that will not
+                // verify/compile makes the hook FAIL, and the whole snapshot
+                // NACKs: config and modules bind together or not at all.
+                if let Some(hook) = self.swap_hook.lock().expect("swap hook lock").as_ref() {
+                    if let Err(e) = hook(old, &next) {
+                        error!(
+                            "[reload] REJECTED (NACK, trigger={trigger}): new config's WASM \
+                             module set failed to bind ({e}); still serving cfg=v{} hash={}",
+                            active.version,
+                            active.short_hash(),
+                        );
+                        return ReloadOutcome::Rejected { active: active.version };
+                    }
+                }
                 info!(
                     "[reload] swapped cfg=v{old} -> v{new} hash={} at_unix={} \
                      trigger={trigger}; in-flight streams drain on v{old}",
