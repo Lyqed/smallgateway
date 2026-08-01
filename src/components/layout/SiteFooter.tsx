@@ -56,7 +56,7 @@ export function SiteFooter() {
             </a>
           </p>
           <p className="voice-mono text-xs text-[oklch(66%_0.012_255)]">
-            You don&rsquo;t need to buy anything. Yet.
+            No procurement required to build against it.
           </p>
         </div>
       </div>

@@ -95,7 +95,7 @@ export function OrbitArc({ className }: MarkProps) {
         strokeLinecap="round"
         opacity="0.8"
       />
-      <circle cx="288" cy="14" r="7" fill="var(--teal)" />
+      <circle cx="288" cy="14" r="7" fill="var(--steel)" />
     </svg>
   );
 }

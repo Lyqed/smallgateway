@@ -80,9 +80,9 @@ export function Contribute() {
             </div>
 
             <p className="voice-mono mt-8 max-w-2xl border-t border-violet/20 pt-5 text-xs leading-relaxed text-steel-dark">
-              license: Apache-2.0 is the working assumption, chosen before the
-              repo goes public. Deferred, deliberately, like everything else
-              that can be.
+              license: Apache-2.0 is the working assumption, to be fixed before
+              the repo goes public. Deferred until then, in keeping with the
+              defer-by-default rule.
             </p>
           </div>
         </Reveal>
