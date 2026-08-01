@@ -10,9 +10,15 @@
 #       synthetic id), so it is reproducible from that commit (docs/07).
 #   (b) DRIFT + SELF-HEAL: the node is pushed a stale/edited snapshot OUT OF
 #       BAND (SIGUSR1 --push-raw — a VALID config that is NOT the Git desired),
-#       so it drifts. The reconciler's next tick DETECTS the drift (the
-#       desired/delivered/observed three-hash compare is printed) and RE-PUSHES
-#       desired; the node swaps back and ACKs — healed within one tick.
+#       so its DELIVERED record diverges from Git desired. The reconciler's next
+#       tick DETECTS the divergence via the desired/delivered/observed three-hash
+#       compare (the delivered != desired row of the truth table) and RE-PUSHES
+#       desired; the node swaps back and ACKs — healed within one tick. (The node
+#       typically swaps back and re-ACKs before its next 10s Status heartbeat, so
+#       the logged compare shows observed == desired at heal time: the trigger
+#       here is the delivered-stale row, not the node-observed-drift row. The
+#       observed != desired row is exercised directly in tests/reconcile.rs::
+#       a_drifted_node_is_healed_within_one_tick.)
 #   (c) BREAK-GLASS with TTL: the node is marked break-glass for a bounded
 #       window (SIGUSR2). While the window is open the reconciler TOLERATES the
 #       node's drift and does NOT fight it (logged with the expiry). After the
@@ -143,7 +149,9 @@ CM=$(mark "$CTL_LOG"); N1M=$(mark "$N1_LOG")
   echo "=== (b) DRIFT + SELF-HEAL within one reconcile tick ==="
   echo "    A stale/edited snapshot is pushed OUT OF BAND (SIGUSR1 --push-raw),"
   echo "    a VALID config that is NOT the Git desired (env=drifted). node-a"
-  echo "    binds it and now diverges from desired."
+  echo "    binds it, so its DELIVERED record now diverges from Git desired"
+  echo "    (the delivered != desired truth-table row; the node re-ACKs desired"
+  echo "    before its next heartbeat, so observed == desired at heal time)."
 } >>"$OUT"
 kill -USR1 "$CTL_PID"
 # The node binds the drift; the reconciler (2s) catches delivered!=desired and
@@ -155,8 +163,10 @@ sleep 4
   since "$N1_LOG" "$N1M" | grep -E "cp-client" | tail -n 3
   echo "--- reconciler: three-hash compare (desired/delivered/observed) + heal ---"
   since "$CTL_LOG" "$CM" | grep -E "reconcile|inject" | grep -E "desired=|healed|self-healing|SIGUSR1" | tail -n 6
-  echo "    ^ the reconciler DETECTED the divergence and RE-PUSHED desired;"
-  echo "      node-a swapped back and ACKed — healed (docs/07: self-heal is re-push)."
+  echo "    ^ the reconciler DETECTED the delivered != desired divergence and"
+  echo "      RE-PUSHED desired; node-a swapped back and ACKed — healed (docs/07:"
+  echo "      self-heal is re-push). The observed != desired row (node running a"
+  echo "      stale local file) is covered in tests/reconcile.rs."
   echo
 } >>"$OUT"
 

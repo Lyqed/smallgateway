@@ -22,7 +22,7 @@ use tokio_stream::StreamExt;
 
 use gateway_proto::fleet::fleet_service_server::FleetServiceServer;
 use gateway_proto::{server_message, Ack, ClientMessage, FleetServiceClient, Hello, Status};
-use gatewayctl::fleet::Fleet;
+use gatewayctl::fleet::{Fleet, WaveOutcome};
 use gatewayctl::reconcile::{Reconciler, TickReport};
 use gatewayctl::render::{render_repo, testrepo};
 use gatewayctl::server::{ControlPlane, FleetSvc};
@@ -246,5 +246,126 @@ async fn break_glass_tolerates_drift_then_heals_after_the_ttl() {
     assert_eq!(
         report.healed, 1,
         "after the TTL lapses the reconciler heals the node: {report:?}"
+    );
+}
+
+/// Drive a node to service the next push by binding its bytes, recomputing the
+/// true hash, and acking it. Returns the true hash it acked.
+async fn service_push(node: &mut Node) -> String {
+    let (v, _adv, bytes) = node.next_push().await;
+    let true_hash = Node::true_hash(&bytes);
+    node.ack(v, &true_hash).await;
+    true_hash
+}
+
+/// REGRESSION (the HIGH defect): a reconcile tick that lands WHILE a wave is
+/// rolling out a new desired render must NOT fight the mid-rollout node. Before
+/// the fix, `set_applied(new)` publishes the new desired before the wave
+/// finishes, a tick in that window classifies the still-old node DeliveryStale
+/// and heals it — colliding on the shared pending slot, resolving only one
+/// waiter, and falsely reporting the node Silent so the wave HALTS even though
+/// the node acked. The fix has two independent guards: (1) the reconciler
+/// defers to an in-flight wave, and (2) pending waiters are namespaced by a
+/// unique push-id so even a collision could not clobber the wave's correlation.
+#[tokio::test]
+async fn a_reconcile_tick_during_a_wave_does_not_falsely_halt_it() {
+    // Start applied at "prod"; bring the node in sync there.
+    let h = Harness::start("prod").await;
+    let mut a = Node::join(&h.addr, "node-a", "tok-a").await;
+    bring_in_sync(&mut a).await;
+
+    // A new commit renders a DIFFERENT desired ("canary"). Publish it as the new
+    // applied render, exactly as reload_and_roll does before rolling the wave.
+    let next = render_repo(&testrepo::write("canary")).unwrap();
+    let new_desired = next.render_hash.clone();
+    assert!(h.cp.fleet.set_applied(next), "canary is a real change");
+
+    // Fire the wave. It publishes new_desired to the node and BLOCKS awaiting
+    // the ack (the node has not acked yet), holding the wave-in-flight guard the
+    // whole time.
+    let cp_wave = h.cp.clone();
+    let wave = tokio::spawn(async move { cp_wave.roll_out("test-reload").await });
+
+    // Deterministically land the reconcile tick INSIDE the wave window: spin
+    // until the wave is provably in flight (its guard is set), then run the tick
+    // INLINE while the wave is still blocked on the ack. This removes the timing
+    // race — the tick cannot observe a completed wave because the wave cannot
+    // complete until we service the push below.
+    for _ in 0..200 {
+        if h.cp.fleet.wave_in_flight() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(h.cp.fleet.wave_in_flight(), "the wave is in flight");
+    let report = Reconciler::new(h.cp.clone(), Duration::from_secs(3600))
+        .tick()
+        .await;
+    // The tick, seeing a wave in flight, DEFERRED to it — never healed/fought.
+    assert_eq!(
+        report.healed, 0,
+        "the reconciler did not fight the mid-rollout node: {report:?}"
+    );
+    assert_eq!(
+        report.mid_rollout_deferred, 1,
+        "the mid-rollout node was deferred to the wave: {report:?}"
+    );
+
+    // Now service the wave's push: bind the bytes and ack the true canary hash.
+    let acked = service_push(&mut a).await;
+    assert_eq!(acked, new_desired, "the wave pushed the new desired render");
+
+    let outcome = wave.await.unwrap();
+    match outcome {
+        WaveOutcome::Committed { render_hash, node_count } => {
+            assert_eq!(render_hash, new_desired);
+            assert_eq!(node_count, 1);
+        }
+        other => panic!(
+            "the wave must COMMIT (the node acked), not halt: got {other:?}"
+        ),
+    }
+    assert_eq!(
+        h.cp.fleet.committed_version(),
+        2,
+        "committed_version advanced to the canary wave version; no phantom halt"
+    );
+}
+
+/// The correlation guard proven directly at the server layer: two concurrent
+/// pushes to the SAME node at the SAME render (a wave and a self-heal both
+/// pushing the identical applied render) each get their own pending slot, so the
+/// node's single ack resolves BOTH — neither is clobbered into a false Silent.
+/// This is the push-id namespacing (Fix A) in isolation, without relying on the
+/// reconciler's deferral (Fix B), so the correlation core is covered even if a
+/// heal and a wave ever did overlap.
+#[tokio::test]
+async fn concurrent_pushes_at_the_same_version_both_resolve_on_one_ack() {
+    let h = Harness::start("prod").await;
+    let mut a = Node::join(&h.addr, "node-a", "tok-a").await;
+    let desired = bring_in_sync(&mut a).await;
+
+    // Fire a self-heal AND a single-node wave for the SAME applied render
+    // concurrently. next_version_for returns the SAME version for the same hash,
+    // so both pushes correlate to the same fleet_version — the exact collision.
+    let cp_heal = h.cp.clone();
+    let heal = tokio::spawn(async move { cp_heal.heal_node("node-a").await });
+    let cp_wave = h.cp.clone();
+    let wave = tokio::spawn(async move { cp_wave.roll_out("concurrent").await });
+
+    // The node services BOTH pushes (each arrives as its own Push message) and
+    // acks each with the true (desired) hash. One ack per push message.
+    let first = service_push(&mut a).await;
+    let second = service_push(&mut a).await;
+    assert_eq!(first, desired);
+    assert_eq!(second, desired);
+
+    // Both awaited operations resolve on the acks — neither is stranded Silent.
+    let healed = heal.await.unwrap();
+    let outcome = wave.await.unwrap();
+    assert!(healed, "the self-heal saw its ack (not clobbered into Silent)");
+    assert!(
+        matches!(outcome, WaveOutcome::Committed { .. }),
+        "the wave saw its ack and committed (not a phantom Silent halt): {outcome:?}"
     );
 }

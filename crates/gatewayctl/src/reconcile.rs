@@ -132,6 +132,10 @@ pub struct TickReport {
     pub persistently_divergent: usize,
     pub observed_unknown: usize,
     pub delivery_stale: usize,
+    /// Nodes that WOULD heal-by-repush but were left to an in-flight wave: they
+    /// are mid-rollout, not drifted, so the reconciler did not fight them
+    /// (docs/07). Counted, never healed, this tick.
+    pub mid_rollout_deferred: usize,
 }
 
 /// The reconciler: owns the tick interval and drives [`classify`] + the
@@ -167,6 +171,24 @@ impl Reconciler {
                 }
             }
             let case = classify(&node, &desired, now);
+
+            // Do not fight a legitimately mid-rollout node (docs/07). While a
+            // wave is in flight, a node whose only "drift" is that it has not
+            // yet been rolled forward is mid-rollout, not drifted: the wave owns
+            // its convergence. Healing it here would double-push the same render
+            // and collide with the wave's own ack correlation. Break-glass,
+            // persistent-divergence, in-sync, and unknown are NOT heal-by-repush
+            // and are handled normally even during a wave.
+            if case.heals_by_repush() && self.cp.fleet.wave_in_flight() {
+                report.mid_rollout_deferred += 1;
+                info!(
+                    "[reconcile] node {node_id:?} is mid-rollout (a wave is in flight); \
+                     deferring to the wave, NOT healing (docs/07: do not fight a \
+                     legitimately mid-rollout node)"
+                );
+                continue;
+            }
+
             self.act(&node_id, &desired, &case, &mut report).await;
         }
         report
@@ -258,15 +280,17 @@ impl Reconciler {
             if report.healed > 0
                 || report.persistently_divergent > 0
                 || report.break_glass_tolerated > 0
+                || report.mid_rollout_deferred > 0
             {
                 info!(
                     "[reconcile] tick: in_sync={} healed={} break_glass={} divergent={} \
-                     unknown={}",
+                     unknown={} mid_rollout={}",
                     report.in_sync,
                     report.healed,
                     report.break_glass_tolerated,
                     report.persistently_divergent,
                     report.observed_unknown,
+                    report.mid_rollout_deferred,
                 );
             }
         }

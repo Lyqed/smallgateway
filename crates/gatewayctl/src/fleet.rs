@@ -21,6 +21,7 @@
 //! regress.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::render::Rendered;
@@ -74,6 +75,28 @@ pub enum DivergenceKind {
 /// apply, never the source of truth.
 pub struct Fleet {
     inner: Mutex<FleetInner>,
+    /// Count of waves currently in flight (`roll_out`/`roll_out_raw` bodies).
+    /// The reconciler reads this to avoid fighting a legitimately mid-rollout
+    /// node: while a wave is pushing a new desired render, a node that has not
+    /// yet been rolled forward is *mid-rollout*, not drifted, and must be left
+    /// to the wave (docs/07: "a node in a not-yet-applied wave's desired hash is
+    /// its prior commit's hash"; "the reconciler does not fight a legitimately
+    /// mid-rollout node"). A counter (not a bool) so overlapping waves nest
+    /// correctly and the guard only clears when the LAST one finishes.
+    waves_in_flight: AtomicUsize,
+}
+
+/// RAII guard that marks a wave in flight for its lifetime. Constructed at the
+/// top of a wave body; dropping it (on return OR panic) decrements the counter,
+/// so the mid-rollout window can never leak if a wave errors out.
+pub struct WaveGuard<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl Drop for WaveGuard<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct FleetInner {
@@ -102,7 +125,26 @@ impl Fleet {
                 committed_version: 0,
                 per_node: BTreeMap::new(),
             }),
+            waves_in_flight: AtomicUsize::new(0),
         }
+    }
+
+    /// Mark a wave as in flight for the returned guard's lifetime. The server's
+    /// wave body holds this guard while it pushes and awaits acks; the
+    /// reconciler consults [`Fleet::wave_in_flight`] to skip healing nodes that
+    /// are legitimately mid-rollout (docs/07).
+    pub fn begin_wave(&self) -> WaveGuard<'_> {
+        self.waves_in_flight.fetch_add(1, Ordering::SeqCst);
+        WaveGuard {
+            counter: &self.waves_in_flight,
+        }
+    }
+
+    /// Whether at least one wave is currently rolling out. While true, the
+    /// reconciler must not fight a node that has not yet been rolled forward —
+    /// it is mid-rollout, not drifted.
+    pub fn wave_in_flight(&self) -> bool {
+        self.waves_in_flight.load(Ordering::SeqCst) > 0
     }
 
     /// The currently-applied render (cloned for use off-lock).
@@ -338,6 +380,25 @@ mod tests {
         let same = fleet.applied();
         assert!(!fleet.set_applied(same), "identical render is a no-op");
         assert!(fleet.set_applied(rendered("canary")), "a real change applies");
+    }
+
+    #[test]
+    fn wave_in_flight_guard_nests_and_clears_on_drop() {
+        let fleet = Fleet::new(rendered("prod"));
+        assert!(!fleet.wave_in_flight(), "no wave initially");
+        {
+            let _outer = fleet.begin_wave();
+            assert!(fleet.wave_in_flight(), "outer wave marks in-flight");
+            {
+                let _inner = fleet.begin_wave();
+                assert!(fleet.wave_in_flight(), "nested wave stays in-flight");
+            }
+            assert!(
+                fleet.wave_in_flight(),
+                "inner drop must not clear while outer still holds"
+            );
+        }
+        assert!(!fleet.wave_in_flight(), "last drop clears the guard");
     }
 
     #[test]

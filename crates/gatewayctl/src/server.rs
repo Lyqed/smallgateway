@@ -21,6 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,13 +44,38 @@ use crate::token::{Admission, JoinTokens};
 /// short M1 default; a real deployment tunes it per fleet.
 const WAVE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// One connected node's outbound channel + the pending-ack correlation for the
-/// version currently in flight to it.
+/// A globally-unique id for one push-and-await, so two concurrent pushes to the
+/// SAME node at the SAME fleet_version (e.g. a wave and a self-heal both pushing
+/// the identical applied render — `next_version_for` returns the same version
+/// for the same hash) each get their OWN pending slot and neither clobbers the
+/// other. Keying `pending` by fleet_version alone silently overwrote one
+/// waiter's oneshot sender, stranding the wave's correlation and falsely
+/// reporting the node Silent even though it acked (the HIGH defect).
+static PUSH_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_push_id() -> u64 {
+    PUSH_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// One pending push awaiting the node's answer: which `fleet_version` its ACK
+/// will carry, and the oneshot the inbound loop fires when it arrives.
+struct Pending {
+    awaited_version: u64,
+    waiter: oneshot::Sender<AckResult>,
+}
+
+/// A registered push awaiting an ack: its unique push-id (to clear exactly this
+/// slot on timeout) and the receiver its ack resolves. `None` when the node's
+/// stream was already gone at push time (resolves as `Silent`).
+type PendingHandle = Option<(u64, oneshot::Receiver<AckResult>)>;
+
+/// One connected node's outbound channel + the pending-ack correlations for the
+/// pushes currently in flight to it. Keyed by a unique push-id (NOT by version)
+/// so concurrent pushes at the same version cannot clobber each other.
 struct Session {
     tx: mpsc::Sender<Result<ServerMessage, GrpcStatus>>,
-    /// version currently awaited -> the oneshot that the inbound loop fires
-    /// when this node answers.
-    pending: BTreeMap<u64, oneshot::Sender<AckResult>>,
+    /// push_id -> the pending correlation for that in-flight push.
+    pending: BTreeMap<u64, Pending>,
 }
 
 /// The registry of live sessions, keyed by node_id. Shared across every stream
@@ -72,12 +98,28 @@ impl Sessions {
         self.0.lock().await.remove(node_id);
     }
 
-    /// Route an inbound Ack/Nack to a waiting wave, if one awaits this version.
+    /// Route an inbound Ack/Nack to every pending push awaiting this version.
+    ///
+    /// A node sends ONE answer per fleet_version. Any push in flight to this node
+    /// that awaits that version is satisfied by it — so we fan the result out to
+    /// ALL such waiters (there can legitimately be more than one when a wave and
+    /// a self-heal both push the identical applied render concurrently). Each is
+    /// keyed by its unique push-id, so removing them cannot disturb a waiter that
+    /// awaits a different version.
     async fn deliver(&self, node_id: &str, version: u64, result: AckResult) {
         let mut guard = self.0.lock().await;
-        if let Some(session) = guard.get_mut(node_id) {
-            if let Some(waiter) = session.pending.remove(&version) {
-                let _ = waiter.send(result);
+        let Some(session) = guard.get_mut(node_id) else {
+            return;
+        };
+        let matched: Vec<u64> = session
+            .pending
+            .iter()
+            .filter(|(_, p)| p.awaited_version == version)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in matched {
+            if let Some(pending) = session.pending.remove(&id) {
+                let _ = pending.waiter.send(result.clone());
             }
         }
     }
@@ -118,19 +160,28 @@ impl ControlPlane {
         })
     }
 
-    /// Push a snapshot to one node and register a pending-ack waiter, returning
-    /// the receiver the wave awaits. Returns `None` if the node's stream is
-    /// gone (its result becomes `Silent`).
+    /// Push a snapshot to one node and register a pending-ack waiter under a
+    /// UNIQUE push-id, returning that id plus the receiver the caller awaits.
+    /// Returns `None` if the node's stream is gone (its result becomes
+    /// `Silent`). The push-id lets a caller clear exactly its own pending slot
+    /// on timeout, without disturbing a concurrent push to the same node.
     async fn push_and_await(
         &self,
         node_id: &str,
         snapshot: RenderedSnapshot,
-    ) -> Option<oneshot::Receiver<AckResult>> {
-        let version = snapshot.fleet_version;
+    ) -> PendingHandle {
+        let awaited_version = snapshot.fleet_version;
+        let push_id = next_push_id();
         let mut guard = self.sessions.0.lock().await;
         let session = guard.get_mut(node_id)?;
         let (waiter_tx, waiter_rx) = oneshot::channel();
-        session.pending.insert(version, waiter_tx);
+        session.pending.insert(
+            push_id,
+            Pending {
+                awaited_version,
+                waiter: waiter_tx,
+            },
+        );
         // If the send fails the stream is dead; drop the waiter so it resolves
         // as Silent via the timeout path.
         if session
@@ -139,10 +190,10 @@ impl ControlPlane {
             .await
             .is_err()
         {
-            session.pending.remove(&version);
+            session.pending.remove(&push_id);
             return None;
         }
-        Some(waiter_rx)
+        Some((push_id, waiter_rx))
     }
 
     /// Run one all-or-nothing wave for the currently-applied render across every
@@ -165,13 +216,13 @@ impl ControlPlane {
         let rendered = self.fleet.applied();
         let version = self.fleet.next_version_for(node_id, &rendered.render_hash);
         let snapshot = rendered.to_snapshot(node_id, version, now_unix());
-        let Some(waiter) = self.push_and_await(node_id, snapshot).await else {
+        let Some((push_id, waiter)) = self.push_and_await(node_id, snapshot).await else {
             return false; // stream gone
         };
         match tokio::time::timeout(WAVE_ACK_TIMEOUT, waiter).await {
             Ok(Ok(AckResult::Acked { hash })) => hash == rendered.render_hash,
             _ => {
-                self.clear_pending(node_id, version).await;
+                self.clear_pending(node_id, push_id).await;
                 false
             }
         }
@@ -224,6 +275,11 @@ impl ControlPlane {
         commit: &str,
         bytes: &[u8],
     ) -> WaveOutcome {
+        // Mark the wave in flight for the whole body (dropped on any return or
+        // panic). While held, the reconciler tolerates a not-yet-rolled node as
+        // mid-rollout instead of racing it with a heal push (docs/07: "the
+        // reconciler does not fight a legitimately mid-rollout node").
+        let _wave_guard = self.fleet.begin_wave();
         let node_ids = self.sessions.connected_ids().await;
 
         if node_ids.is_empty() {
@@ -238,8 +294,10 @@ impl ControlPlane {
             return outcome;
         }
 
-        // Push to every node, each at its own next per-node version.
-        let mut waiters: Vec<(String, u64, Option<oneshot::Receiver<AckResult>>)> = Vec::new();
+        // Push to every node, each at its own next per-node version. Each
+        // waiter carries the unique push-id its pending slot lives under, so a
+        // timeout clears exactly this wave's slot and never a concurrent push's.
+        let mut waiters: Vec<(String, PendingHandle)> = Vec::new();
         // The wave's version is the max per-node version assigned this round;
         // in M1 every node advances in lockstep so they coincide.
         let mut wave_version = self.fleet.committed_version();
@@ -255,7 +313,7 @@ impl ControlPlane {
                 compiled_at: now_unix(),
             };
             let waiter = self.push_and_await(node_id, snapshot).await;
-            waiters.push((node_id.clone(), version, waiter));
+            waiters.push((node_id.clone(), waiter));
         }
 
         info!(
@@ -267,15 +325,15 @@ impl ControlPlane {
 
         // Await each node's answer (bounded by the wave timeout).
         let mut results: Vec<(String, AckResult)> = Vec::new();
-        for (node_id, version, waiter) in waiters {
+        for (node_id, waiter) in waiters {
             let result = match waiter {
                 None => AckResult::Silent,
-                Some(rx) => match tokio::time::timeout(WAVE_ACK_TIMEOUT, rx).await {
+                Some((push_id, rx)) => match tokio::time::timeout(WAVE_ACK_TIMEOUT, rx).await {
                     Ok(Ok(r)) => r,
                     // Sender dropped or timed out: the node did not answer.
                     Ok(Err(_)) | Err(_) => {
-                        // Clean up any dangling pending entry.
-                        self.clear_pending(&node_id, version).await;
+                        // Clean up this push's dangling pending entry.
+                        self.clear_pending(&node_id, push_id).await;
                         AckResult::Silent
                     }
                 },
@@ -288,9 +346,9 @@ impl ControlPlane {
         outcome
     }
 
-    async fn clear_pending(&self, node_id: &str, version: u64) {
+    async fn clear_pending(&self, node_id: &str, push_id: u64) {
         if let Some(session) = self.sessions.0.lock().await.get_mut(node_id) {
-            session.pending.remove(&version);
+            session.pending.remove(&push_id);
         }
     }
 
@@ -445,7 +503,7 @@ impl FleetService for FleetSvc {
             let snapshot = rendered.to_snapshot(&node_for_task, version, now_unix());
             // Register a pending waiter so the node's Ack for this bootstrap
             // push is recorded (and not treated as an orphan).
-            let waiter = cp.push_and_await(&node_for_task, snapshot).await;
+            let pushed = cp.push_and_await(&node_for_task, snapshot).await;
             info!(
                 "[join] pushed initial render_hash={} v={version} to {:?}",
                 short(&rendered.render_hash),
@@ -462,7 +520,7 @@ impl FleetService for FleetSvc {
             // there; committed_version only moves through run_wave over the full
             // connected set. We still drain the waiter so the oneshot resolves
             // and the pending entry is cleaned up.
-            if let Some(rx) = waiter {
+            if let Some((push_id, rx)) = pushed {
                 match tokio::time::timeout(WAVE_ACK_TIMEOUT, rx).await {
                     Ok(Ok(result)) => {
                         info!(
@@ -476,7 +534,7 @@ impl FleetService for FleetSvc {
                     _ => {
                         // A bootstrap NACK/silence is surfaced via the store; it
                         // does not by itself advance the fleet.
-                        cp.clear_pending(&node_for_task, version).await;
+                        cp.clear_pending(&node_for_task, push_id).await;
                     }
                 }
             }
