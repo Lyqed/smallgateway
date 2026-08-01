@@ -42,10 +42,6 @@ export function Hero() {
 
       <div className="relative mx-auto grid w-full max-w-[80rem] gap-8 px-5 pb-28 pt-28 sm:px-8 sm:pt-36 lg:grid-cols-[1.15fr_1fr] lg:items-center lg:pb-36">
         <div className="relative">
-          <p className="voice-mono text-xs text-steel-dark sm:text-sm">
-            {SITE_CONFIG.workingName} · a community-built LLM gateway · phase 1
-          </p>
-
           {/* painted wall behind the headline only, so body text never
               sits on paint (MURAL-DIRECTION non-negotiable) */}
           <div className="relative">

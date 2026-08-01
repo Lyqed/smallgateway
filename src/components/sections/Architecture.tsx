@@ -172,12 +172,12 @@ export function Architecture() {
                 the control plane
               </p>
               <h3 className="voice-display mt-2 text-2xl">
-                ArgoCD for gateway fleets
+                GitOps for gateway fleets
               </h3>
               <p className="mt-4 border-l-2 border-monarch pl-3 text-sm leading-relaxed text-ink">
                 The genuinely novel product is not another gateway binary. It
-                is the control plane. Nobody has &ldquo;ArgoCD for gateway
-                fleets.&rdquo;
+                is the control plane: desired state in Git, a reconciler that
+                converges the fleet. Nothing else does this for gateways.
               </p>
               <PointList points={CONTROL_PLANE_POINTS} />
             </article>
