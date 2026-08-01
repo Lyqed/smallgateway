@@ -42,6 +42,16 @@ pattern is already proven in the same codebase by #2435/#2447 on Bedrock. Same
 shape, second cloud. First gateway with invoice-grade attribution on both
 major clouds.
 
+> **Status update, 1 August 2026:** PR #2023 merged on 24 July 2026 — the
+> native Vertex path exists upstream. The remaining GB-8 gap is only the
+> operator-set labels knob (labels are client-passthrough today); the
+> Bedrock session-tag pattern in the same tree is the template. Exact file
+> pins and the full source-level analysis: `docs/spike-b/agentgateway-embed.md`.
+> The Spike B verdict (analysis at commit 66713a6): upstream-extend-and-wrap
+> ranked first, build-on-Pingora second for the data plane itself, fork
+> rejected — and Phase 0 closed on exactly that split: our data plane on
+> Pingora, these two PRs as parallel upstream contributions.
+
 Result: 4/8 → 6/8, sole leader by two points. The remaining pair (GB-5 native
 default budgets, GB-6 built-in alerts) is the structurally hard half: both
 need durable shared state across data planes — which is exactly the layer this

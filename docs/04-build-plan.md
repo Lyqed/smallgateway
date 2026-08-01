@@ -28,6 +28,18 @@ is greenfield either way.
 metering error bound; foundation chosen with the trade-offs written into doc
 06.
 
+> **Phase 0 closed — 1 August 2026.** Spike A: canonical event model proven
+> on three wire formats; metering error bound measured from 17 machine-
+> recorded transcripts (see `spikes/event-model/README.md`) — chars/4 lands
+> within ~±50%, worst misses structural (tool-call scaffolding, tiny
+> responses). Spike B: Pingora arm positive (streaming tap without
+> buffering, 1:1 chunk cadence, `spikes/proxy-pingora/`); agentgateway arm
+> (`docs/spike-b/agentgateway-embed.md`) found the core unpublished and,
+> decisively, no internal canonical event model to inherit. **Decision: the
+> data plane is built on Pingora** (Rust 1.97 toolchain accepted as the
+> cost); the agentgateway GB-4/GB-8 changes proceed as parallel upstream
+> contributions, per the extend-don't-fork strategy. Fork rejected.
+
 ## Phase 1 — standalone data plane (Baseline-conformant from a file)
 
 One binary, one static config file, no control plane. Immediately useful, and

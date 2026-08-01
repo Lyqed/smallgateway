@@ -47,13 +47,16 @@ lifetime.
 
 ## Status
 
-Phase 0. **Spike A is running** in
-[spikes/event-model/](spikes/event-model/): the canonical event model over
-three wire formats (OpenAI SSE, Anthropic events, Bedrock event-stream with
-real binary framing), with chunking-invariance and cross-provider conformance
-tests green. Remaining before Spike A closes: the measured metering error
-bound from real transcripts. Spike B (the Pingora vs agentgateway bake-off)
-has not started.
+**Phase 0 closed (1 August 2026); Phase 1 begun.** Spike A proved the
+canonical event model on three wire formats and measured the metering error
+bound from 17 machine-recorded transcripts
+([spikes/event-model/](spikes/event-model/)). Spike B chose the foundation:
+the data plane is built on **Pingora** ([spikes/proxy-pingora/](spikes/proxy-pingora/)
+demonstrated the streaming tap without buffering), with the agentgateway
+GB-4/GB-8 changes proceeding as parallel upstream contributions
+([docs/spike-b/agentgateway-embed.md](docs/spike-b/agentgateway-embed.md)).
+Phase 1 — the standalone, Baseline-conformant-from-a-file data plane — is
+under way in `crates/`.
 
 License: to be chosen before the repo goes public (Apache-2.0 is the working
 assumption, matching the ecosystem we intend to upstream into). Deferred,
