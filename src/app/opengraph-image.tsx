@@ -87,7 +87,7 @@ export default async function Image() {
             letterSpacing: 1,
           }}
         >
-          {SITE_CONFIG.workingName} · phase 1 · in the open
+          {SITE_CONFIG.workingName} · built in the open
         </div>
         <div
           style={{

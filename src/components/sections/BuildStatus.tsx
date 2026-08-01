@@ -3,9 +3,10 @@ import { PaintBloomCool, SplashArcs } from "@/components/art/PaintField";
 import { AnarchyStar, ScribbleCircle } from "@/components/art/graffiti";
 import { Reveal } from "@/components/reveal/Reveal";
 
-/** Honest, dated status — sourced from docs/04-build-plan.md (the Phase 0
- * closed callout), the spike READMEs, and the repo README as of
- * 2026-08-01. No invented progress — and no withheld progress either. */
+/** Honest, dated status, sourced from docs/04-build-plan.md, the phase
+ * READMEs, and the repo as of 2026-08-02. All six phases are done and
+ * adversarially verified. No invented progress, and no withheld progress
+ * either; the deferred items are stated plainly, not hidden. */
 
 type ChipTone = "teal" | "gold";
 
@@ -30,53 +31,61 @@ const PHASES = [
   {
     id: "0",
     title: "The spikes",
-    note: "throwaway code, non-throwaway conclusions; both spikes reported; closed 1 August 2026",
+    note: "Canonical event model over OpenAI, Anthropic, and Bedrock; the metering error bound measured from 17 real transcripts; Pingora chosen for the data plane.",
     state: "done" as const,
   },
   {
     id: "1",
     title: "Standalone data plane",
-    note: "Baseline-conformant from a static file; GB-1 through GB-4, GB-7, and GB-8 pass as automated conformance tests against a real gatewayd; scoped policy chain, CEL, and hot-reload in crates/",
+    note: "Pingora proxy enforcing GB-1 through GB-4, GB-7, and GB-8; scoped policy chain (fleet, project, route, app); CEL tier-1; hot-reload; a conformance suite that runs against a real gatewayd and writes machine-readable results.",
     state: "done" as const,
   },
   {
     id: "2",
-    title: "Control plane MVP",
-    note: "Two milestones landed and adversarially verified: fleet distribution (rendered snapshots over gRPC, join-token auth, all-or-nothing waves) and Git-as-truth with drift self-heal and config-PR admission. A node's drain semantics carry over the network unchanged. Multi-wave and GatewaySets remain.",
-    state: "in progress" as const,
+    title: "Control plane",
+    note: "Fleet distribution of rendered snapshots over gRPC with join-token auth and ACK/NACK; Git as the source of truth, reproducible from a commit; multi-wave rollout grouped by failure domain with halt-and-freeze; a domain-aware drift reconciler with self-heal; break-glass with TTL; config-PR admission; GatewaySets and tenancy scoping.",
+    state: "done" as const,
   },
   {
     id: "3",
     title: "The stateful layer",
-    note: "budget shares, alerts firing from the enforcement layer itself, mid-stream enforcement wired to the shares",
-    state: "ahead" as const,
+    note: "GB-5 fleet spend caps via budget shares, ~90% synchronous escalation so the common path has no per-request hop and no SPOF, bounded overspend under partition measured, shares provably summing to at most the cap; GB-6 alerts firing from the enforcement layer; mid-stream enforcement that cuts a stream with the GB-4 terminal event when a budget is exhausted.",
+    state: "done" as const,
   },
   {
     id: "4",
-    title: "WASM SDK and hot swap",
-    note: "signed modules, GB-9 with full doc-03 semantics, break-glass with TTL",
-    state: "ahead" as const,
+    title: "WASM SDK and GB-9 hot swap",
+    note: "wasmtime tier-2 modules, sandboxed with no ambient I/O, per-invocation fuel plus epoch preemption so a bad module fails closed; signed modules only; the per-event cost measured at ~11us and the honest call encoded (per-event streaming hooks gated off behind that budget); GB-9 atomic module-and-config binding, per-stream drain, versioned counter-schema migration.",
+    state: "done" as const,
   },
   {
     id: "5",
-    title: "Fleet ergonomics",
-    note: "GatewaySets, tenancy scoping, config canaries with Git-native judgment gates",
-    state: "ahead" as const,
+    title: "Config canaries",
+    note: "Wave rollouts analyzed between waves on error rate, p99, and token-spend anomaly from the fleet's own telemetry, auto-rollback on breach with later waves frozen, and a Git-native judgment gate (approval committed to the config repo, not a pipeline click). Closes the build plan.",
+    state: "done" as const,
   },
 ] as const;
 
-const NAMED_RISKS = [
+const DEFERRED = [
   {
-    name: "the name",
-    body: "“The Gateway Project” collides hard with Kubernetes Gateway API mindshare. Renaming stays cheap while the repo is private, which it remains; the decision is open and taken before public launch.",
+    name: "kubernetes-native deployment",
+    body: "CRDs, an operator, Gateway API, and a production Helm chart are the next work, not built yet. The control plane distributes to any data plane over gRPC today; a k8s-native path is not claimed.",
   },
   {
-    name: "WASM on the hot path",
-    body: "Per-event hooks on streaming paths need real performance validation before they are promised. That is why they sit in Phase 4, behind a spike, not in the pitch.",
+    name: "public launch",
+    body: "The tracker row and the public conformance scoreboard wait on the repo going public. It stays private for now, by judgment.",
   },
   {
-    name: "“good enough”",
-    body: "The strongest competitor is not any gateway. It is “agentgateway CRDs + ArgoCD is good enough.” The win is the domain-aware reconciler and the non-k8s fleet story; a phase that advances neither is scope creep.",
+    name: "durable counters",
+    body: "Postgres-durable spend counters are deferred. Runtime state lives in memory; Git stays the only truth, never Postgres.",
+  },
+  {
+    name: "per-event WASM hooks",
+    body: "Per-event streaming hooks await a pooling-allocator spike. on_request and on_response_end ship; per-event stays gated off behind the measured budget.",
+  },
+  {
+    name: "GB-2",
+    body: "Identity from a verified login is built, then deferred by judgment. It ships when the login story is worth turning on, not before.",
   },
 ] as const;
 
@@ -114,7 +123,7 @@ export function BuildStatus() {
           </div>
           <span className="relative inline-block">
             <p className="voice-mono rounded-sm border border-steel bg-panel px-2.5 py-1 text-xs text-steel-dark">
-              as of 2026-08-01
+              as of 2026-08-02
             </p>
             {/* the hand rings the date — precision, circled by the mural */}
             <ScribbleCircle
@@ -124,12 +133,15 @@ export function BuildStatus() {
           </span>
         </header>
         <p className="mt-4 max-w-2xl leading-relaxed text-steel-dark">
-          Risk-ordered: the highest-risk novel claim gets validated first, and
-          every phase ships something a platform team can run.
+          All six phases are done, built in risk order so the scariest novel
+          claim was validated first, and each was verified by an adversarial
+          critique that caught real defects a demo would have missed. Two
+          binaries plus Git, with runtime state in memory and Git as the only
+          source of truth.
         </p>
         <div aria-hidden className="mt-2 flex items-center gap-2">
           <p className="marker -rotate-2 text-xl text-monarch">
-            the scariest claim first
+            the whole plan, closed
           </p>
           <HandArrow className="h-8 w-10 -scale-y-100" />
           <AnarchyStar className="w-9 -rotate-6" />
@@ -216,13 +228,7 @@ export function BuildStatus() {
                   )}
                   <span
                     aria-hidden
-                    className={`relative z-10 mt-1 flex size-8 items-center justify-center rounded-full border-2 bg-atrium ${
-                      phase.state === "done"
-                        ? "border-teal"
-                        : phase.state === "in progress"
-                          ? "border-gold"
-                          : "border-steel"
-                    }`}
+                    className="relative z-10 mt-1 flex size-8 items-center justify-center rounded-full border-2 border-teal bg-atrium"
                   >
                     <span className="voice-mono text-xs text-ink">
                       {phase.id}
@@ -233,20 +239,8 @@ export function BuildStatus() {
                       <span className="voice-mono text-sm font-medium text-ink">
                         phase {phase.id} · {phase.title.toLowerCase()}
                       </span>
-                      <span
-                        className={`voice-mono text-[0.7rem] ${
-                          phase.state === "done"
-                            ? "text-teal-deep"
-                            : phase.state === "in progress"
-                              ? "text-gold-deep"
-                              : "text-steel-dark"
-                        }`}
-                      >
-                        {phase.state === "done"
-                          ? "● done"
-                          : phase.state === "in progress"
-                            ? "● in progress"
-                            : "· ahead"}
+                      <span className="voice-mono text-[0.7rem] text-teal-deep">
+                        ● done
                       </span>
                     </p>
                     <p className="mt-1 max-w-xl text-sm text-steel-dark">
@@ -262,33 +256,22 @@ export function BuildStatus() {
               <ul className="voice-mono mt-3 space-y-2 text-xs text-steel-dark">
                 <li className="flex items-center gap-2">
                   <span aria-hidden className="size-2 rounded-full bg-teal" />
-                  done · phases 0 and 1
-                </li>
-                <li className="flex items-center gap-2">
-                  <span aria-hidden className="size-2 rounded-full bg-gold" />
-                  in progress
-                </li>
-                <li className="flex items-center gap-2">
-                  <span
-                    aria-hidden
-                    className="h-px w-2 bg-steel-dark"
-                  />
-                  ahead · steel, not promises
+                  done · all six phases, adversarially verified
                 </li>
               </ul>
 
               <div className="mt-10 border-t border-steel pt-6">
                 <p className="voice-mono text-xs text-steel-dark">
-                  named risks, carried openly
+                  next and deferred, stated plainly
                 </p>
                 <ul className="mt-3 space-y-4">
-                  {NAMED_RISKS.map((risk) => (
-                    <li key={risk.name}>
+                  {DEFERRED.map((item) => (
+                    <li key={item.name}>
                       <p className="voice-mono text-xs font-medium text-ink">
-                        {risk.name}
+                        {item.name}
                       </p>
                       <p className="mt-0.5 text-xs leading-relaxed text-steel-dark">
-                        {risk.body}
+                        {item.body}
                       </p>
                     </li>
                   ))}

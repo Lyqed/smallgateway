@@ -49,7 +49,7 @@ export default function HypePage() {
         <p className="voice-mono text-sm font-medium tracking-[0.18em] text-ink">
           {SITE_CONFIG.name.toUpperCase()}
         </p>
-        <p className="voice-mono text-xs text-steel-dark">phase 2 · in the open</p>
+        <p className="voice-mono text-xs text-steel-dark">built in the open</p>
       </header>
 
       {/* The shout: centered, one screen. */}
