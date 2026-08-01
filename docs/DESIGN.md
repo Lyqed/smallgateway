@@ -1,4 +1,4 @@
-# Design brief — thegatewaybaseline.com & theopensourcegateway.com
+# Design brief — thegatewaybaseline.com & opensourcegateway.com
 
 *The binding art direction for both sites. Derived from one photograph: the
 Astra launch-site atrium — a rocket standing in a white circular gallery,
@@ -219,7 +219,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
    atrium white this time, centered mono: "Someone is told when a cap is
    hit." No dot (it was spent in 3b), no other content.
 6. **Reference implementation** — one restrained cross-link band: "A
-   community gateway is being built against this bar" → theopensourcegateway.com
+   community gateway is being built against this bar" → opensourcegateway.com
    (+ github.com/Lyqed/thegatewayproject).
 7. **Footer** — polished floor: dark band, mono small print, sister-site
    link, "Verified cells, not marketing pages" as the standing line.
@@ -227,7 +227,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
 `site-config`: name "The Gateway Baseline", url https://thegatewaybaseline.com,
 contact antonbraverman1@gmail.com (the tracker's correction address).
 
-## 8. Site B — theopensourcegateway.com
+## 8. Site B — opensourcegateway.com
 
 **Brand headline: "The Open Source Gateway" (the project's working name,
 "The Gateway Project", appears in copy; final naming is an open decision —
@@ -276,7 +276,7 @@ Single page, anchored nav (`Principles · Architecture · Build · Contribute`):
 7. **Footer** — polished floor, sister link to the Baseline, repo link.
 
 `site-config`: name "The Open Source Gateway", url
-https://theopensourcegateway.com.
+https://opensourcegateway.com.
 
 ## 9. What both sites must NOT be
 

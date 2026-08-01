@@ -142,7 +142,7 @@ export default async function Image() {
               color: "#22242e",
             }}
           >
-            theopensourcegateway.com
+            opensourcegateway.com
           </div>
         </div>
       </div>

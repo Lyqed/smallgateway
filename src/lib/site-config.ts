@@ -10,7 +10,7 @@ export const SITE_CONFIG = {
   tagline: "A gateway platform teams build, own, and answer for",
   description:
     "A community-built LLM gateway — designed from scratch, owned end to end, and measured by the Gateway Baseline, in the open. Two binaries plus Git.",
-  url: "https://theopensourcegateway.com",
+  url: "https://opensourcegateway.com",
   repoUrl: "https://github.com/Lyqed/thegatewayproject",
   sisterUrl: "https://thegatewaybaseline.com",
   sisterName: "The Gateway Baseline",
