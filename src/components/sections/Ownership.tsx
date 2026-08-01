@@ -71,9 +71,8 @@ export function Ownership() {
             <p className="leading-relaxed text-steel-dark">
               What that buys a community: the tooling closes the skill gap, so
               the only edge left is standing behind your changes for their whole
-              life. A gateway owned end to end by the people who run it, and by
-              no one else. Nobody profits from it. No consultancy, no paid tier,
-              no upsell. It is the community&rsquo;s, and it stays that way.
+              life. A gateway owned end to end by the people who run it, open
+              from the first commit, with nothing held back behind a paywall.
             </p>
           </div>
         </div>
