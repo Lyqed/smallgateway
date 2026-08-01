@@ -64,7 +64,7 @@ export function Hero() {
               A gateway platform teams build, own, and{" "}
               <span className="relative inline-block whitespace-nowrap">
                 answer for
-                <HandCircle className="pointer-events-none absolute -left-[12%] -top-[38%] h-[176%] w-[124%]" />
+                <HandCircle className="pointer-events-none absolute -left-[10%] -top-[27%] h-[154%] w-[120%]" />
               </span>
               , measured by the{" "}
               <a href={SITE_CONFIG.sisterUrl} className="link-skylight">
