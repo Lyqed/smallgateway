@@ -47,7 +47,7 @@ export function Ownership() {
             {/* The hand circle wraps the whole sentence; the sentence sits on
                 the clean atrium ground behind the paint, at full contrast. */}
             <div className="relative inline-block max-w-4xl px-[3%] py-[6%]">
-              <HandCircle className="pointer-events-none absolute inset-0 h-full w-full" />
+              <HandCircle className="pointer-events-none absolute -left-[7%] top-1/2 h-[118%] w-[114%] -translate-y-1/2" />
               <h2
                 id="ownership-heading"
                 className="voice-display relative text-3xl leading-[1.12] sm:text-5xl"
@@ -57,7 +57,7 @@ export function Ownership() {
               </h2>
             </div>
             <p aria-hidden className="marker mt-6 rotate-[-2deg] text-2xl text-violet">
-              not blamed. responsible
+              not blamed. responsible.
             </p>
           </Reveal>
 
