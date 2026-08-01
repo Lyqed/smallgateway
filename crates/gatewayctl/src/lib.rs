@@ -2,10 +2,11 @@
 //!
 //! A single binary that turns a config repo (Git truth) into per-node
 //! `RenderedSnapshot`s and distributes them to N data planes over one
-//! long-lived bidirectional gRPC stream each. It is the ArgoCD-for-gateway-
-//! fleets control plane made concrete against docs/07-control-plane.md — the
-//! same machine as the single-node reloader, with the file replaced by Git and
-//! the single node replaced by a fleet.
+//! long-lived bidirectional gRPC stream each. It is GitOps for gateway fleets
+//! made concrete against docs/07-control-plane.md: desired state in Git, a
+//! reconciler that converges the fleet. The same machine as the single-node
+//! reloader, with the file replaced by Git and the single node replaced by a
+//! fleet.
 //!
 //! Modules:
 //! - [`source`]: the config-source abstraction — a loose directory or a Git
@@ -43,6 +44,7 @@
 //! crates/gatewayctl/README.md.
 
 pub mod admission;
+pub mod budget;
 pub mod fleet;
 pub mod gatewayset;
 pub mod reconcile;

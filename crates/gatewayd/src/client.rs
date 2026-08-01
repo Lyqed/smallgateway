@@ -36,12 +36,22 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
-use gateway_proto::{server_message, Ack, ClientMessage, FleetServiceClient, Hello, Nack, RenderedSnapshot, Status};
+use gateway_core::budget::CapId;
+use gateway_proto::{
+    server_message, Ack, BudgetShare, ClientMessage, FleetServiceClient, Hello, Nack,
+    RenderedSnapshot, ShareGrant, Status, SyncCheck, UsageReport,
+};
 
+use crate::budget::NodeBudgets;
 use crate::reload::{ReloadOutcome, Reloader, SharedSnapshot};
 
 /// How often the node heartbeats its observed reality to the control plane.
 const STATUS_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How often the node reports its GB-5 observed spend up the stream so the
+/// control plane rebalances shares from telemetry (docs/01 Q4). Shorter than
+/// the status heartbeat: shares should track a hot spender promptly.
+const USAGE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A synthetic source label for pushed snapshots (the `source` field on the
 /// node's `Snapshot`, analogous to a file path in file mode).
@@ -72,6 +82,7 @@ pub fn connect_and_bootstrap(
     endpoint: String,
     node_id: String,
     join_token: String,
+    budgets: Arc<NodeBudgets>,
 ) -> Result<SharedSnapshot, String> {
     // Channel to hand the bootstrapped SharedSnapshot back to the caller
     // (the main thread) synchronously.
@@ -91,7 +102,7 @@ pub fn connect_and_bootstrap(
                 }
             };
             rt.block_on(async move {
-                supervise(endpoint, node_id, join_token, ready_tx).await;
+                supervise(endpoint, node_id, join_token, budgets, ready_tx).await;
             });
         })
         .map_err(|e| format!("spawn control-plane client thread: {e}"))?;
@@ -113,6 +124,7 @@ async fn supervise(
     endpoint: String,
     node_id: String,
     join_token: String,
+    budgets: Arc<NodeBudgets>,
     ready_tx: std_mpsc::Sender<Result<SharedSnapshot, String>>,
 ) {
     // The last fleet_version the control plane delivered and this node bound.
@@ -124,8 +136,15 @@ async fn supervise(
 
     // First connection: dial, join, bind the first push. A failure here is
     // fatal (a node with no config never serves) and reported to the caller.
-    let reloader = match connect_once(&endpoint, &node_id, &join_token, None, &last_fleet_version)
-        .await
+    let reloader = match connect_once(
+        &endpoint,
+        &node_id,
+        &join_token,
+        None,
+        &last_fleet_version,
+        &budgets,
+    )
+    .await
     {
         Ok(reloader) => reloader,
         Err(e) => {
@@ -140,8 +159,16 @@ async fn supervise(
 
     // Supervised reconnect loop. The snapshot keeps serving throughout; we only
     // re-establish the control channel so future pushes are received again.
+    // A stream loss means the control plane is UNREACHABLE for budget shares:
+    // enter partition mode so GB-5 enforcement uses the bounded-overspend policy
+    // (spend only up to the held share) until the stream is back.
     let mut backoff = RECONNECT_BACKOFF_MIN;
     loop {
+        budgets.set_partitioned(true);
+        info!(
+            "[cp-client] node {node_id:?} control plane unreachable: GB-5 PARTITION MODE \
+             (bounded overspend — spend only up to the held share; docs/01 Q4)"
+        );
         tokio::time::sleep(backoff).await;
         info!(
             "[cp-client] node {node_id:?} re-dialing {endpoint} (still serving cfg=v{} \
@@ -155,6 +182,7 @@ async fn supervise(
             &join_token,
             Some(reloader.clone()),
             &last_fleet_version,
+            &budgets,
         )
         .await
         {
@@ -188,6 +216,7 @@ async fn connect_once(
     join_token: &str,
     existing: Option<Arc<Reloader>>,
     last_fleet_version: &Arc<AtomicU64>,
+    budgets: &Arc<NodeBudgets>,
 ) -> Result<Arc<Reloader>, String> {
     let mut client = FleetServiceClient::connect(endpoint.to_string())
         .await
@@ -233,9 +262,19 @@ async fn connect_once(
         }
     };
 
+    // The stream is up: the control plane is reachable again for GB-5 shares.
+    // Leave partition mode so enforcement resumes escalating (rather than the
+    // bounded-overspend deny) once shares can be re-confirmed.
+    budgets.set_partitioned(false);
+
     // Heartbeat task for THIS stream: periodic Status carrying the observed
     // render hash. It stops when this stream's outbound channel closes.
     spawn_heartbeat(out_tx.clone(), reloader.clone(), node_id.to_string());
+
+    // GB-5 usage reporter for THIS stream: periodic UsageReport carrying the
+    // observed per-spender spend, plus an immediate SyncCheck whenever a spender
+    // crosses the ~90% escalation band. Stops when the outbound channel closes.
+    spawn_usage_reporter(out_tx.clone(), budgets.clone(), node_id.to_string());
 
     // Steady state: bind every subsequent push through the unchanged reload
     // path and ack/nack it, until the stream ends (then the supervisor re-dials).
@@ -258,6 +297,12 @@ async fn connect_once(
                 if acked {
                     last_fleet_version.store(delivered, Ordering::Relaxed);
                 }
+            }
+            Some(server_message::Kind::ShareGrant(grant)) => {
+                // GB-5: (re)allocated budget shares. Apply them to the local
+                // ceilings without losing running spend — the control plane
+                // gave this node a bigger/smaller slice from fleet telemetry.
+                apply_share_grant(budgets, node_id, grant);
             }
             Some(server_message::Kind::AckOfStatus(_)) => { /* liveness only */ }
             None => warn!("[cp-client] empty server message"),
@@ -329,8 +374,11 @@ async fn wait_first_push(
                     }
                 }
             }
-            // Ignore any liveness frame that precedes the first push.
-            Some(server_message::Kind::AckOfStatus(_)) => continue,
+            // Ignore any liveness frame or early share grant that precedes the
+            // first push: the node has no config (and thus no budgets) to apply
+            // until it binds v1. Shares are re-granted on the first usage report.
+            Some(server_message::Kind::AckOfStatus(_))
+            | Some(server_message::Kind::ShareGrant(_)) => continue,
             None => continue,
         }
     }
@@ -398,6 +446,93 @@ async fn bind_push(
             false
         }
     }
+}
+
+/// GB-5: apply a control-plane `ShareGrant` to the node's local budgets. Each
+/// grant (re)sets a value's local-share ceiling without losing running spend;
+/// the log line names the new slice so a rebalance is observable.
+fn apply_share_grant(budgets: &Arc<NodeBudgets>, node_id: &str, grant: ShareGrant) {
+    if grant.shares.is_empty() {
+        return;
+    }
+    let applied: Vec<(CapId, u64, u64)> = grant
+        .shares
+        .iter()
+        .map(|s| {
+            (
+                CapId::new(&s.attribution_key, &s.attribution_value),
+                s.cap_tokens,
+                s.tokens,
+            )
+        })
+        .collect();
+    budgets.apply_shares(&applied);
+    let summary = applied
+        .iter()
+        .map(|(id, cap, share)| format!("{id}=share:{share}/cap:{cap}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    info!("[gb5] node {node_id:?} applied share grant: {summary}");
+}
+
+/// GB-5: report observed spend up the stream on a timer, and escalate
+/// synchronously the moment a spender crosses the ~90% band. The reporter
+/// converts the node's [`NodeBudgets`] spend into `BudgetShare`s carrying the
+/// cumulative spend the control plane rebalances from.
+fn spawn_usage_reporter(
+    out_tx: mpsc::Sender<ClientMessage>,
+    budgets: Arc<NodeBudgets>,
+    node_id: String,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(USAGE_INTERVAL);
+        loop {
+            ticker.tick().await;
+
+            // The near-limit escalation takes precedence: a spender at/above
+            // ~90% of its share asks the control plane synchronously for a
+            // bigger slice before its next spend crosses the cap.
+            let escalating = budgets.escalating();
+            if !escalating.is_empty() {
+                let check = SyncCheck {
+                    spenders: to_shares(&escalating),
+                };
+                if out_tx.send(ClientMessage::sync_check(check)).await.is_err() {
+                    break;
+                }
+                info!(
+                    "[gb5] node {node_id:?} escalated {} spender(s) at >=90% of local share",
+                    escalating.len()
+                );
+                continue;
+            }
+
+            let report = budgets.spend_report();
+            if report.is_empty() {
+                continue; // nothing to report yet
+            }
+            let usage = UsageReport {
+                spenders: to_shares(&report),
+            };
+            if out_tx.send(ClientMessage::usage(usage)).await.is_err() {
+                info!("[gb5] node {node_id:?} usage reporter stopped (stream gone)");
+                break;
+            }
+        }
+    });
+}
+
+/// Convert node budget spend tuples into the wire `BudgetShare` list.
+fn to_shares(spenders: &[(CapId, u64, u64)]) -> Vec<BudgetShare> {
+    spenders
+        .iter()
+        .map(|(id, cap, tokens)| BudgetShare {
+            attribution_key: id.key.clone(),
+            attribution_value: id.value.clone(),
+            cap_tokens: *cap,
+            tokens: *tokens,
+        })
+        .collect()
 }
 
 fn spawn_heartbeat(out_tx: mpsc::Sender<ClientMessage>, reloader: Arc<Reloader>, node_id: String) {

@@ -15,6 +15,7 @@
 pub mod adapters;
 pub mod attribution;
 pub mod aws;
+pub mod budget;
 pub mod config;
 pub mod event;
 pub mod eventstream;

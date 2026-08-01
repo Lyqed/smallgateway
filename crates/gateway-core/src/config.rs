@@ -262,6 +262,41 @@ pub struct Attribution {
     /// unresolved, which for a required key is a GB-4 rejection.
     #[serde(default)]
     pub derived: BTreeMap<String, String>,
+    /// GB-5: a spend cap per attribution key. `key → { default, overrides }`
+    /// in tokens; the default caps every value of the key, per-value overrides
+    /// (Git-reviewed) tighten or loosen one value, and a lower scope's entry
+    /// composes over a higher one exactly like the pins (docs/02 GB-5). The
+    /// 100k-token scenario is five lines of YAML here. Absent → uncapped.
+    #[serde(default)]
+    pub spend_caps: BTreeMap<String, SpendCapSpec>,
+}
+
+/// GB-5: one attribution key's spend cap as written in the config. Tokens.
+/// `default` caps every value of the key; `overrides` set a per-value cap
+/// (`null` inside `overrides` is an explicit "this value is uncapped"). A whole
+/// spec with neither is a no-op (uncapped). Composes down the scoped chain via
+/// [`crate::budget::KeyCap::compose_child`].
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpendCapSpec {
+    /// The default cap in tokens for every value of this key. Absent → the key
+    /// is uncapped unless an override sets a cap.
+    #[serde(default)]
+    pub default: Option<u64>,
+    /// Per-value cap overrides in tokens. A `null` value is an explicit
+    /// uncapped override of a capped default.
+    #[serde(default)]
+    pub overrides: BTreeMap<String, Option<u64>>,
+}
+
+impl SpendCapSpec {
+    /// The pure [`crate::budget::KeyCap`] this spec compiles to.
+    pub fn to_key_cap(&self) -> crate::budget::KeyCap {
+        crate::budget::KeyCap {
+            default: self.default,
+            overrides: self.overrides.clone(),
+        }
+    }
 }
 
 /// One entry in a scope's GB-8 label list: either the `<base>` splice

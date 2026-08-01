@@ -8,10 +8,11 @@ one.
 Every gateway on the verified matrix is either a single instance with a config
 surface or a k8s-CRD system that outsources fleet management to ArgoCD. The
 genuinely novel product here is not another gateway binary — it is the control
-plane. Nobody has "ArgoCD for gateway fleets": heterogeneous fleets (VMs, DMZ
-boxes, multiple clouds, edge — not just clusters) plus domain-aware
-reconciliation, where the reconciler understands routes, spend limits,
-attribution, and token-aware canary analysis rather than diffing opaque YAML.
+plane. Nobody has GitOps for gateway fleets: desired state in Git, a reconciler
+that converges the fleet, and nothing else does this across heterogeneous
+fleets (VMs, DMZ boxes, multiple clouds, edge — not just clusters). The
+reconciler is domain-aware: it understands routes, spend limits, attribution,
+and token-aware canary analysis rather than diffing opaque YAML.
 
 ## You don't need to buy anything. Yet.
 

@@ -1,6 +1,6 @@
 # gatewayctl
 
-The control plane: ArgoCD for gateway fleets, made concrete. One binary that
+The control plane: GitOps for gateway fleets, made concrete. One binary that
 compiles a config repo (**Git truth**) into per-node **rendered snapshots** and
 distributes them to N `gatewayd` data planes over one long-lived bidirectional
 gRPC stream each, detects drift and self-heals it, and gates config PRs at

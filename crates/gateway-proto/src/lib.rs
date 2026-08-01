@@ -19,8 +19,8 @@ pub mod fleet {
 // Re-export the common surface at the crate root so downstream code writes
 // `gateway_proto::RenderedSnapshot` instead of the fully-qualified path.
 pub use fleet::{
-    client_message, server_message, Ack, AckOfStatus, ClientMessage, Hello, Nack, RenderedSnapshot,
-    ServerMessage, Status,
+    client_message, server_message, Ack, AckOfStatus, BudgetShare, ClientMessage, Hello, Nack,
+    RenderedSnapshot, ServerMessage, ShareGrant, Status, SyncCheck, UsageReport,
 };
 pub use fleet::fleet_service_client::FleetServiceClient;
 pub use fleet::fleet_service_server::{FleetService, FleetServiceServer};
@@ -53,6 +53,20 @@ impl ClientMessage {
             kind: Some(client_message::Kind::Status(status)),
         }
     }
+
+    /// Wrap a GB-5 `UsageReport` in the client envelope.
+    pub fn usage(usage: UsageReport) -> ClientMessage {
+        ClientMessage {
+            kind: Some(client_message::Kind::Usage(usage)),
+        }
+    }
+
+    /// Wrap a GB-5 `SyncCheck` (near-limit escalation) in the client envelope.
+    pub fn sync_check(check: SyncCheck) -> ClientMessage {
+        ClientMessage {
+            kind: Some(client_message::Kind::SyncCheck(check)),
+        }
+    }
 }
 
 impl ServerMessage {
@@ -67,6 +81,14 @@ impl ServerMessage {
     pub fn ack_of_status() -> ServerMessage {
         ServerMessage {
             kind: Some(server_message::Kind::AckOfStatus(AckOfStatus {})),
+        }
+    }
+
+    /// Wrap a GB-5 `ShareGrant` (allocated budget shares) in the server
+    /// envelope.
+    pub fn share_grant(grant: ShareGrant) -> ServerMessage {
+        ServerMessage {
+            kind: Some(server_message::Kind::ShareGrant(grant)),
         }
     }
 }

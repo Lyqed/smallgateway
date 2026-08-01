@@ -101,7 +101,10 @@ pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<Stri
     validate_template(
         &r.missing_attribution,
         &format!("{ctx}.missing_attribution"),
-        &["key", "route"],
+        // GB-1/GB-4: {{key}}/{{route}}. GB-5 adds the optional {{cap}}/{{spend}}
+        // (tokens) so a budget rejection or a cut stream's terminal event can
+        // name the exhausted limit; a template that omits them is still valid.
+        &["key", "route", "cap", "spend"],
         errs,
     );
     validate_template(&r.unknown_route, &format!("{ctx}.unknown_route"), &["route"], errs);
@@ -109,7 +112,12 @@ pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<Stri
 
 pub(crate) fn validate_rejection_overrides(o: &RejectionOverrides, ctx: &str, errs: &mut Vec<String>) {
     if let Some(t) = &o.missing_attribution {
-        validate_template(t, &format!("{ctx}.missing_attribution"), &["key", "route"], errs);
+        validate_template(
+            t,
+            &format!("{ctx}.missing_attribution"),
+            &["key", "route", "cap", "spend"],
+            errs,
+        );
     }
     if let Some(t) = &o.unknown_route {
         validate_template(t, &format!("{ctx}.unknown_route"), &["route"], errs);

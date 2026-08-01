@@ -31,10 +31,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status as GrpcStatus, Streaming};
 
+use gateway_core::budget::{AlertSink, CapId, LogAlertSink};
 use gateway_proto::{
-    client_message, Ack, ClientMessage, FleetService, Nack, RenderedSnapshot, ServerMessage,
+    client_message, Ack, BudgetShare, ClientMessage, FleetService, Nack, RenderedSnapshot,
+    ServerMessage, ShareGrant, UsageReport,
 };
 
+use crate::budget::FleetBudgets;
 use crate::fleet::{AckResult, Fleet};
 use crate::store::RuntimeStore;
 use crate::token::{Admission, JoinTokens};
@@ -135,6 +138,12 @@ pub struct ControlPlane {
     pub store: Arc<RuntimeStore>,
     pub tokens: Arc<JoinTokens>,
     pub sessions: Sessions,
+    /// GB-5: the fleet-wide budget ledger — observed per-node spend telemetry,
+    /// the continuous share allocation, and the fleet-wide GB-6 alert latches.
+    pub budgets: Arc<FleetBudgets>,
+    /// GB-6: where alerts raised at the control plane's enforcement point go.
+    /// Pluggable; defaults to the structured log sink.
+    pub alerts: Arc<dyn AlertSink>,
 }
 
 /// A cheaply-cloneable service handle. tonic clones the service per connection;
@@ -152,12 +161,61 @@ impl FleetSvc {
 
 impl ControlPlane {
     pub fn new(fleet: Arc<Fleet>, store: Arc<RuntimeStore>, tokens: Arc<JoinTokens>) -> Arc<ControlPlane> {
+        Self::with_alert_sink(fleet, store, tokens, Arc::new(LogAlertSink))
+    }
+
+    /// Build a control plane with a custom GB-6 alert sink (the demo/tests wire
+    /// a webhook-shaped or capturing sink; production wires a pager/bus).
+    pub fn with_alert_sink(
+        fleet: Arc<Fleet>,
+        store: Arc<RuntimeStore>,
+        tokens: Arc<JoinTokens>,
+        alerts: Arc<dyn AlertSink>,
+    ) -> Arc<ControlPlane> {
         Arc::new(ControlPlane {
             fleet,
             store,
             tokens,
             sessions: Sessions::default(),
+            budgets: Arc::new(FleetBudgets::new()),
+            alerts,
         })
+    }
+
+    /// Build the GB-5 `ShareGrant` this node currently holds (its rebalanced
+    /// slices of every capped value), or `None` when there is nothing to grant.
+    pub(crate) fn share_grant_for(&self, node_id: &str) -> Option<ShareGrant> {
+        let allocations = self.budgets.shares_for(node_id);
+        if allocations.is_empty() {
+            return None;
+        }
+        let shares = allocations
+            .into_iter()
+            .map(|a| BudgetShare {
+                attribution_key: a.id.key,
+                attribution_value: a.id.value,
+                cap_tokens: a.cap,
+                tokens: a.share,
+            })
+            .collect();
+        Some(ShareGrant { shares })
+    }
+
+    /// Ingest a node's `UsageReport` into the fleet ledger and emit every GB-6
+    /// alert the fleet-wide crossing newly triggers, at the point of ingestion.
+    fn ingest_usage(&self, node_id: &str, usage: &UsageReport) {
+        for s in &usage.spenders {
+            let id = CapId::new(&s.attribution_key, &s.attribution_value);
+            for alert in self
+                .budgets
+                .report_spend(node_id, &id, s.cap_tokens, s.tokens)
+            {
+                info!(
+                    "[gb6] control-plane fleet-wide alert from usage telemetry: {alert}"
+                );
+                self.alerts.emit(&alert);
+            }
+        }
     }
 
     /// Push a snapshot to one node and register a pending-ack waiter under a
@@ -390,6 +448,35 @@ impl FleetService for FleetSvc {
                         );
                         // Liveness reply, nothing more.
                         let _ = tx.send(Ok(ServerMessage::ack_of_status())).await;
+                    }
+                    Some(client_message::Kind::Usage(usage)) => {
+                        // GB-5: fold this node's observed spend into the fleet
+                        // ledger (fires GB-6 alerts on a fleet-wide crossing),
+                        // then push back its freshly-rebalanced shares so a hot
+                        // node's slice grows continuously from telemetry.
+                        cp.ingest_usage(&node_for_loop, &usage);
+                        if let Some(grant) = cp.share_grant_for(&node_for_loop) {
+                            let _ = tx.send(Ok(ServerMessage::share_grant(grant))).await;
+                        }
+                    }
+                    Some(client_message::Kind::SyncCheck(check)) => {
+                        // GB-5: the synchronous ~90% escalation. Record the
+                        // near-limit spend the node reports (so the rebalance
+                        // sees it), then reply with a fresh grant — the node is
+                        // asking whether it may spend past its current share.
+                        cp.ingest_usage(
+                            &node_for_loop,
+                            &UsageReport { spenders: check.spenders.clone() },
+                        );
+                        let grant = cp
+                            .share_grant_for(&node_for_loop)
+                            .unwrap_or(ShareGrant { shares: Vec::new() });
+                        info!(
+                            "[gb5] node {:?} escalated (>=90% share); regranting {} share(s)",
+                            node_for_loop,
+                            grant.shares.len()
+                        );
+                        let _ = tx.send(Ok(ServerMessage::share_grant(grant))).await;
                     }
                     Some(client_message::Kind::Hello(_)) | None => {
                         warn!("[stream] node {:?} sent an unexpected message", node_for_loop);

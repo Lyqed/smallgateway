@@ -38,9 +38,66 @@ pub fn render(template: &str, vars: &[(&str, &str)]) -> String {
     out
 }
 
+/// GB-4's streaming half: render an operator [`StreamingRejection`] into an SSE
+/// `event:`/`data:` block ready to write onto the response wire when a stream is
+/// cut mid-generation (budget exhausted). The `data` template is substituted
+/// with the same `{{name}}` placeholders as the sibling `body`. An event name
+/// produces an `event:` line; its absence yields a bare `data:` frame. The block
+/// is terminated with the SSE `\n\n` so it parses as one complete event.
+///
+/// [`StreamingRejection`]: crate::config::StreamingRejection
+pub fn render_terminal_event(
+    streaming: &crate::config::StreamingRejection,
+    vars: &[(&str, &str)],
+) -> String {
+    let data = render(&streaming.data, vars);
+    let mut out = String::new();
+    if let Some(event) = &streaming.event {
+        out.push_str("event: ");
+        out.push_str(event);
+        out.push('\n');
+    }
+    // Multi-line data payloads get one `data:` prefix per line, per SSE.
+    for line in data.split('\n') {
+        out.push_str("data: ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push('\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renders_terminal_event_as_an_sse_block() {
+        let streaming = crate::config::StreamingRejection {
+            event: Some("error".to_string()),
+            data: r#"{"error":"budget exhausted for {{key}}","cap":{{cap}}}"#.to_string(),
+        };
+        let block = render_terminal_event(
+            &streaming,
+            &[("key", "team=ml-research"), ("cap", "100000")],
+        );
+        assert_eq!(
+            block,
+            "event: error\ndata: {\"error\":\"budget exhausted for team=ml-research\",\"cap\":100000}\n\n"
+        );
+    }
+
+    #[test]
+    fn renders_bare_data_frame_when_no_event_name() {
+        let streaming = crate::config::StreamingRejection {
+            event: None,
+            data: r#"{"done":true}"#.to_string(),
+        };
+        assert_eq!(
+            render_terminal_event(&streaming, &[]),
+            "data: {\"done\":true}\n\n"
+        );
+    }
 
     #[test]
     fn extracts_placeholders_and_ignores_single_braces() {

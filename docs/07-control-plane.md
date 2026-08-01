@@ -1,8 +1,8 @@
-# The control plane: ArgoCD for gateway fleets, made concrete
+# The control plane: GitOps for gateway fleets, made concrete
 
 *Design only. Phase 2 not started. This turns the sketch in
 [02-architecture.md](02-architecture.md) (the control-plane section and the
-ArgoCD mapping table) into the decisions Phase 2 will be built against. It
+GitOps capability table) into the decisions Phase 2 will be built against. It
 extends the single-node snapshot semantics already shipped in
 `crates/gatewayd/src/reload.rs` and `crates/gateway-core/src/snapshot.rs` to a
 fleet. Where a choice is still open, it is named as an open question with a
@@ -378,7 +378,7 @@ What would violate the budget, named so it can be refused in review:
   serve with the control plane down. Anything that breaks that turns two
   loosely-coupled binaries into one distributed monolith.
 
-Regional control planes (doc 02's "controller sharding, hierarchical Argo, v2")
+Regional control planes (doc 02's "hierarchical control planes, v2")
 are *the same one binary* run in a hierarchy, a regional instance consuming a
 root's rendered fleet config, not a new component type. That is scaling the
 one binary, not adding a second.
@@ -433,7 +433,7 @@ discipline).
   (budget shares), Q5 (xDS-style transport, greenfield control plane), Q7
   (bounded staleness), Q8 (six-month rule mechanical).
 - [02-architecture.md](02-architecture.md): the control-plane section and the
-  ArgoCD mapping table this document makes concrete.
+  GitOps capability table this document makes concrete.
 - [03-hot-swap.md](03-hot-swap.md): the three limitations; limitation 1 is the
   partial-application decision made here.
 - [04-build-plan.md](04-build-plan.md): Phase 2 scope and exit criteria (a

@@ -1,0 +1,36 @@
+providers:
+  openai-main:
+    kind: openai
+    upstream: { host: 127.0.0.1, port: 6190 }
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: { env: prod }
+    # GB-5: the 100k-token scenario, expressed as a few lines of YAML. Every
+    # value of `team` is capped at 100_000 tokens by default; ml-research is
+    # lifted to 200_000, and free-tier is pinned to 5_000. That is the whole
+    # spend-limit surface — a fleet default plus two Git-reviewed overrides.
+    spend_caps:
+      team:
+        default: 100000
+        overrides:
+          ml-research: 200000
+          free-tier: 5000
+routes:
+  - prefix: /openai
+    provider: openai-main
+rejections:
+  # GB-4 makes the hard cap livable: a request over its cap gets THIS operator
+  # body (with {{cap}}/{{spend}} in tokens), and a stream exhausted
+  # mid-generation is cut with the `streaming` terminal event below.
+  missing_attribution:
+    status: 429
+    content_type: application/json
+    body: '{"error":"budget_exhausted","spender":"{{key}}","cap_tokens":"{{cap}}","spend_tokens":"{{spend}}","route":"{{route}}"}'
+    streaming:
+      event: error
+      data: '{"error":"budget_exhausted","spender":"{{key}}","cap_tokens":{{cap}},"spend_tokens":{{spend}}}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'

@@ -47,6 +47,7 @@ use pingora::prelude::*;
 use gateway_core::adapters::Adapter;
 use gateway_core::attribution::{self, Origin, Tag};
 use gateway_core::aws::{CredentialCache, Credentials};
+use gateway_core::budget::{CapId, Verdict};
 use gateway_core::config::{self, Config, ProviderKind, RejectionTemplate, StsConfig, ATTR_HEADER_PREFIX};
 use gateway_core::event::Event;
 use gateway_core::expr::EvalCtx;
@@ -58,6 +59,7 @@ use gateway_core::snapshot::Snapshot;
 use gateway_core::template;
 
 use crate::aws_auth;
+use crate::budget::{MeterOutcome, NodeBudgets};
 use crate::reload::SharedSnapshot;
 
 pub struct Gateway {
@@ -68,14 +70,40 @@ pub struct Gateway {
     /// across config swaps on purpose — the key carries every input that
     /// changes the minted credentials.
     sts_cache: CredentialCache,
+    /// GB-5: the node-local budget counters (shared with the control-plane
+    /// client, which reports spend and applies share grants). Lives OUTSIDE
+    /// the snapshot on purpose — a config swap changes the CAP a request reads
+    /// (from its pinned policy), never the running counters (docs/03
+    /// limitation 3: a cap tightened mid-stream does not retroactively apply;
+    /// the counters carry across swaps).
+    budgets: Arc<NodeBudgets>,
 }
 
 impl Gateway {
     pub fn new(shared: SharedSnapshot) -> Self {
+        Self::with_budgets(
+            shared,
+            Arc::new(NodeBudgets::new(
+                "standalone",
+                Box::new(crate::budget::LogWebhookSink),
+            )),
+        )
+    }
+
+    /// Build with a shared [`NodeBudgets`] — control-plane mode passes the same
+    /// `Arc` the client loop reports/rebalances through.
+    pub fn with_budgets(shared: SharedSnapshot, budgets: Arc<NodeBudgets>) -> Self {
         Gateway {
             shared,
             sts_cache: CredentialCache::new(),
+            budgets,
         }
+    }
+
+    /// The node's budget counters — for the control-plane client to report and
+    /// rebalance, and for tests.
+    pub fn budgets(&self) -> Arc<NodeBudgets> {
+        self.budgets.clone()
     }
 }
 
@@ -116,6 +144,16 @@ pub struct ReqCtx {
     body_bytes: usize,
     body_chunks: usize,
     event_counts: [usize; 6],
+    /// GB-5: the capped spenders this request bills — one per resolved
+    /// attribution tag that has a composed cap. `(CapId, cap_tokens)`.
+    caps: Vec<(CapId, u64)>,
+    /// GB-5: the last estimated-output-token reading fed to the budget, so each
+    /// tap computes the INCREMENT since the previous chunk (the Meter's
+    /// estimate is cumulative). Reconciled to the authoritative frame at end.
+    last_metered_est: u64,
+    /// GB-5: set once a mid-stream cut fires. Further chunks are suppressed and
+    /// the operator's terminal event is emitted in place of continued content.
+    cut: bool,
 }
 
 impl ReqCtx {
@@ -132,6 +170,9 @@ impl ReqCtx {
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
+            caps: Vec::new(),
+            last_metered_est: 0,
+            cut: false,
         }
     }
 
@@ -222,7 +263,20 @@ async fn respond_rejection(
     t: &RejectionTemplate,
     vars: &[(&str, &str)],
 ) -> Result<()> {
-    let body = template::render(&t.body, vars);
+    // The GB-5 additions {{cap}}/{{spend}} are optional and only supplied by
+    // the budget rejection path. Default them to "-" for every OTHER reason
+    // (missing attribution, unresolvable label, session tag) so an operator
+    // body that uses them never leaks a literal placeholder on a non-budget
+    // rejection.
+    let mut all: Vec<(&str, &str)> = Vec::with_capacity(vars.len() + 2);
+    all.extend_from_slice(vars);
+    if !all.iter().any(|(k, _)| *k == "cap") {
+        all.push(("cap", "-"));
+    }
+    if !all.iter().any(|(k, _)| *k == "spend") {
+        all.push(("spend", "-"));
+    }
+    let body = template::render(&t.body, &all);
     let mut header = ResponseHeader::build(t.status, Some(2))?;
     header.insert_header("content-type", t.content_type.clone())?;
     header.insert_header("content-length", body.len().to_string())?;
@@ -435,6 +489,56 @@ impl ProxyHttp for Gateway {
         }
         let tags = resolution.tags;
 
+        // GB-5: for each resolved tag that this policy caps, admit the request
+        // against the node-local budget BEFORE it reaches the upstream. A value
+        // already at its cap is rejected with the effective GB-4
+        // `missing_attribution` template (the same operator body that makes the
+        // hard cap livable, per GB-4), naming the exhausted spender. The common
+        // path is one in-memory check per capped tag — no control-plane hop.
+        let mut caps: Vec<(CapId, u64)> = Vec::new();
+        for tag in &tags {
+            if let Some(cap) = policy.cap_for(&tag.key, &tag.value) {
+                let id = CapId::new(&tag.key, &tag.value);
+                match self.budgets.admit(&id, Some(cap)) {
+                    Verdict::Deny { cap } => {
+                        let spent = self
+                            .budgets
+                            .snapshot(&id)
+                            .map(|(_, _, s)| s)
+                            .unwrap_or(cap);
+                        info!(
+                            "[gb5 {}] {id} DENIED at admission: spent {spent}/{cap} tokens \
+                             (rejecting: missing_attribution) cfg=v{v}",
+                            route.prefix
+                        );
+                        respond_rejection(
+                            session,
+                            &policy.missing_attribution,
+                            &[
+                                ("key", id.to_string().as_str()),
+                                ("route", route.prefix.as_str()),
+                                ("cap", cap.to_string().as_str()),
+                                ("spend", spent.to_string().as_str()),
+                            ],
+                        )
+                        .await?;
+                        return Ok(true);
+                    }
+                    Verdict::Escalate => {
+                        // Near the local-share limit: keep serving this request,
+                        // but flag it so the control-plane client escalates to a
+                        // synchronous check before the next spend crosses the cap.
+                        info!(
+                            "[gb5 {}] {id} at/above ~90% of local share; will escalate cfg=v{v}",
+                            route.prefix
+                        );
+                        caps.push((id, cap));
+                    }
+                    Verdict::Allow => caps.push((id, cap)),
+                }
+            }
+        }
+
         let kind = cfg.providers[&route.provider].kind;
 
         // GB-8: resolve the effective labels now — fail closed BEFORE the
@@ -539,6 +643,7 @@ impl ProxyHttp for Gateway {
         });
         ctx.adapter = Some(kind.new_adapter());
         ctx.tags = tags;
+        ctx.caps = caps;
         info!("[attr {}] {} cfg=v{v}", route.prefix, ctx.tag_summary());
         Ok(false)
     }
@@ -653,10 +758,17 @@ impl ProxyHttp for Gateway {
         }
     }
 
-    /// The tap (promoted from Spike B). Pingora hands each body chunk as
-    /// `&mut Option<Bytes>` on its way downstream; we feed a copy of the
-    /// bytes to the adapter and leave the option untouched, so the client
-    /// receives the identical stream at the identical cadence.
+    /// The tap (promoted from Spike B), now the GB-5 mid-stream enforcement
+    /// point too. Pingora hands each body chunk as `&mut Option<Bytes>` on its
+    /// way downstream; we feed a copy of the bytes to the adapter and the meter,
+    /// then charge the INCREMENT of estimated output tokens against every capped
+    /// spender for this request. When a spender's running tally crosses the
+    /// bound (the cap, or the held share under partition) the stream is CUT: the
+    /// operator's GB-4 terminal event (the typed streaming template) replaces
+    /// the outgoing content and every later chunk is suppressed. A cap tightened
+    /// mid-stream does NOT retroactively apply — this meters the version the
+    /// request bound (docs/03 limitation 2); the live estimate is reconciled to
+    /// the provider's terminal usage frame at stream end.
     fn response_body_filter(
         &self,
         _session: &mut Session,
@@ -669,6 +781,14 @@ impl ProxyHttp for Gateway {
         let Some(kind) = ctx.route.as_ref().map(|b| b.kind) else {
             return Ok(None); // rejected before proxying; nothing to tap
         };
+
+        // Once cut, suppress all further upstream content: the client already
+        // received the terminal event; nothing else should reach it.
+        if ctx.cut && !end_of_stream {
+            *body = None;
+            return Ok(None);
+        }
+
         if let Some(chunk) = body.as_ref() {
             if !chunk.is_empty() {
                 ctx.body_bytes += chunk.len();
@@ -684,6 +804,43 @@ impl ProxyHttp for Gateway {
                 ctx.adapter = adapter;
             }
         }
+
+        // GB-5 mid-stream enforcement: charge the estimated-output-token
+        // INCREMENT since the last tap against every capped spender, and cut on
+        // the first that crosses its bound.
+        if !ctx.caps.is_empty() && !ctx.cut {
+            let est = ctx.meter.estimated_output_tokens();
+            let delta = est.saturating_sub(ctx.last_metered_est);
+            ctx.last_metered_est = est;
+            if delta > 0 {
+                let route_prefix =
+                    ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
+                // Clone the caps out so the &mut ctx borrow for `cut_stream`
+                // below is free of the immutable caps borrow.
+                let caps = ctx.caps.clone();
+                for (id, cap) in &caps {
+                    match self.budgets.meter(id, Some(*cap), delta) {
+                        MeterOutcome::Cut { id, cap } => {
+                            let spent = self
+                                .budgets
+                                .snapshot(&id)
+                                .map(|(_, _, s)| s)
+                                .unwrap_or(cap);
+                            error!(
+                                "[gb5 {route_prefix}] {id} EXCEEDED mid-stream: spent \
+                                 {spent}/{cap} tokens; CUTTING the stream with the GB-4 \
+                                 terminal event cfg=v{}",
+                                ctx.snapshot.version
+                            );
+                            self.cut_stream(body, ctx, &id, cap, spent);
+                            break;
+                        }
+                        MeterOutcome::Continue => {}
+                    }
+                }
+            }
+        }
+
         if end_of_stream {
             let binding = ctx.route.as_ref().expect("route bound above");
             // The attribution→spend join: tags and token counts on ONE
@@ -710,8 +867,85 @@ impl ProxyHttp for Gateway {
                     .map(|p| format!("{p:+.1}%"))
                     .unwrap_or_else(|| "n/a".to_string()),
             );
+
+            // GB-5: reconcile the live estimate for THIS stream to the
+            // provider's authoritative terminal frame (docs/01 Q3), then log
+            // each capped spender's post-reconcile state. The authoritative
+            // output count is the billing number; the estimate was the
+            // mid-stream enforcement proxy for it.
+            let est = ctx.meter.estimated_output_tokens();
+            if let Some(auth) = report.authoritative_output_tokens {
+                for (id, cap) in &ctx.caps {
+                    self.budgets.settle(id, est, auth);
+                    if let Some((_, share, spent)) = self.budgets.snapshot(id) {
+                        info!(
+                            "[budget {}] {id} reconciled est={est}->auth={auth}; spent={spent}/{cap} \
+                             tokens (share={share}){} cfg=v{}",
+                            binding.prefix,
+                            if ctx.cut { " [CUT]" } else { "" },
+                            ctx.snapshot.version,
+                        );
+                    }
+                }
+            } else if !ctx.caps.is_empty() {
+                // No terminal usage frame: the estimate stands as the charge
+                // (its error bound is the published Q3 number).
+                for (id, cap) in &ctx.caps {
+                    if let Some((_, share, spent)) = self.budgets.snapshot(id) {
+                        info!(
+                            "[budget {}] {id} no usage frame; spent={spent}/{cap} tokens \
+                             (share={share}, estimate stands){} cfg=v{}",
+                            binding.prefix,
+                            if ctx.cut { " [CUT]" } else { "" },
+                            ctx.snapshot.version,
+                        );
+                    }
+                }
+            }
         }
         Ok(None)
+    }
+}
+
+impl Gateway {
+    /// Cut an in-flight stream: replace the current outgoing chunk with the
+    /// operator's GB-4 streaming terminal event (the typed
+    /// [`StreamingRejection`] from the request's bound policy), and latch
+    /// `ctx.cut` so every later chunk is suppressed. Falls back to a bare data
+    /// frame if the operator defined no `streaming` block — the cut still fires,
+    /// the stream still stops, only the payload is a minimal default.
+    ///
+    /// [`StreamingRejection`]: gateway_core::config::StreamingRejection
+    fn cut_stream(
+        &self,
+        body: &mut Option<Bytes>,
+        ctx: &mut ReqCtx,
+        id: &CapId,
+        cap: u64,
+        spent: u64,
+    ) {
+        ctx.cut = true;
+        let cap_s = cap.to_string();
+        let spent_s = spent.to_string();
+        let key_s = id.to_string();
+        let route = ctx
+            .route
+            .as_ref()
+            .map(|b| b.prefix.clone())
+            .unwrap_or_default();
+        let vars: [(&str, &str); 4] = [
+            ("key", key_s.as_str()),
+            ("route", route.as_str()),
+            ("cap", cap_s.as_str()),
+            ("spend", spent_s.as_str()),
+        ];
+        let rendered = match &ctx.snapshot.config.rejections.missing_attribution.streaming {
+            Some(streaming) => template::render_terminal_event(streaming, &vars),
+            None => format!(
+                "data: {{\"error\":\"budget exhausted for {key_s}\",\"cap\":{cap},\"spend\":{spent}}}\n\n"
+            ),
+        };
+        *body = Some(Bytes::from(rendered));
     }
 }
 

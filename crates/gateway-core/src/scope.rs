@@ -68,8 +68,21 @@ pub struct EffectivePolicy {
     /// GB-8 labels (consulted only when the route's provider is
     /// vertex-kind), in composed order.
     pub labels: Vec<EffectiveLabel>,
+    /// GB-5: the composed spend cap per attribution key (tokens). A key absent
+    /// here is uncapped. Composed down the chain: a lower scope's `default` and
+    /// per-value overrides win over a higher one (docs/02 GB-5).
+    pub spend_caps: BTreeMap<String, crate::budget::KeyCap>,
     pub missing_attribution: RejectionTemplate,
     pub unknown_route: RejectionTemplate,
+}
+
+impl EffectivePolicy {
+    /// The composed spend cap in tokens for a resolved `key=value`, or `None`
+    /// if the key is uncapped on this policy (docs/02 GB-5). The single lookup
+    /// the enforcement layer needs per resolved tag.
+    pub fn cap_for(&self, key: &str, value: &str) -> Option<u64> {
+        self.spend_caps.get(key).and_then(|c| c.cap_for(value))
+    }
 }
 
 impl EffectivePolicy {
@@ -116,6 +129,7 @@ struct Layer {
     from_claims: BTreeMap<String, String>,
     derived: BTreeMap<String, Arc<CompiledExpr>>,
     labels: Vec<LabelItem>,
+    spend_caps: BTreeMap<String, crate::budget::KeyCap>,
     missing_attribution: Option<RejectionTemplate>,
     unknown_route: Option<RejectionTemplate>,
 }
@@ -518,6 +532,15 @@ fn compile_layer(
         validate_rejection_overrides(o, name, errs);
     }
 
+    // GB-5: compile each key's spend-cap spec into a pure KeyCap. A cap on a
+    // key the chain never establishes an origin for is harmless (it just never
+    // matches a resolved tag), so no cross-field validation is needed here.
+    let mut spend_caps = BTreeMap::new();
+    for (key, spec) in &attr.spend_caps {
+        check_key(key, &format!("{name}: spend_caps"), errs);
+        spend_caps.insert(key.clone(), spec.to_key_cap());
+    }
+
     Layer {
         name: name.to_string(),
         required_keys: attr.required_keys.clone(),
@@ -525,6 +548,7 @@ fn compile_layer(
         from_claims: attr.from_claims.clone(),
         derived,
         labels: label_items,
+        spend_caps,
         missing_attribution: rejections.and_then(|o| o.missing_attribution.clone()),
         unknown_route: rejections.and_then(|o| o.unknown_route.clone()),
     }
@@ -627,6 +651,20 @@ fn compose(
         ));
     }
 
+    // GB-5 spend caps: compose down the chain, lower scope winning per key
+    // (compose_child folds the child's default + per-value overrides over the
+    // parent's) — the cap analog of the pin merge above.
+    let mut spend_caps: BTreeMap<String, crate::budget::KeyCap> = BTreeMap::new();
+    for layer in chain {
+        for (key, cap) in &layer.spend_caps {
+            let composed = match spend_caps.get(key) {
+                Some(parent) => parent.compose_child(cap),
+                None => cap.clone(),
+            };
+            spend_caps.insert(key.clone(), composed);
+        }
+    }
+
     // Rejections: base, then per-reason overrides down the chain.
     let mut missing_attribution = base.missing_attribution.clone();
     let mut unknown_route = base.unknown_route.clone();
@@ -645,6 +683,7 @@ fn compose(
         from_claims,
         derived,
         labels: final_labels,
+        spend_caps,
         missing_attribution,
         unknown_route,
     }

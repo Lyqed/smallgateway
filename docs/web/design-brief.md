@@ -254,8 +254,9 @@ Single page, anchored nav (`Principles · Architecture · Build · Contribute`):
    UsageDelta → MessageEnd / Error`) as stations on one hand-drawn line
    crossing a machined section; mono labels, violet strokes. Below, two
    compact panels: the data plane (streaming first-class, mid-stream
-   enforcement) and the control plane (ArgoCD-for-gateway-fleets, Git as
-   truth). Sourced from docs/02-architecture.md.
+   enforcement) and the control plane (GitOps for gateway fleets, Git as
+   truth, a reconciler that converges the fleet). Sourced from
+   docs/02-architecture.md.
 4. **Build status** — honest, dated: Phase 0 in progress; Spike A (event
    model over three wire formats — tests green) with what remains; Spike B
    (Pingora vs agentgateway) status; then the phase roadmap as a vertical

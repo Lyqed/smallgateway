@@ -187,6 +187,7 @@ mod tests {
                 })
                 .collect(),
             labels: Vec::new(),
+            spend_caps: std::collections::BTreeMap::new(),
             missing_attribution: template(),
             unknown_route: template(),
         }

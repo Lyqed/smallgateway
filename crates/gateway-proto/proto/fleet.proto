@@ -49,6 +49,46 @@ message RenderedSnapshot {
 // still here" (docs/07: `AckOfStatus {}`).
 message AckOfStatus {}
 
+// GB-5 budget shares (docs/01 Q4; docs/02 "GB-5 at fleet scale — budget
+// shares"). One capped spender: an attribution key and the resolved value that
+// names it, plus token figures. Reused in the usage report (node -> CP), the
+// share grant (CP -> node), and the synchronous escalation check both ways.
+message BudgetShare {
+  // The attribution key (e.g. "team") and its resolved value (e.g.
+  // "ml-research"): together they name the fleet-wide capped spender.
+  string attribution_key = 1;
+  string attribution_value = 2;
+  // The fleet-wide cap in tokens for this value (0 means uncapped — a share is
+  // still tracked for telemetry but never denies).
+  uint64 cap_tokens = 3;
+  // The tokens this node's share holds (share grant), or the tokens this node
+  // has spent against its share (usage report), depending on the carrier.
+  uint64 tokens = 4;
+}
+
+// Node -> CP: a periodic report of what each capped spender has consumed on
+// THIS node since the last report, so the control plane rebalances shares from
+// observed spend telemetry (a hot node gets a bigger slice). Reuses the Status
+// heartbeat cadence; carried as its own message so the wire stays typed.
+message UsageReport {
+  repeated BudgetShare spenders = 1;
+}
+
+// CP -> node: the shares this node now holds for each capped spender. Sent on a
+// rebalance and in reply to a SyncCheck. A node applies these to its local
+// LocalBudget ceilings without losing its running spend.
+message ShareGrant {
+  repeated BudgetShare shares = 1;
+}
+
+// Node -> CP: the synchronous ~90% escalation check (docs/01 Q4: "escalate to
+// synchronous checks only above ~90% consumption"). The node is near the limit
+// of its local share for these spenders and asks the control plane to confirm
+// or grow them before the next spend crosses the cap. The reply is a ShareGrant.
+message SyncCheck {
+  repeated BudgetShare spenders = 1;
+}
+
 // Control plane -> data plane.
 message ServerMessage {
   oneof kind {
@@ -56,6 +96,8 @@ message ServerMessage {
     RenderedSnapshot push = 1;
     // Liveness, nothing more.
     AckOfStatus ack_of_status = 2;
+    // GB-5: (re)allocate this node's budget shares.
+    ShareGrant share_grant = 3;
   }
 }
 
@@ -106,6 +148,10 @@ message ClientMessage {
     Ack ack = 2;
     Nack nack = 3;
     Status status = 4;
+    // GB-5: periodic observed-spend telemetry driving share rebalancing.
+    UsageReport usage = 5;
+    // GB-5: the synchronous near-limit escalation; reply is a ShareGrant.
+    SyncCheck sync_check = 6;
   }
 }
 

@@ -1,7 +1,8 @@
 # Architecture
 
 *Two binaries plus Git. The data plane makes streaming a first-class citizen;
-the control plane is ArgoCD for gateway fleets.*
+the control plane is GitOps for gateway fleets: desired state in Git, a
+reconciler that converges the fleet.*
 
 ## The thesis, stated honestly
 
@@ -71,20 +72,20 @@ file.
 
 ## Control plane
 
-The ArgoCD analogy maps almost one to one, which is a good sign it is
-structural, not cosmetic:
+The control plane is built from a small set of GitOps capabilities, each with a
+concrete form for gateway fleets. The shape is structural, not cosmetic:
 
-| ArgoCD concept | Gateway Project equivalent |
+| GitOps capability | Gateway Project form |
 |---|---|
-| Hub-and-spoke, management cluster | Control plane manages N data planes over an xDS-style gRPC stream (versioned snapshots, ACK/NACK) |
-| Application / desired state in Git | Routes, policy chains, limits, attribution rules, provider refs in a config repo |
+| Hub-and-spoke distribution | Control plane manages N data planes over an xDS-style gRPC stream (versioned snapshots, ACK/NACK) |
+| Desired state in Git | Routes, policy chains, limits, attribution rules, provider refs in a config repo |
 | Rendered-manifest pattern | Control plane compiles scoped chains + templates into per-data-plane rendered snapshots; reviewable diffs, no in-gateway templating |
-| ApplicationSets + generators | **GatewaySets**: label selectors (region, env, tenant, cloud) × generators stamp config across the fleet |
-| App-of-apps bootstrap | Join token + Git path; a new data plane self-populates its full bundle — `argocd cluster add` ergonomics |
+| Fleet-wide config generation | **GatewaySets**: label selectors (region, env, tenant, cloud) × generators stamp config across the fleet |
+| Zero-config bootstrap | Join token + Git path; a new data plane self-populates its full bundle, the `argocd cluster add` ergonomic |
 | Drift detection / self-heal | Reconciler converges divergent data planes; divergence is surfaced, never silent |
-| Argo Rollouts + AnalysisTemplates | **Config canaries**: wave rollouts by failure domain, analyzed on error rate, p99, and token-spend anomaly from the gateway's own telemetry, auto-rollback |
-| Admission policies (OPA/Kyverno) | CEL validations on config PRs: "no route without attribution keys," "no unsigned WASM module," "no override >5x default without label" |
-| Controller sharding, hierarchical Argo | Same story, v2: regional control planes consuming a root's rendered fleet config |
+| Progressive delivery with analysis | **Config canaries**: wave rollouts by failure domain, analyzed on error rate, p99, and token-spend anomaly from the gateway's own telemetry, auto-rollback |
+| Admission policies | CEL validations on config PRs: "no route without attribution keys," "no unsigned WASM module," "no override >5x default without label" |
+| Hierarchical control planes | Regional control planes consuming a root's rendered fleet config (v2) |
 
 The break-glass-with-TTL detail matters more than it looks: gateways get
 emergency-edited at 3am in ways ArgoCD-managed clusters don't tolerate, and

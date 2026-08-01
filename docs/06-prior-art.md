@@ -10,7 +10,7 @@ the reason.*
 |---|---|---|
 | APIM | `<base/>` scoped policy composition | The scoped chain: fleet → project → route → app, each level a Git directory ([02-architecture.md](02-architecture.md)) |
 | APIM (negative lesson) | `!isStreaming` guards — buffering-only transforms | The canonical event stream; streaming is first-class or the design is wrong |
-| ArgoCD | Git as truth, rendered manifests, app-of-apps, drift detection, ApplicationSets | The whole control plane shape, mapped one-to-one in doc 02 |
+| ArgoCD | Git as truth, rendered manifests, app-of-apps, drift detection, ApplicationSets | The GitOps control-plane shape: desired state in Git, a reconciler that converges the fleet, detailed in doc 02 |
 | Spinnaker | Automated canary analysis (Kayenta), manual judgment gates | Config canaries + PR approvals — as Git-native mechanisms, not a pipeline engine |
 | Spinnaker (negative lesson) | 10+ microservices, database as truth | The two-binaries-plus-Git budget in doc 00 |
 | Envoy | xDS: versioned snapshots over long-lived gRPC, ACK/NACK | The fleet transport, without adopting Envoy itself |

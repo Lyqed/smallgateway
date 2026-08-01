@@ -11,6 +11,7 @@
 //! Spike B), now config-driven.
 
 mod aws_auth;
+mod budget;
 mod client;
 mod proxy;
 mod reload;
@@ -23,6 +24,9 @@ use log::info;
 use pingora::prelude::*;
 use pingora::server::Server;
 
+use std::sync::Arc as StdArc;
+
+use budget::{LogWebhookSink, NodeBudgets};
 use proxy::Gateway;
 use reload::{Reloader, SharedSnapshot};
 
@@ -145,6 +149,16 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
 
+    // GB-5: the node-local budget counters, shared between the proxy (which
+    // taps and enforces) and — in control-plane mode — the client loop (which
+    // reports spend and applies share grants). The node id labels the GB-6
+    // alerts; standalone file mode uses a fixed label.
+    let node_label = match &cli.source {
+        ConfigSource::ControlPlane { node_id, .. } => node_id.clone(),
+        ConfigSource::File(_) => "standalone".to_string(),
+    };
+    let budgets = StdArc::new(NodeBudgets::new(node_label, Box::new(LogWebhookSink)));
+
     // Obtain the SharedSnapshot pingora binds per request from whichever config
     // source was chosen. In BOTH modes the snapshot is a validated v1 that must
     // exist before serving — a node with no valid config never serves a
@@ -192,6 +206,7 @@ fn main() {
                 endpoint.clone(),
                 node_id.clone(),
                 join_token.clone(),
+                budgets.clone(),
             ) {
                 Ok(shared) => shared,
                 Err(e) => {
@@ -214,7 +229,8 @@ fn main() {
     let mut server = Server::new(None).expect("pingora server init");
     server.bootstrap();
 
-    let mut service = http_proxy_service(&server.configuration, Gateway::new(shared));
+    let mut service =
+        http_proxy_service(&server.configuration, Gateway::with_budgets(shared, budgets));
     service.add_tcp(&cli.listen);
     server.add_service(service);
     server.run_forever();
