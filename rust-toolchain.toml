@@ -1,0 +1,5 @@
+# pingora 0.8.1 declares rust-version 1.84 and pulls edition-2024 crates;
+# the Phase 0 bake-off accepted the fresh-MSRV cost (docs/04-build-plan.md).
+# 1.97 is installed on this machine; same pin as spikes/proxy-pingora.
+[toolchain]
+channel = "1.97"

@@ -1,0 +1,13 @@
+# The Gateway Project workspace — Phase 1: the standalone data plane.
+# The Phase 0 spikes under spikes/ are a frozen historical record and build
+# standalone; they are excluded here, never members.
+
+[workspace]
+resolver = "2"
+members = ["crates/gateway-core", "crates/gatewayd"]
+exclude = ["spikes/event-model", "spikes/proxy-pingora"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false

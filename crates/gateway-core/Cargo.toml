@@ -1,0 +1,17 @@
+[package]
+name = "gateway-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Canonical event model, provider adapters, metering, and the static config model"
+
+[dependencies]
+# Promoted spike deps (spikes/event-model): JSON payload parsing + event-stream CRCs.
+serde_json = "1"
+crc32fast = "1"
+# Phase 1 additions: the YAML config model and HS256 JWT verification (GB-2).
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"

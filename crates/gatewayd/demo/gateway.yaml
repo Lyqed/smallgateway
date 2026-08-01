@@ -1,0 +1,63 @@
+# Demo config for scripts/demo.sh — one static file, Baseline-conformant.
+# All three providers point at the local mock upstream (port 6190), which
+# streams the Phase 0 spike fixtures and echoes received x-attr-* headers.
+
+providers:
+  openai-demo:
+    kind: openai
+    upstream: { host: 127.0.0.1, port: 6190 }
+  anthropic-demo:
+    kind: anthropic
+    upstream: { host: 127.0.0.1, port: 6190 }
+  bedrock-demo:
+    kind: bedrock
+    upstream: { host: 127.0.0.1, port: 6190 }
+
+routes:
+  # GB-1 (required tag) + GB-3 (operator pin): callers must name their team;
+  # the gateway itself asserts env=prod, whatever the caller claims.
+  - prefix: /openai
+    provider: openai-demo
+    attribution:
+      required_keys: [team]
+      pinned: { env: prod }
+
+  - prefix: /anthropic
+    provider: anthropic-demo
+    attribution:
+      required_keys: [team]
+
+  - prefix: /bedrock
+    provider: bedrock-demo
+    attribution:
+      required_keys: [team]
+
+  # GB-2: `user` is proven from the verified JWT's `sub` claim — a caller
+  # header x-attr-user is never believed on this route.
+  - prefix: /claims
+    provider: openai-demo
+    attribution:
+      required_keys: [team, user]
+      from_claims: { user: sub }
+
+# GB-2 verification. Demo-only shared secret — a real deployment injects
+# this from a secret manager, never from a committed file.
+auth:
+  jwt:
+    hs256_secret: demo-secret-do-not-deploy
+
+# GB-4: the operator owns every rejection body. `streaming` is the terminal
+# event emitted when an in-flight stream is cut (type validated now; the
+# mid-stream cut wires in a later phase).
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send x-attr-<key> request headers"}'
+    streaming:
+      event: error
+      data: '{"error":"attribution_required","missing":"{{key}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}","hint":"no configured route prefix matches this path"}'
