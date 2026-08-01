@@ -23,7 +23,7 @@ prepared locally only (nothing has been pushed, forked, or opened as a PR).
 | File | What it is |
 |---|---|
 | `gb4-local-ratelimit-body/0001-localratelimit-support-a-custom-rate-limit-exceeded-.patch` | GB-4: operator-configurable local rate limit rejection response |
-| `gb8-vertex-operator-labels/0001-vertex-support-operator-configured-billing-labels-fo.patch` | GB-8: operator-set (static + CEL) Vertex billing labels |
+| `gb8-vertex-operator-labels/0001-vertex-operator-configured-billing-labels-for-invoic.patch` | GB-8: operator-set (static + CEL) Vertex billing labels for invoice-grade attribution |
 | `PR-GB4.md` | Draft PR title/body for GB-4 |
 | `PR-GB8.md` | Draft PR title/body for GB-8 |
 
@@ -94,7 +94,10 @@ pass `git apply --check` against a pristine checkout of the base commit.
 - Known tradeoff, same as the existing Bedrock/Azure wrappers: serde does
   not enforce `deny_unknown_fields` through `#[serde(flatten)]`, so unknown
   keys in the vertex provider block are no longer rejected at parse time.
-  Called out in the PR draft.
+  The wrapper carries an explanatory comment matching the in-tree precedent
+  for the flattened `Claims` block in `crates/agentgateway/src/http/apikey.rs`
+  ("Intentionally NOT deny_unknown_fields since we use flatten"). `VertexLabel`
+  itself keeps `deny_unknown_fields`. Called out in the PR draft.
 - `cargo xtask schema` regenerated the schema; the flattened wrapper takes
   over the `VertexProvider` definition and adds `labels` +
   `VertexLabel`/`Expression` refs.
@@ -148,6 +151,12 @@ git apply --check gb4-local-ratelimit-body/0001-*.patch   # clean
 git apply --check gb8-vertex-operator-labels/0001-*.patch # clean
 ```
 
+The GB-8 patch was additionally verified end-to-end by applying it to a
+pristine base worktree and running `cargo test -p agent-llm` (258 passed),
+`cargo test -p agentgateway --lib llm::tests` (59 passed, 4 new), and
+`cargo clippy -p agent-llm -p agentgateway --all-targets` (clean) from the
+applied patch rather than only from the branch.
+
 The two branches are independent (both based directly on `66713a6`); they do
 not conflict textually except both regenerate `schema/config.json`/`config.md`,
 so whichever lands second needs a trivial `cargo xtask schema` rerun after
@@ -162,8 +171,9 @@ rebase.
   a `DCO` check alongside proxy-lint/Proxy Test/etc.). No CLA check was
   present. The GB-4 commit (`bb5d1772`) now carries
   `Signed-off-by: Lyqed <antondoeswonders@gmail.com>`, matching the commit
-  author email as the DCO bot requires. GB-8's commit still needs the same
-  treatment before submission.
+  author email as the DCO bot requires. GB-8's commit
+  (`0001-vertex-operator-configured-billing-labels-for-invoic.patch`) now
+  carries the same `Signed-off-by: Lyqed <antondoeswonders@gmail.com>` line.
 - Review reality per the spike-b governance notes: small sponsored PRs merge
   in hours; external feature PRs (e.g. #2023) can take weeks. Both drafts
   reference the in-tree precedents to shorten review.

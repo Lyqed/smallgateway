@@ -1,24 +1,38 @@
-From 1eef91e9d1710660f9e445f5d5d71bcd87b0e5b1 Mon Sep 17 00:00:00 2001
+From 1774aae9fd9f33e730fa305522ec63397b2ce58e Mon Sep 17 00:00:00 2001
 From: Lyqed <antondoeswonders@gmail.com>
 Date: Sat, 1 Aug 2026 16:04:34 +0300
-Subject: [PATCH] vertex: support operator-configured billing labels for native
- Gemini requests
+Subject: [PATCH] vertex: operator-configured billing labels for invoice-grade
+ attribution
 
-The native Vertex generateContent path (#2023) passes billing labels
-through from the client only. This adds an operator-set `labels` field
-to the Vertex provider config, following the CEL-valued AWS session tag
-pattern from the Bedrock backend auth: each label is either a static
-`value` or a CEL `expression` evaluated against the request.
+The native Vertex generateContent path (#2023) shipped native Gemini
+requests and a top-level `labels` field, but that field is caller
+pass-through: the label values on the request come from the client, so
+the operator cannot decide how Vertex spend is attributed. A caller can
+omit labels or send another team's value, and the value that reaches
+Google Cloud billing is caller-asserted rather than operator-set.
+
+This adds an operator-set `labels` field to the Vertex provider config
+so the value reaching Google Cloud billing is operator-decided. Each
+label is either a static `value` or a CEL `expression` evaluated against
+the request, following the AWS STS session tag pattern already used for
+Bedrock cost attribution (#2435/#2447).
 
 Operator labels are merged into the outbound generateContent request
 over any client-sent labels, with the operator's value winning on key
-conflicts so callers cannot override the gateway's cost attribution.
-Label keys and static values are validated against Google Cloud's label
+conflicts so a caller cannot override the gateway's attribution. Label
+keys and static values are validated against Google Cloud's label
 requirements at config load; expressions that fail to produce a valid
-value at request time reject the request (fail closed).
+value at request time reject the request (fail closed), so no request is
+forwarded to Vertex unlabeled. Configs without `labels` are unchanged.
+
+This gives operators the same invoice-grade attribution on Vertex that
+session tags already give on Bedrock: the App/Team/tenant value on the
+Vertex bill is set by the operator, not trusted from the caller.
+
+Signed-off-by: Lyqed <antondoeswonders@gmail.com>
 ---
  crates/agentgateway/src/http/auth/aws.rs      |   2 +-
- crates/agentgateway/src/llm/mod.rs            | 253 +++++++++++++++++-
+ crates/agentgateway/src/llm/mod.rs            | 256 +++++++++++++++++-
  crates/agentgateway/src/llm/tests.rs          | 170 +++++++++++-
  crates/agentgateway/src/store/binds.rs        |   7 +
  crates/agentgateway/src/types/agent_xds.rs    |   2 +-
@@ -30,7 +44,7 @@ value at request time reject the request (fail closed).
  crates/llm/src/lib.rs                         |   2 +
  schema/config.json                            |  40 ++-
  schema/config.md                              |  32 +++
- 13 files changed, 599 insertions(+), 17 deletions(-)
+ 13 files changed, 602 insertions(+), 17 deletions(-)
 
 diff --git a/crates/agentgateway/src/http/auth/aws.rs b/crates/agentgateway/src/http/auth/aws.rs
 index caf958d6..e873b32e 100644
@@ -46,7 +60,7 @@ index caf958d6..e873b32e 100644
  	v.always_materialize_owned()
  		.as_string()
 diff --git a/crates/agentgateway/src/llm/mod.rs b/crates/agentgateway/src/llm/mod.rs
-index c3b79762..a03d0b2f 100644
+index c3b79762..beb81db5 100644
 --- a/crates/agentgateway/src/llm/mod.rs
 +++ b/crates/agentgateway/src/llm/mod.rs
 @@ -1,5 +1,6 @@
@@ -66,10 +80,13 @@ index c3b79762..a03d0b2f 100644
  	Anthropic(anthropic::Provider),
  	Bedrock(BedrockProvider),
  	Azure(AzureProvider),
-@@ -211,6 +212,238 @@ impl std::ops::DerefMut for AzureProvider {
+@@ -211,6 +212,241 @@ impl std::ops::DerefMut for AzureProvider {
  	}
  }
  
++// Wraps `vertex::Provider` (like `BedrockProvider`/`AzureProvider`) to add operator
++// config the wire provider does not carry. Intentionally NOT `deny_unknown_fields`
++// since we use `flatten` (serde cannot enforce it through a flattened field).
 +#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 +#[serde(rename_all = "camelCase")]
 +#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -305,7 +322,7 @@ index c3b79762..a03d0b2f 100644
  impl AIProvider {
  	pub fn bedrock(provider: bedrock::Provider) -> Self {
  		Self::Bedrock(BedrockProvider::new(provider))
-@@ -219,6 +452,10 @@ impl AIProvider {
+@@ -219,6 +455,10 @@ impl AIProvider {
  	pub fn azure(provider: azure::Provider) -> Self {
  		Self::Azure(AzureProvider::new(provider))
  	}
@@ -316,7 +333,7 @@ index c3b79762..a03d0b2f 100644
  }
  
  /// Classify how the upstream reports cached tokens, from the source wire format the
-@@ -275,6 +512,7 @@ struct ChatRequestContext<'a> {
+@@ -275,6 +515,7 @@ struct ChatRequestContext<'a> {
  	provider: &'a AIProvider,
  	headers: &'a HeaderMap,
  	prompt_caching: Option<&'a policy::PromptCachingConfig>,
@@ -324,7 +341,7 @@ index c3b79762..a03d0b2f 100644
  }
  
  // Context provider to each response translation
-@@ -367,7 +605,14 @@ fn render_vertex_gemini(
+@@ -367,7 +608,14 @@ fn render_vertex_gemini(
  	};
  	match req {
  		types::ChatRequest::Completions(req) => {
@@ -340,7 +357,7 @@ index c3b79762..a03d0b2f 100644
  		},
  		_ => Err(AIError::UnsupportedConversion(strng::literal!(
  			"vertex gemini only supports completions input"
-@@ -1768,12 +2013,14 @@ impl AIProvider {
+@@ -1768,12 +2016,14 @@ impl AIProvider {
  			},
  		};
  
