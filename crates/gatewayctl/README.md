@@ -3,9 +3,12 @@
 The control plane: GitOps for gateway fleets, made concrete. One binary that
 compiles a config repo (**Git truth**) into per-node **rendered snapshots** and
 distributes them to N `gatewayd` data planes over one long-lived bidirectional
-gRPC stream each, detects drift and self-heals it, and gates config PRs at
-admission. Phase 2, milestones 1 (fleet distribution) and 2 (Git truth, drift
-self-heal, admission).
+gRPC stream each, detects drift and self-heals it, gates config PRs at
+admission, and — Phase 5 — runs **config-canary analysis between waves with
+auto-rollback** and a **Git-native manual judgment gate**. Phase 2 (fleet
+distribution, Git truth, drift self-heal, admission, multi-wave + GatewaySets),
+Phase 3 (GB-5 budget shares), and Phase 5 (config canaries) land here; Phase 4
+(WASM hooks) lands in `gatewayd`/`gateway-wasm`.
 
 Built against the binding design in
 [docs/07-control-plane.md](../../docs/07-control-plane.md); it extends the
@@ -55,6 +58,15 @@ Proof lives in two demos:
   selector, a **newly-joined** eu node picking up the stamp on its first render,
   and a **silent wave-2 node HALTING wave 2 and FREEZING wave 3** while wave 1
   stays advanced — the mixed per-wave committed state surfaced, never "shrug".
+- [`examples/canary.rs`](examples/canary.rs) →
+  [`canary-demo.log`](canary-demo.log) (**Phase 5**): three region-labeled nodes
+  over real gRPC and three scenarios — a **healthy canary passing analysis** and
+  the rollout advancing; a **token-spend anomaly** on the canary wave (8x the
+  baseline per node, infra metrics fine) **auto-rolling-back** the wave and
+  **freezing the later waves**, with the tripping metric + wave + reverted-to
+  version surfaced; and a rollout **paused at a Git-native judgment gate** until
+  the approval artifact (`approvals/canary.approved`) is committed, then
+  proceeding. Analysis runs from the fleet's OWN telemetry — no new service.
 
 ## What it does
 
@@ -177,9 +189,76 @@ version rather than dragging it forward past its wave's turn (proven in
 [`tests/reconcile.rs`](tests/reconcile.rs)).
 
 > Multi-wave is the substrate config **canaries** sit on (docs/04 Phase 5): a
-> canary is "waves with analysis between them". The ordered-wave substrate is
-> built here; the analysis (metrics gate between waves) is Phase 5 and stays
-> deferred.
+> canary is "waves with analysis between them". Both the substrate AND the
+> analysis are built — see **Config canaries** below.
+
+### Config canaries: analysis between waves + auto-rollback ([`canary.rs`](src/canary.rs) + [`canary_rollout.rs`](src/canary_rollout.rs) + [`telemetry.rs`](src/telemetry.rs))
+
+Phase 5 (docs/04; docs/07 "the canary story is waves with analysis between
+them"; docs/00 "Kayenta-style analysis + manual judgment gates as **Git-native
+mechanisms, not a pipeline engine**"). The canary rollout
+(`roll_out_plan_canary`) is the analysis-gated **superset** of the plain
+multi-wave walk: after a wave acks and **before** advancing to the next, it opens
+an **analysis window** over the fleet's OWN telemetry and compares the canary
+wave against a **baseline** (the not-yet-rolled later waves, still on the old
+version). On a PASS it advances; on a FAIL it **auto-rolls-back**. When the
+canary policy is disabled the walk degenerates to exactly the Phase-2 behavior.
+
+**The three signals**, plain Rust over telemetry the fleet already ingests — no
+metrics service, no new dependency (docs/07 anti-goal):
+
+- **Error rate** — `errors / requests`, from the `Status` heartbeat's tallies and
+  NACKs the stream already folds in. Fails when the canary's rate exceeds
+  baseline by more than `max_error_rate_increase` (an absolute delta).
+- **Latency p99** — a plain sorted-sample percentile of the observed latencies.
+  Fails when the canary p99 exceeds baseline by more than `max_p99_factor`.
+- **Token-spend anomaly** — the **domain-aware** signal nothing else has: the
+  canary wave's per-node spend against the baseline's, read from the **budget
+  ledger** (`UsageReport` telemetry, [`budget.rs`](src/budget.rs)). A config
+  change that suddenly makes a wave spend far more — a bad route, a retry loop,
+  the wrong (pricier) model — trips when the spend factor exceeds
+  `max_spend_factor` **or** (with enough baseline spread) crosses `spend_zscore`.
+
+The policy lives in the Git config repo (`canary.yaml`), **admission-checked like
+any config** — a nonsensical threshold is blocked at admission, not discovered
+mid-rollout:
+
+```yaml
+# canary.yaml — analysis between waves + a manual gate after the canary wave
+enabled: true
+window_secs: 60
+max_error_rate_increase: 0.05   # +5 points over baseline
+max_p99_factor: 1.5             # 1.5x the baseline p99
+max_spend_factor: 2.0           # 2x the baseline per-node spend
+spend_zscore: 3.0
+metrics: { error_rate: true, p99: true, spend_anomaly: true }
+manual_gate_after: [canary]     # the Git-native judgment gate (below)
+```
+
+**Auto-rollback** reuses the existing halt/freeze + revert machinery: on a FAIL
+the failing wave is **reverted** (its prior render re-pushed so the nodes return
+to the old config) and **all later waves are frozen**; the fleet's committed
+version does **not** advance. The tripping metric, the wave, and the reverted-to
+version are surfaced loudly — "ROLLED BACK at wave `canary` on token-spend
+anomaly … reverted to `def456`; later waves frozen". Earlier already-analyzed-
+healthy waves stay advanced; a canary that never fully committed rolls back
+cleanly (docs/04). An **inconclusive** window (no telemetry) is **fail-closed** —
+the rollout does not advance past a canary it could not measure.
+
+### Git-native manual judgment gate ([`canary_rollout.rs`](src/canary_rollout.rs))
+
+The second Spinnaker idea, done Git-native (docs/00; docs/04 "approvals on the
+wave PR"). A policy marks a wave boundary as requiring **manual approval**
+(`manual_gate_after`). The gate is satisfied by an **artifact in the config
+repo** — `approvals/<wave>.approved` — **not** a pipeline "click to approve"
+engine and **not** a running-state stages machine. The mechanism, stated plainly:
+to approve a held wave, the operator adds `approvals/<wave>.approved` to the
+config repo and **commits it** (the reviewed, audited, revertable wave-PR
+approval), the same way every other desired-state change is expressed. The
+control plane pauses at the gated wave and **polls the config source**
+(`RepoGateSignal`, poll is the floor — docs/07) until the artifact appears, then
+proceeds. There is no approval database, no click endpoint, no stages engine —
+the approval lives in Git like all other truth.
 
 ### GatewaySets ([`gatewayset.rs`](src/gatewayset.rs))
 
@@ -327,10 +406,21 @@ a raw snapshot **bypassing the render gate**. Two uses:
 
 Per docs/07's open questions and the task's milestone scope:
 
-- **Config canary ANALYSIS between waves** (docs/04 Phase 5). Multi-wave IS built
-  — it is the ordered-wave substrate a canary sits on. What is deferred is the
-  metric/analysis gate _between_ waves (advance only if wave _k_'s SLOs hold);
-  today a wave advances on a full ACK, not on an analysis verdict.
+- **Projects / tenancy scoping** (docs/04 Phase 5, item 2). **NOT built — the
+  honest remaining Phase-5 item.** The four-scope repo layout (`projects/<p>/…`)
+  and per-project base chains exist in render, but project-level **tenancy
+  scoping** — isolating which projects a config PR, a rollout, or a set of nodes
+  belongs to, and gating on it — is not implemented. GatewaySets + labels cover
+  fleet-wide stamping and wave targeting today; per-tenant scoping/RBAC is the
+  deferred piece.
+- **Node-emitted canary metrics on the wire.** The canary analysis reads the
+  fleet's own telemetry, and the wire (`Status.health`, `UsageReport`) is frozen
+  and stable. Today the node hard-codes `health: "ok"`; encoding real per-window
+  request/error/p99 tallies into the free-form `health` string (which the sink
+  already parses — [`telemetry.rs`](src/telemetry.rs)) is a `gatewayd`-side
+  follow-up. Token-spend telemetry IS live end-to-end (the GB-5 `UsageReport`
+  path), so the domain-aware spend-anomaly signal is fully wired; error-rate/p99
+  lean on NACK signals + the health string until the node emits the tallies.
 - **Postgres.** The runtime store — and the GB-5 fleet budget ledger — are
   in-memory; Postgres replaces them later and, per docs/07, is never truth
   (observed reality only, re-derivable from Git plus the stream). **GB-5
@@ -357,6 +447,11 @@ Per docs/07's open questions and the task's milestone scope:
 `gatewayctl` and `gatewayd` are the two binaries;
 [`gateway-proto`](../gateway-proto) and [`gateway-core`](../gateway-core) are the
 libraries they share. The reconciler, gRPC server, compiler, admission-check
-runner, and wave state machine are modules in this one process, not services —
-docs/07's budget kept honest. `gix` is the only new dependency family
-(pure-Rust, local-read-only), and `cel` is already in the tree via gateway-core.
+runner, wave state machine, **and the config-canary analysis + judgment gate**
+are modules in this one process, not services — docs/07's budget kept honest, and
+the canary anti-goal ("a dedicated metrics/analysis service for canaries") held:
+the analysis is plain Rust statistics ([`canary.rs`](src/canary.rs)) over
+telemetry the fleet already collects, and the gate is a Git artifact, not a
+pipeline engine. `gix` is the only new dependency family (pure-Rust,
+local-read-only), and `cel` is already in the tree via gateway-core; **Phase 5
+adds no new dependency.**

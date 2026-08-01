@@ -1,0 +1,50 @@
+
+========================================================================
+(A) HEALTHY CANARY PASSES ANALYSIS AND THE ROLLOUT ADVANCES
+========================================================================
+config changed (env prod -> canary); canary analysis ON.
+telemetry: canary wave reads healthy (err~0.5%, p99~100ms, ~1000 tok/node),
+           baseline (eu, still on old version) reads the same.
+wave 1 (canary): pushed, node acks; opening analysis window...
+wave 1 PASSED analysis -> wave 2 (eu) pushed, node acks.
+
+[outcome] canary rollout OK: all waves ["canary", "eu"] on dir-c3f0764c
+  wave "canary"  state=Advanced { commit: "dir-c3f0764c072095c9" }  analysis=Passed
+  wave "eu"  state=Advanced { commit: "dir-c3f0764c072095c9" }  analysis=Passed
+  wave "us"  state=Empty                                     analysis=NotAnalyzed
+
+========================================================================
+(B) TOKEN-SPEND ANOMALY ON THE CANARY -> AUTO-ROLLBACK, LATER WAVES FROZEN
+========================================================================
+config changed; canary analysis ON.
+telemetry: canary infra HEALTHY (err~0.5%, p99~100ms) BUT spends 8000 tok/node
+           vs ~1000 baseline -> an 8x token-spend anomaly (bad route/loop/model).
+wave 1 (canary): pushed, node acks; opening analysis window...
+
+[outcome] canary rollout ROLLED BACK at wave "canary" on token-spend anomaly: canary mean 8000 vs baseline mean 1000 (8.00x > allowed 2.00x) -> reverted to (never committed); later waves frozen
+  wave "canary"  state=Halted { commit: "(never committed)", divergences: [] }  analysis=Failed(SpendAnomaly { baseline_mean: 1000.0, canary_mean: 8000.0, factor: 8.0, max_factor: 2.0, zscore: None, max_zscore: 3.0 })
+  wave "eu"  state=Frozen { commit: "(never committed)" }    analysis=NotAnalyzed
+  wave "us"  state=Frozen { commit: "(never committed)" }    analysis=NotAnalyzed
+
+>>> AUTO-ROLLBACK: wave "canary" tripped [token-spend anomaly: canary mean 8000 vs baseline mean 1000 (8.00x > allowed 2.00x)]; reverted, later waves FROZEN. Fleet did NOT advance.
+
+========================================================================
+(C) MANUAL JUDGMENT GATE: HELD ON A GIT ARTIFACT, RELEASED WHEN COMMITTED
+========================================================================
+config changed; policy holds a MANUAL JUDGMENT GATE after the canary wave.
+the gate is Git-native: it is satisfied by committing approvals/canary.approved
+to the config repo (the wave-PR approval), NOT a pipeline click.
+wave 1 (canary): pushed, acks, PASSES analysis -> PAUSES at the judgment gate.
+while unapproved, wave 2 (eu) is NOT pushed: confirmed held
+operator commits approvals/canary.approved to the config repo...
+gate RELEASED -> wave 2 (eu) pushed, node acks.
+
+[outcome] canary rollout OK: all waves ["canary", "eu"] on dir-c3f0764c
+  wave "canary"  state=Advanced { commit: "dir-c3f0764c072095c9" }  analysis=Passed
+  wave "eu"  state=Advanced { commit: "dir-c3f0764c072095c9" }  analysis=Passed
+  wave "us"  state=Empty                                     analysis=NotAnalyzed
+  gates released (Git-approved): ["canary"]
+
+========================================================================
+PHASE 5 PROOF COMPLETE: analysis-passes-advances, spend-anomaly auto-rollback, Git-native gate.
+========================================================================

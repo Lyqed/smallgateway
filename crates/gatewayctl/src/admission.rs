@@ -223,6 +223,29 @@ impl AdmissionPolicy {
             }
         }
 
+        // The config-canary policy (`canary.yaml`) is reviewed config too: a
+        // malformed or nonsensical policy (a non-positive factor, an out-of-range
+        // error-rate increase) is BLOCKED at admission, not discovered mid-
+        // rollout when the analysis would run. Parsing validates the thresholds
+        // (see `canary::parse_canary_policy`), so a parse error IS the admission
+        // failure. Absent file → default policy (analysis off) → admits.
+        if let Some(bytes) = resolved.get("canary.yaml") {
+            match std::str::from_utf8(bytes) {
+                Ok(text) => {
+                    if let Err(e) = crate::canary::parse_canary_policy(text) {
+                        failures.push(RuleFailure {
+                            rule: "canary-policy".to_string(),
+                            detail: e.to_string(),
+                        });
+                    }
+                }
+                Err(e) => failures.push(RuleFailure {
+                    rule: "canary-policy".to_string(),
+                    detail: format!("canary.yaml is not utf-8: {e}"),
+                }),
+            }
+        }
+
         Ok(if failures.is_empty() {
             Verdict::Admit
         } else {

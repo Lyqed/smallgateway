@@ -41,8 +41,9 @@ use gatewayctl::admission::AdmissionPolicy;
 use gatewayctl::fleet::Fleet;
 use gatewayctl::reconcile::Reconciler;
 use gatewayctl::render::{
-    read_gatewaysets, read_wave_plan, render_resolved, Rendered, RenderError,
+    read_canary_policy, read_gatewaysets, read_wave_plan, render_resolved, Rendered, RenderError,
 };
+use gatewayctl::canary_rollout::RepoGateSignal;
 use gatewayctl::server::{ControlPlane, FleetSvc};
 use gatewayctl::source::{ConfigSource, DirectorySource, GitSource, ResolvedRepo};
 use gatewayctl::store::RuntimeStore;
@@ -293,6 +294,7 @@ fn run_serve(cli: Cli) -> ! {
     };
     let gatewaysets = read_gatewaysets(&resolved).unwrap_or_default();
     let plan = read_wave_plan(&resolved).unwrap_or_else(|_| WavePlan::single());
+    let canary_policy = read_canary_policy(&resolved).unwrap_or_default();
     info!(
         "gatewayctl compiled source {} -> render_hash={} source_commit={} ({} gatewayset(s), {} wave(s))",
         cli.source.describe(),
@@ -303,6 +305,7 @@ fn run_serve(cli: Cli) -> ! {
     );
 
     let fleet = Arc::new(Fleet::from_source(rendered, resolved, gatewaysets, plan));
+    fleet.set_canary_policy(canary_policy);
     let store = Arc::new(RuntimeStore::new());
     let tokens = Arc::new(JoinTokens::new(cli.token_ttl));
     // Mint the operator-supplied join token(s) so joining nodes can bootstrap.
@@ -423,18 +426,30 @@ async fn reload_and_roll(
             let commit = next.source_commit.clone();
             let gatewaysets = read_gatewaysets(&resolved).unwrap_or_default();
             let plan = read_wave_plan(&resolved).unwrap_or_else(|_| WavePlan::single());
+            let canary = read_canary_policy(&resolved).unwrap_or_default();
             let n_sets = gatewaysets.sets.len();
             let n_waves = plan.waves.len();
+            let canary_on = canary.enabled;
+            // Capture the render the fleet is on BEFORE applying, so an auto-
+            // rollback has a prior version to re-push (Phase 5).
+            let prior_render = cp.fleet.applied();
+            cp.fleet.set_canary_policy(canary);
             let changed = cp
                 .fleet
                 .set_applied_from_source(next, resolved, gatewaysets, plan);
             if changed {
                 info!(
                     "[reload] trigger={trigger} re-rendered -> render_hash={} source_commit={commit} \
-                     ({n_sets} gatewayset(s), {n_waves} wave(s)); rolling out the wave plan",
-                    &hash[..12]
+                     ({n_sets} gatewayset(s), {n_waves} wave(s), canary={}); rolling out the wave plan",
+                    &hash[..12],
+                    if canary_on { "on" } else { "off" },
                 );
-                cp.roll_out_plan(trigger).await;
+                // Phase 5: the analysis-gated canary rollout. The Git-native
+                // judgment gate reads the SAME config source for approval
+                // artifacts. When canary is off this is exactly the plain walk.
+                let gate = RepoGateSignal::new(source.clone());
+                cp.roll_out_plan_canary(trigger, &gate, None, Some(prior_render))
+                    .await;
             } else {
                 info!(
                     "[reload] trigger={trigger} re-resolved identical (source_commit={commit} \

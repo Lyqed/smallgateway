@@ -62,6 +62,14 @@ impl CapState {
 #[derive(Default)]
 pub struct FleetBudgets {
     caps: Mutex<BTreeMap<CapId, CapState>>,
+    /// Per-node cumulative-spend SNAPSHOTS taken when a canary analysis window
+    /// opens, so the config-canary spend signal compares a per-WINDOW delta
+    /// rather than lifetime cumulative spend. Keyed by node id → the node's
+    /// total spend at window open. Absent node → the window started at 0 for it.
+    /// This is the spend analogue of the telemetry sink's `reset_many`: it does
+    /// not mutate the ledger (cumulative truth is preserved for share
+    /// allocation and GB-6 alerts), it only marks the window's zero point.
+    spend_window_open: Mutex<BTreeMap<String, u64>>,
 }
 
 /// One node's allocated share of one capped value, the unit the control plane
@@ -274,6 +282,58 @@ impl FleetBudgets {
             .unwrap_or(0)
     }
 
+    /// One node's total observed spend across EVERY capped value (the sum of its
+    /// per-cap figures). This is the CUMULATIVE lifetime figure used by the share
+    /// allocator and GB-6 alerts; the config-canary analysis reads the per-WINDOW
+    /// delta ([`FleetBudgets::node_windowed_spend`]) instead, so a fresh canary
+    /// node is not judged against a long-running baseline's lifetime total.
+    pub fn node_total_spend(&self, node_id: &str) -> u64 {
+        self.caps
+            .lock()
+            .expect("budget lock")
+            .values()
+            .map(|e| e.per_node_spend.get(node_id).copied().unwrap_or(0))
+            .sum()
+    }
+
+    /// Open a canary analysis spend WINDOW for a set of nodes: snapshot each
+    /// node's current cumulative total as the window's zero point. Mirrors the
+    /// telemetry sink's `reset_many` (which zeroes the infra window) WITHOUT
+    /// destroying the cumulative ledger — the spend delta since this snapshot is
+    /// the per-window spend rate the analysis compares. Snapshotting BOTH the
+    /// canary and the baseline nodes makes both a per-window figure, so the
+    /// comparison is apples-to-apples regardless of node uptime: a freshly-added
+    /// canary vs a long-running baseline no longer masks (or fabricates) a spend
+    /// anomaly by comparing lifetime totals.
+    pub fn open_spend_window(&self, node_ids: &[String]) {
+        let totals: BTreeMap<String, u64> = node_ids
+            .iter()
+            .map(|id| (id.clone(), self.node_total_spend(id)))
+            .collect();
+        let mut open = self.spend_window_open.lock().expect("spend window lock");
+        for (id, total) in totals {
+            open.insert(id, total);
+        }
+    }
+
+    /// One node's spend OVER the current analysis window: its cumulative total
+    /// now, minus the snapshot taken at [`FleetBudgets::open_spend_window`]. When
+    /// no window was opened for the node (no snapshot), this is the cumulative
+    /// total — the zero-window test/demo path where every node is seeded fresh in
+    /// the same window, so cumulative == windowed there. `saturating_sub` guards
+    /// the (impossible-in-practice) case of a cumulative figure moving backward.
+    pub fn node_windowed_spend(&self, node_id: &str) -> u64 {
+        let total = self.node_total_spend(node_id);
+        let base = self
+            .spend_window_open
+            .lock()
+            .expect("spend window lock")
+            .get(node_id)
+            .copied()
+            .unwrap_or(0);
+        total.saturating_sub(base)
+    }
+
     /// Every capped value the fleet knows about, with its cap and current total
     /// spend — the surfaced ledger for logging/tests.
     pub fn ledger(&self) -> Vec<(CapId, u64, u64)> {
@@ -479,6 +539,61 @@ mod tests {
         let s = &fb.shares_for("survivor")[0];
         // 20k spent + 100% of the restored 80k headroom = 100k.
         assert_eq!(s.share, 100_000);
+    }
+
+    #[test]
+    fn windowed_spend_is_the_delta_since_the_window_opened() {
+        let fb = FleetBudgets::new();
+        // A long-running node that has already spent a lot before the window.
+        fb.report_spend("canary", &id("ml"), 10_000_000, 500_000);
+        // Open the canary analysis window: this node's 500k is now the zero point.
+        fb.open_spend_window(&["canary".to_string()]);
+        // Without the delta, `node_total_spend` still reports the lifetime 500k.
+        assert_eq!(fb.node_total_spend("canary"), 500_000);
+        // The windowed figure starts at 0 — nothing spent SINCE the window opened.
+        assert_eq!(fb.node_windowed_spend("canary"), 0);
+        // It spends 3000 more this window.
+        fb.report_spend("canary", &id("ml"), 10_000_000, 503_000);
+        assert_eq!(fb.node_windowed_spend("canary"), 3_000);
+        assert_eq!(fb.node_total_spend("canary"), 503_000, "cumulative untouched");
+    }
+
+    #[test]
+    fn windowed_spend_without_a_snapshot_is_the_cumulative_total() {
+        // The zero-window test/demo path: no `open_spend_window` call, so the
+        // windowed figure equals the cumulative total (every node seeded fresh in
+        // the same window there, so cumulative == windowed).
+        let fb = FleetBudgets::new();
+        fb.report_spend("n1", &id("ml"), 100_000, 4_200);
+        assert_eq!(fb.node_windowed_spend("n1"), 4_200);
+    }
+
+    #[test]
+    fn a_fresh_canary_vs_a_long_running_baseline_compares_per_window_spend() {
+        // The exact false-negative the cumulative comparison masked: a freshly-
+        // added canary against a long-running baseline. With cumulative totals the
+        // baseline's lifetime spend dwarfs the canary's, hiding a per-window spike.
+        // With the delta, both are measured over the SAME window.
+        let fb = FleetBudgets::new();
+        // Baseline has been running a long time: huge cumulative spend.
+        fb.report_spend("baseline", &id("ml"), 10_000_000, 900_000);
+        // Canary just joined: small cumulative spend.
+        fb.report_spend("canary", &id("ml"), 10_000_000, 1_000);
+        // Open the window over BOTH — their lifetime totals are the zero points.
+        fb.open_spend_window(&["baseline".to_string(), "canary".to_string()]);
+        // Over the window the canary spends 5000 (a spike) while the baseline
+        // spends its usual 500.
+        fb.report_spend("baseline", &id("ml"), 10_000_000, 900_500);
+        fb.report_spend("canary", &id("ml"), 10_000_000, 6_000);
+        // Cumulative would say baseline(900500) >> canary(6000): NO anomaly.
+        assert!(fb.node_total_spend("baseline") > fb.node_total_spend("canary"));
+        // Windowed correctly says the canary spent 10x the baseline THIS window.
+        assert_eq!(fb.node_windowed_spend("baseline"), 500);
+        assert_eq!(fb.node_windowed_spend("canary"), 5_000);
+        assert!(
+            fb.node_windowed_spend("canary") > fb.node_windowed_spend("baseline") * 2,
+            "the per-window spike is visible where the cumulative comparison hid it"
+        );
     }
 
     #[test]

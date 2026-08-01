@@ -137,6 +137,9 @@ struct FleetInner {
     /// (docs/07: "no config re-render unless the commit changed"). Cleared on
     /// every apply.
     render_cache: BTreeMap<String, Rendered>,
+    /// The config-canary policy in force for the applied commit. Analysis OFF by
+    /// default; set from `canary.yaml` by the serve path on every apply.
+    canary: crate::canary::CanaryPolicy,
 }
 
 /// The inputs desired-state is derived from: the resolved config repo, the
@@ -147,6 +150,13 @@ struct DesiredInputs {
     gatewaysets: GatewaySets,
     plan: WavePlan,
 }
+
+/// The config-canary policy in force for the CURRENT applied commit (parsed from
+/// `canary.yaml`). Held alongside the desired inputs but on its own field so the
+/// Phase-2 `from_source` / `set_applied_from_source` signatures stay unchanged;
+/// the serve path calls [`Fleet::set_canary_policy`] after re-resolving. Default
+/// is analysis OFF (the plain multi-wave walk), so a fleet built without a canary
+/// config behaves exactly as it did in Phase 2.
 
 #[derive(Clone)]
 struct NodeVersioning {
@@ -168,6 +178,7 @@ impl Fleet {
                 desired: None,
                 wave_commit: BTreeMap::new(),
                 render_cache: BTreeMap::new(),
+                canary: crate::canary::CanaryPolicy::default(),
             }),
             waves_in_flight: AtomicUsize::new(0),
         }
@@ -194,6 +205,7 @@ impl Fleet {
                 }),
                 wave_commit: BTreeMap::new(),
                 render_cache: BTreeMap::new(),
+                canary: crate::canary::CanaryPolicy::default(),
             }),
             waves_in_flight: AtomicUsize::new(0),
         }
@@ -287,6 +299,20 @@ impl Fleet {
             .unwrap_or_else(WavePlan::single)
     }
 
+    /// Set the config-canary policy in force (parsed from `canary.yaml` on the
+    /// current apply). The serve path calls this after every re-resolve so the
+    /// rollout sees the reviewed policy; the default (analysis OFF) holds until
+    /// then, preserving the Phase-2 plain multi-wave walk.
+    pub fn set_canary_policy(&self, policy: crate::canary::CanaryPolicy) {
+        self.lock().canary = policy;
+    }
+
+    /// The config-canary policy currently in force (cloned). Default (analysis
+    /// OFF) when none was set.
+    pub fn canary_policy(&self) -> crate::canary::CanaryPolicy {
+        self.lock().canary.clone()
+    }
+
     /// The desired render FOR ONE NODE, given its labels: the per-node GatewaySet-
     /// stamped render when the fleet has a source, else the single applied render.
     /// Memoized by the node's canonical label string so a reconcile tick does not
@@ -315,6 +341,23 @@ impl Fleet {
         self.lock()
             .wave_commit
             .insert(wave_name.to_string(), source_commit.to_string());
+    }
+
+    /// Revert `wave_name`'s committed state to `prior_commit` (an auto-rollback
+    /// on a failed config-canary). Distinct from [`Fleet::set_wave_commit`] only
+    /// in intent — it records the wave BACK on an earlier version — but named so
+    /// the rollback path reads clearly. When `prior_commit` is the never-committed
+    /// sentinel the entry is removed, so the wave surfaces as having no committed
+    /// version rather than pointing at a placeholder.
+    pub fn revert_wave_commit(&self, wave_name: &str, prior_commit: &str) {
+        let mut inner = self.lock();
+        if prior_commit == crate::rollout::NEVER_COMMITTED {
+            inner.wave_commit.remove(wave_name);
+        } else {
+            inner
+                .wave_commit
+                .insert(wave_name.to_string(), prior_commit.to_string());
+        }
     }
 
     /// The per-wave committed source_commit map, sorted by wave name — the

@@ -34,6 +34,12 @@ use crate::server::{now_unix, short, ControlPlane, PendingHandle, WAVE_ACK_TIMEO
 /// later rollout, once the wave_commit map is populated.
 pub(crate) const NEVER_COMMITTED: &str = "(never committed)";
 
+/// How often the control plane re-checks the config repo for the Git-expressed
+/// manual-gate approval artifact while paused. A poll, not a webhook — the same
+/// floor the config-source poll uses (docs/07: "poll is the floor"). Short so the
+/// demo/tests release promptly once the approval is committed.
+pub(crate) const GATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The outcome of one wave WITHIN a multi-wave rollout, for the surfaced,
 /// queryable per-wave committed state (docs/07: "waves 1 and 2 on abc123, waves
 /// 3.. on def456", never "shrug").
@@ -108,6 +114,7 @@ impl MultiWaveOutcome {
         }
     }
 }
+
 
 impl ControlPlane {
     /// Run one all-or-nothing wave for the currently-applied render across every
@@ -251,6 +258,7 @@ impl ControlPlane {
         result
     }
 
+
     /// The concrete commit a frozen wave is currently on: its last recorded
     /// per-wave commit. When the wave has NO per-wave record yet — a first-ever
     /// rollout that halts before this wave has ever committed — there is no prior
@@ -262,7 +270,7 @@ impl ControlPlane {
     /// delivered/observed hash. On any subsequent rollout the wave_commit map is
     /// populated, so this returns the concrete prior commit (docs/07:
     /// "waves 3.. on def456").
-    fn frozen_commit(&self, wave_name: &str) -> String {
+    pub(crate) fn frozen_commit(&self, wave_name: &str) -> String {
         self.fleet
             .wave_commits()
             .get(wave_name)
@@ -304,7 +312,7 @@ impl ControlPlane {
     }
 
     /// `(node_id, labels)` for every connected node, read from the runtime store.
-    async fn connected_node_labels(
+    pub(crate) async fn connected_node_labels(
         &self,
     ) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
         let mut out = Vec::new();
@@ -319,7 +327,7 @@ impl ControlPlane {
     /// collect each node's Ack/Nack (bounded by the wave timeout), and adjudicate
     /// against each node's OWN expected render_hash. Every node in the wave must
     /// ack its own render for the wave to commit.
-    async fn run_wave_nodes(
+    pub(crate) async fn run_wave_nodes(
         &self,
         trigger: &str,
         wave_name: &str,

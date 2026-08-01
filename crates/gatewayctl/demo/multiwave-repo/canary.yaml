@@ -1,0 +1,29 @@
+# Config-canary policy (Phase 5) — analysis between waves + a Git-native
+# judgment gate. Lives in the config repo (Git truth), admission-checked like any
+# config, rendered on every apply. Analysis reads the fleet's OWN telemetry
+# (error rate + p99 from the Status/NACK stream, token-spend anomaly from the
+# GB-5 budget ledger) — no new metrics service, no new dependency.
+enabled: true
+
+# How long the control plane collects the canary wave's telemetry before
+# adjudicating, between waves.
+window_secs: 60
+
+# Thresholds. A canary wave FAILS (and the rollout auto-rolls-back, freezing the
+# later waves) when any ENABLED metric breaches:
+max_error_rate_increase: 0.05   # canary error rate > baseline by +5 points
+max_p99_factor: 1.5             # canary p99 > 1.5x the baseline p99
+max_spend_factor: 2.0           # canary spend/node > 2x the baseline (bad route/loop/model)
+spend_zscore: 3.0               # or > 3 std-devs above the baseline nodes' spend
+
+metrics:
+  error_rate: true
+  p99: true
+  spend_anomaly: true
+
+# The Git-native manual judgment gate: after the canary wave advances and passes
+# analysis, PAUSE until an operator commits approvals/canary.approved to this
+# config repo (the wave-PR approval). Remove this list for a fully automated
+# canary; add wave names to gate more boundaries.
+manual_gate_after:
+  - canary

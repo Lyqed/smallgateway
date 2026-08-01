@@ -40,6 +40,7 @@ use gateway_proto::{
 use crate::budget::FleetBudgets;
 use crate::fleet::{AckResult, Fleet};
 use crate::store::RuntimeStore;
+use crate::telemetry::FleetTelemetry;
 use crate::token::{Admission, JoinTokens};
 
 /// How long a wave waits for each node to answer before treating it as silent
@@ -144,6 +145,10 @@ pub struct ControlPlane {
     /// GB-6: where alerts raised at the control plane's enforcement point go.
     /// Pluggable; defaults to the structured log sink.
     pub alerts: Arc<dyn AlertSink>,
+    /// Phase 5: the observed-telemetry sink the config-canary analysis reads —
+    /// per-node request/error/latency windows folded from the `Status`/NACK
+    /// stream. Spend comes from `budgets`; this holds only the infra signals.
+    pub telemetry: Arc<FleetTelemetry>,
 }
 
 /// A cheaply-cloneable service handle. tonic clones the service per connection;
@@ -179,6 +184,7 @@ impl ControlPlane {
             sessions: Sessions::default(),
             budgets: Arc::new(FleetBudgets::new()),
             alerts,
+            telemetry: Arc::new(FleetTelemetry::new()),
         })
     }
 
@@ -436,6 +442,10 @@ impl FleetService for FleetSvc {
                             node_for_loop
                         );
                         cp.store.record_nack(&node_for_loop, fleet_version, &reason);
+                        // Phase 5: a NACK is a first-class error signal the
+                        // canary analysis must see — count it against this
+                        // node's observed window even if its health stayed "ok".
+                        cp.telemetry.record_nack(&node_for_loop);
                         cp.sessions
                             .deliver(&node_for_loop, fleet_version, AckResult::Nacked { reason })
                             .await;
@@ -446,6 +456,10 @@ impl FleetService for FleetSvc {
                             &status.observed_render_hash,
                             &status.health,
                         );
+                        // Phase 5: fold the heartbeat's observed request/error/
+                        // p99 tallies (encoded in the free-form health string,
+                        // wire frozen) into this node's canary-analysis window.
+                        cp.telemetry.record_health(&node_for_loop, &status.health);
                         // Liveness reply, nothing more.
                         let _ = tx.send(Ok(ServerMessage::ack_of_status())).await;
                     }

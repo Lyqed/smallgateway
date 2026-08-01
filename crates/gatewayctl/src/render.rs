@@ -178,6 +178,24 @@ pub fn read_wave_plan(resolved: &ResolvedRepo) -> Result<crate::waves::WavePlan,
     }
 }
 
+/// Read the config-canary policy defined in the resolved repo (`canary.yaml`),
+/// if any. Absent or empty → the default policy (analysis OFF, the plain
+/// multi-wave walk), so a repo without a canary config keeps the Phase-2
+/// behavior. Parsed once per render pass and held on the fleet for the rollout.
+pub fn read_canary_policy(
+    resolved: &ResolvedRepo,
+) -> Result<crate::canary::CanaryPolicy, RenderError> {
+    match resolved.get("canary.yaml") {
+        None => Ok(crate::canary::CanaryPolicy::default()),
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| RenderError::Io(format!("canary.yaml: not utf-8: {e}")))?;
+            crate::canary::parse_canary_policy(text)
+                .map_err(|e| RenderError::Invalid(e.to_string()))
+        }
+    }
+}
+
 /// Canonicalize, validate, and hash an assembled+possibly-stamped doc into a
 /// `Rendered`. The final `sorted_value_any` over the whole mapping restores
 /// canonical (sorted-key) order after any overlay deep-merge, so stamping never

@@ -27,6 +27,19 @@
 //!   "ApplicationSets + generators").
 //! - [`rollout`]: the wave rollout orchestration — the single-wave path, the
 //!   ordered MULTI-wave walk grouped by failure domain, and per-node self-heal.
+//! - [`canary_rollout`]: the Phase-5 analysis-gated superset of the multi-wave
+//!   walk — the config-canary analysis window + auto-rollback between waves and
+//!   the Git-native judgment gate ([`canary_rollout::RepoGateSignal`]). A second
+//!   `impl ControlPlane` block reusing the wave/telemetry machinery; no pipeline
+//!   engine, no separate analysis service (docs/07 anti-goal).
+//! - [`canary`]: the PURE config-canary substrate (Phase 5) — the canary policy
+//!   (metrics, thresholds, window, manual gates), a per-wave telemetry snapshot,
+//!   and the plain-Rust analysis (error rate, p99, token-spend anomaly) that
+//!   compares a canary wave against a baseline. No metrics service, no new
+//!   dependency (docs/07 anti-goal).
+//! - [`telemetry`]: the observed-telemetry sink the analysis reads — per-node
+//!   request/error/latency windows folded from the SAME `Status`/NACK stream the
+//!   fleet already ingests (spend comes from [`budget`]).
 //! - [`reconcile`]: drift detection + self-heal — the desired/delivered/
 //!   observed truth table, a periodic tick, and break-glass with TTL
 //!   (docs/07, "Drift detection and self-heal").
@@ -42,13 +55,17 @@
 //!   rollout builds on.
 //!
 //! **Deferred beyond this milestone** (stated, not implied — docs/07's open
-//! questions): config canary ANALYSIS between waves (Phase 5 — multi-wave is the
-//! substrate it sits on, built here; the analysis is not), Postgres, per-node
-//! latching, config-repo webhook (poll is the floor). See
-//! crates/gatewayctl/README.md.
+//! questions): projects/tenancy scoping (Phase 5 item 2 — NOT built; the honest
+//! remaining item), Postgres (runtime state stays in-memory, never truth),
+//! per-node latching, config-repo webhook (poll is the floor). Config-canary
+//! analysis between waves, auto-rollback, and the Git-native judgment gate
+//! (Phase 5 item 3) ARE built here — see [`canary`], [`telemetry`], and the
+//! analysis-gated walk in [`rollout`]. See crates/gatewayctl/README.md.
 
 pub mod admission;
 pub mod budget;
+pub mod canary;
+pub mod canary_rollout;
 pub mod fleet;
 pub mod gatewayset;
 pub mod reconcile;
@@ -57,5 +74,6 @@ pub mod rollout;
 pub mod server;
 pub mod source;
 pub mod store;
+pub mod telemetry;
 pub mod token;
 pub mod waves;
