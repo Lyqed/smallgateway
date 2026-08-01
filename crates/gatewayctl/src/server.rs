@@ -154,6 +154,29 @@ impl ControlPlane {
             .await
     }
 
+    /// Self-heal one drifted node: re-push the CURRENT applied render to just
+    /// that node and await its ack (docs/07: "Self-heal is re-push"). Unlike a
+    /// wave, this touches ONE node and never advances the fleet's committed
+    /// version — it converges a node that fell behind desired, it does not roll
+    /// out a new desired. Returns `true` if the node acked the desired
+    /// `render_hash` within the timeout, `false` otherwise (a NACK or silence,
+    /// which the reconciler surfaces and retries next tick).
+    pub async fn heal_node(&self, node_id: &str) -> bool {
+        let rendered = self.fleet.applied();
+        let version = self.fleet.next_version_for(node_id, &rendered.render_hash);
+        let snapshot = rendered.to_snapshot(node_id, version, now_unix());
+        let Some(waiter) = self.push_and_await(node_id, snapshot).await else {
+            return false; // stream gone
+        };
+        match tokio::time::timeout(WAVE_ACK_TIMEOUT, waiter).await {
+            Ok(Ok(AckResult::Acked { hash })) => hash == rendered.render_hash,
+            _ => {
+                self.clear_pending(node_id, version).await;
+                false
+            }
+        }
+    }
+
     /// Distribute a HAND-AUTHORED snapshot (raw bytes) to the fleet, bypassing
     /// the repo render gate. This is the break-glass / testing affordance that
     /// exercises the node's INDEPENDENT validation authority (docs/07: "A

@@ -31,12 +31,22 @@ pub struct NodeState {
     pub last_acked_hash: Option<String>,
     /// The most recent NACK, if any (version, reason). Surfaced, never hidden.
     pub last_nack: Option<(u64, String)>,
+    /// How many consecutive times this node has NACKed WITHOUT an intervening
+    /// ACK. A node that persistently NACKs its desired render is *deliberately
+    /// divergent*; the reconciler surfaces it loudly rather than retrying into
+    /// oblivion (docs/07: "node X has NACKed desired v52 four times…").
+    pub consecutive_nacks: u32,
     /// The render_hash the node reports it is ACTUALLY running (from `Status`).
     pub observed_hash: Option<String>,
     pub health: Option<String>,
     /// Unix seconds of the last message of any kind from this node.
     pub last_seen: u64,
     pub connected: bool,
+    /// If set, the unix-second at which this node's break-glass window EXPIRES.
+    /// While `now < break_glass_until`, the reconciler TOLERATES the node's
+    /// drift and does not fight it (docs/00 break-glass with TTL). When the TTL
+    /// lapses the reconciler resumes and heals the node back to desired.
+    pub break_glass_until: Option<u64>,
 }
 
 impl NodeState {
@@ -47,11 +57,18 @@ impl NodeState {
             last_acked_version: None,
             last_acked_hash: None,
             last_nack: None,
+            consecutive_nacks: 0,
             observed_hash: None,
             health: None,
             last_seen: now_unix(),
             connected: true,
+            break_glass_until: None,
         }
+    }
+
+    /// Whether this node is under an active break-glass window at `now`.
+    pub fn break_glass_active(&self, now: u64) -> bool {
+        self.break_glass_until.is_some_and(|until| now < until)
     }
 }
 
@@ -91,22 +108,47 @@ impl RuntimeStore {
         }
     }
 
-    /// Record an ACK: the node accepted and is at `version`/`hash`.
+    /// Record an ACK: the node accepted and is at `version`/`hash`. A
+    /// successful ACK clears any prior NACK and resets the consecutive-NACK
+    /// counter (the node converged).
     pub fn record_ack(&self, node_id: &str, version: u64, hash: &str) {
         if let Some(n) = self.lock().get_mut(node_id) {
             n.last_acked_version = Some(version);
             n.last_acked_hash = Some(hash.to_string());
             n.last_nack = None;
+            n.consecutive_nacks = 0;
             n.last_seen = now_unix();
         }
     }
 
     /// Record a NACK: the node rejected `version`; it keeps serving its prior
-    /// version. Loud by design — the reason is retained for surfacing.
+    /// version. Loud by design — the reason is retained for surfacing, and the
+    /// consecutive-NACK counter advances so a *persistently* NACKing node
+    /// (deliberately divergent) is distinguishable from a one-off reject.
     pub fn record_nack(&self, node_id: &str, version: u64, reason: &str) {
         if let Some(n) = self.lock().get_mut(node_id) {
             n.last_nack = Some((version, reason.to_string()));
+            n.consecutive_nacks = n.consecutive_nacks.saturating_add(1);
             n.last_seen = now_unix();
+        }
+    }
+
+    /// Mark a node break-glass for `ttl_secs` from now: the reconciler tolerates
+    /// its drift until the window lapses (docs/00 break-glass with TTL). Returns
+    /// the absolute expiry (unix seconds) for logging.
+    pub fn set_break_glass(&self, node_id: &str, ttl_secs: u64) -> Option<u64> {
+        let until = now_unix().saturating_add(ttl_secs);
+        let mut nodes = self.lock();
+        let n = nodes.get_mut(node_id)?;
+        n.break_glass_until = Some(until);
+        Some(until)
+    }
+
+    /// Clear a node's break-glass window immediately (an operator ends the
+    /// override early). Idempotent.
+    pub fn clear_break_glass(&self, node_id: &str) {
+        if let Some(n) = self.lock().get_mut(node_id) {
+            n.break_glass_until = None;
         }
     }
 
@@ -144,7 +186,9 @@ impl RuntimeStore {
     }
 }
 
-fn now_unix() -> u64 {
+/// Unix seconds now, saturating to 0 before the epoch. Public so the reconciler
+/// and server share one clock reading for break-glass and staleness math.
+pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -31,3 +31,13 @@ tokio-stream = { version = "0.1", features = ["net"] }
 serde_yaml = "0.9"
 log = "0.4"
 env_logger = "0.11"
+# Git-backed config source (docs/07 "Truth in Git"). Pure-Rust, no C toolchain
+# (git2/libgit2 would break the no-C-deps posture the two-binaries budget keeps).
+# Only the local-repo read path is needed — a repo opened at a ref/commit, its
+# tree walked — so network transports are disabled. `revision` gives rev_parse.
+gix = { version = "0.66", default-features = false, features = ["max-performance-safe", "revision"] }
+# CEL for config-PR admission rules (docs/07 admission; docs/02 ArgoCD admission
+# policies). Same sandboxed interpreter gateway-core already compiles route
+# conditions with — reused here to express admission predicates over a candidate.
+cel = "0.14"
+serde_json = "1"

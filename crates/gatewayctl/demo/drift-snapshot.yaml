@@ -1,0 +1,33 @@
+# A VALID flat snapshot pushed OUT OF BAND (gatewayctl --push-raw on SIGUSR1) to
+# make a node DRIFT for the milestone-2 drift/self-heal demo. Unlike the M1
+# invalid-snapshot.yaml (which every node NACKs), this one is a fully valid
+# config the node ACCEPTS and binds — but it is NOT the Git desired render (its
+# env pin is "drifted", not "prod"). So after binding it the node reports an
+# observed_render_hash that DIFFERS from desired, exactly like a node that
+# restarted on a stale local file, was break-glassed, or was tampered with.
+#
+# The reconciler's next tick detects the drift (desired/delivered/observed
+# three-hash compare) and RE-PUSHES desired; the node swaps back to the Git
+# render and ACKs — healed. (docs/07: "the node cannot be quietly wrong ... a
+# node running anything other than its desired render is caught on the next
+# heartbeat and pushed back.")
+providers:
+  openai-demo:
+    kind: openai
+    upstream: { host: 127.0.0.1, port: 6190 }
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: { env: drifted }
+routes:
+  - prefix: /openai
+    provider: openai-demo
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'

@@ -1,0 +1,69 @@
+############################################################
+# Git-truth + drift self-heal + admission demo
+#   Phase 2, milestone 2
+############################################################
+
+=== (a) GIT AS TRUTH: config sourced from a real Git repo at a commit ===
+    repo HEAD commit: f64954e111079869bb3233c8f5d629278268ece1
+--- gatewayctl log: compiled the Git commit into the first render ---
+[2026-08-01T16:27:54Z INFO  gatewayctl] gatewayctl compiled source git:/tmp/tmp.PonSLYyAae/config-repo@HEAD -> render_hash=874ef08d4ffb source_commit=f64954e111079869bb3233c8f5d629278268ece1
+    ^ the render's source_commit is the real 40-hex Git SHA above,
+      so the snapshot is reproducible from that exact commit (docs/07).
+
+--- node-a joined and bound the Git-sourced snapshot (v1) over gRPC ---
+[2026-08-01T16:27:54Z INFO  gatewayd::client] [cp-client] node "node-a" joined http://127.0.0.1:6197; awaiting first snapshot
+[2026-08-01T16:27:54Z INFO  gatewayd::client] [cp-client] node "node-a" bound first snapshot fleet_version=v1 advertised_render_hash=874ef08d4ffb bound_hash=874ef08d4ffb -> local cfg=v1
+--- gatewayctl: node-a in sync (desired == delivered == observed) ---
+[2026-08-01T16:27:54Z INFO  gatewayctl::reconcile] [reconcile] drift reconciler running every 2s
+[2026-08-01T16:27:54Z INFO  gatewayctl::server] [ack] node "node-a" acked v1 hash=874ef08d4ffb
+
+=== (b) DRIFT + SELF-HEAL within one reconcile tick ===
+    A stale/edited snapshot is pushed OUT OF BAND (SIGUSR1 --push-raw),
+    a VALID config that is NOT the Git desired (env=drifted). node-a
+    binds it and now diverges from desired.
+--- node-a drifted: bound the out-of-band snapshot, then healed back ---
+[2026-08-01T16:28:05Z INFO  gatewayd::client] [cp-client] node "node-a" ACK v2 (swapped local cfg v1->v2, bound_hash=b8934000979d)
+[2026-08-01T16:28:06Z INFO  gatewayd::client] [cp-client] node "node-a" ACK v3 (swapped local cfg v2->v3, bound_hash=874ef08d4ffb)
+--- reconciler: three-hash compare (desired/delivered/observed) + heal ---
+[2026-08-01T16:28:05Z INFO  gatewayctl] [inject] SIGUSR1: distributing raw snapshot demo/drift-snapshot.yaml (1399 bytes), BYPASSING the render gate — nodes are the validation authority
+[2026-08-01T16:28:06Z WARN  gatewayctl::reconcile] [reconcile] node "node-a" delivery stale (delivered != desired): desired=874ef08d4ffb delivered=b8934000979d observed=874ef08d4ffb; self-healing by re-pushing desired
+[2026-08-01T16:28:06Z INFO  gatewayctl::reconcile] [reconcile] node "node-a" healed back to desired render_hash=874ef08d4ffb
+[2026-08-01T16:28:06Z INFO  gatewayctl::reconcile] [reconcile] tick: in_sync=0 healed=1 break_glass=0 divergent=0 unknown=0
+    ^ the reconciler DETECTED the divergence and RE-PUSHED desired;
+      node-a swapped back and ACKed — healed (docs/07: self-heal is re-push).
+
+=== (c) BREAK-GLASS with TTL: tolerate the drift, then heal after expiry ===
+    node-a is marked break-glass for 4s (SIGUSR2), THEN drifted again
+    (out-of-band push). The reconciler must TOLERATE — not fight — the
+    drift while the window is open, then heal once the TTL lapses.
+--- while break-glass is OPEN: reconciler TOLERATES the drift (no heal) ---
+[2026-08-01T16:28:09Z INFO  gatewayctl] [break-glass] node "node-a" marked break-glass for 4s (until unix 1785601693); the reconciler will tolerate its drift until then (docs/00)
+[2026-08-01T16:28:10Z INFO  gatewayctl::reconcile] [reconcile] node "node-a" is BREAK-GLASS (override until unix 1785601693); tolerating its drift, NOT healing (docs/00 break-glass with TTL)
+[2026-08-01T16:28:12Z INFO  gatewayctl::reconcile] [reconcile] node "node-a" is BREAK-GLASS (override until unix 1785601693); tolerating its drift, NOT healing (docs/00 break-glass with TTL)
+--- after the TTL LAPSES: reconciler resumes and heals node-a to desired ---
+[2026-08-01T16:28:14Z WARN  gatewayctl::reconcile] [reconcile] node "node-a" delivery stale (delivered != desired): desired=874ef08d4ffb delivered=b8934000979d observed=874ef08d4ffb; self-healing by re-pushing desired
+[2026-08-01T16:28:14Z INFO  gatewayctl::reconcile] [reconcile] node "node-a" healed back to desired render_hash=874ef08d4ffb
+[2026-08-01T16:28:14Z INFO  gatewayctl::reconcile] [reconcile] tick: in_sync=0 healed=1 break_glass=0 divergent=0 unknown=0
+
+=== (d) ADMISSION BLOCKS A BAD CONFIG (CI gate on a config PR) ===
+    A candidate config PR strips the attribution key from the route
+    (violates GB-1). 'gatewayctl admit' must BLOCK it and exit non-zero,
+    so it can never become desired / never roll out.
+BLOCK: dir:/tmp/tmp.8ZkmJP1TZJ/config-repo failed admission:
+  - [GB-1] route "/openai" has no effective attribution required_keys — every route must enforce at least one attribution key (GB-1)
+    admit exit code: 1 (non-zero => blocked, CI fails the PR)
+
+--- and the GOOD Git HEAD the fleet actually runs admits (exit 0) ---
+ADMIT: git:/tmp/tmp.PonSLYyAae/config-repo@HEAD passed all admission rules
+    admit exit code: 0 (zero => admitted)
+
+############################################################
+# Summary: config sourced from a real Git commit (snapshot
+#   carries the SHA); a divergent node detected via the
+#   desired/delivered/observed three-hash compare and
+#   self-healed within one reconcile tick; break-glass
+#   tolerated the drift for its TTL then healed after it
+#   lapsed; and a bad config PR was BLOCKED at admission
+#   with the failing rule named. Git decides desired;
+#   drift never persists silently.
+############################################################

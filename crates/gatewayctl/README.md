@@ -1,9 +1,11 @@
 # gatewayctl
 
 The control plane: ArgoCD for gateway fleets, made concrete. One binary that
-compiles a config repo (Git truth) into per-node **rendered snapshots** and
+compiles a config repo (**Git truth**) into per-node **rendered snapshots** and
 distributes them to N `gatewayd` data planes over one long-lived bidirectional
-gRPC stream each. Phase 2, milestone 1 — fleet distribution.
+gRPC stream each, detects drift and self-heals it, and gates config PRs at
+admission. Phase 2, milestones 1 (fleet distribution) and 2 (Git truth, drift
+self-heal, admission).
 
 Built against the binding design in
 [docs/07-control-plane.md](../../docs/07-control-plane.md); it extends the
@@ -16,133 +18,215 @@ trigger (a `Push` over the stream) and moves the version counter off-process.
 Run it:
 
 ```
+# serve mode: source config from a directory OR a Git ref/commit
 gatewayctl --repo <config-repo-dir> [--listen 127.0.0.1:6187] \
            [--join-token <secret>] [--token-ttl 300] [--poll-interval 3] \
-           [--push-raw <snapshot-file>]
+           [--reconcile-interval 5] [--push-raw <snapshot-file>] \
+           [--break-glass-file <file>]
+
+gatewayctl --git-repo <repo-path> --git-ref <HEAD|branch|tag|sha> \
+           [--listen 127.0.0.1:6187] [--reconcile-interval 5] …
+
+# admission gate (CI): exit non-zero if the candidate config PR is blocked
+gatewayctl admit --repo <config-repo-dir>
+gatewayctl admit --git-repo <repo-path> --git-ref <ref>
 ```
 
-Proof lives in [`scripts/fleet-demo.sh`](scripts/fleet-demo.sh) →
-[`fleet-demo.log`](fleet-demo.log): one control plane, two data planes, both
-joining and receiving v1, a config change rolling out v2 to both with ACKs, and
-a deliberately-invalid snapshot both nodes NACK while the fleet stays on its
-committed version.
+Proof lives in two demos:
 
-## What M1 does
+- [`scripts/fleet-demo.sh`](scripts/fleet-demo.sh) →
+  [`fleet-demo.log`](fleet-demo.log) (milestone 1): one control plane, two data
+  planes joining and receiving v1, a config change rolling out v2 with ACKs, a
+  deliberately-invalid snapshot both nodes NACK while the fleet stays committed,
+  and a control-plane outage the nodes survive and auto-reconnect from.
+- [`scripts/git-drift-demo.sh`](scripts/git-drift-demo.sh) →
+  [`git-drift-demo.log`](git-drift-demo.log) (milestone 2): config sourced from
+  a **real Git commit** (the snapshot carries the SHA), a node **drifting** and
+  the reconciler **healing it back to desired within one tick** (the
+  desired/delivered/observed three-hash compare printed), **break-glass**
+  tolerated for its TTL then healed after it lapses, and an **admission failure
+  blocking a bad config** with the failing rule named.
 
-- **Rendered-manifest compilation** ([`render.rs`](src/render.rs)). Reads a
-  config repo whose directory layout mirrors the four policy scopes
-  (`fleet → project → route → app`), assembles the fragments into one flat
-  `Config`, and validates it by reusing `gateway-core`'s scope composition +
-  validation verbatim. Rendering is a **pure function** of the repo bytes:
-  fixed read order, canonical (sorted-key) serialization, SHA-256 of the
-  *rendered* bytes as `render_hash`. Same repo → same bytes → same hash,
-  forever — the six-month rule made mechanical. An invalid repo is rejected at
-  render time, before any node sees it.
+## What it does
 
-  Repo layout (M1):
+### Config source: directory or Git ([`source.rs`](src/source.rs))
 
-  ```text
-  <repo>/
-    providers.yaml            # the providers: map (fleet-wide refs)
-    rejections.yaml           # the mandatory GB-4 rejections: block
-    auth.yaml                 # optional auth: block
-    fleet/base.chain.yaml     # the fleet-scope attribution:/labels:
-    projects/<p>/base.chain.yaml
-    routes/<name>.route.yaml  # one routes: entry per file
-    apps.yaml                 # optional apps: block
-  ```
+The desired config is read through one `ConfigSource` trait with two variants:
 
-- **The gRPC stream** ([`server.rs`](src/server.rs), wire types in
-  [`gateway-proto`](../gateway-proto)). The `FleetService.Session` bidi stream:
-  the control plane is the server, the data plane dials out. It authenticates
-  each `Hello` via a **join token**, pushes the current snapshot to a freshly
-  joined node, and — on a local reload — runs one **all-or-nothing wave** across
-  every connected node, surfacing each node's Ack/Nack. The control plane never
-  pushes imperative mutations; there is no `Patch` message and there will not be
-  one (docs/07 enforced at the protocol level).
+- **`DirectorySource`** — a loose directory on disk (the milestone-1 path). Its
+  `source_commit` is a content-derived id (`dir-<hash>`), stable for identical
+  content.
+- **`GitSource`** — reads the four-scope repo at a specific **ref or commit**
+  (`HEAD`, a branch, a tag, a full/short SHA) out of a real Git repository using
+  the pure-Rust [`gix`](https://crates.io/crates/gix) crate (no C toolchain, no
+  network features compiled in — just the local-repo read path). Its
+  `source_commit` is the resolved **40-hex commit SHA**, so a `RenderedSnapshot`
+  records the exact commit it was rendered from.
 
-- **All-or-nothing waves** ([`fleet.rs`](src/fleet.rs)). M1 implements a single
-  wave over all connected nodes (multi-wave grouping by failure domain is
-  deferred). The load-bearing half is real: on **any** Nack (or a silent node
-  past the timeout) the wave **halts**, the divergence is logged loudly and left
-  surfaced (never silent), and the fleet's committed version does **not**
-  advance. A fully-acked wave commits and advances it.
+Both variants resolve to the same source-agnostic `ResolvedRepo` (a
+deterministically-sorted `(path, bytes)` set), so the directory and Git paths
+feed byte-identical inputs into byte-identical assembly — the same content
+renders to the same `render_hash` either way, and a historical commit re-renders
+its own bytes without a checkout.
 
-- **Join-token bootstrap + identity-scoped reconnect** ([`token.rs`](src/token.rs)).
-  Single-use, short-TTL tokens bound to labels. A bad token refuses the stream
-  (Unauthenticated); an expired-unused token is rejected; a failed check never
-  burns a live token. The FIRST successful join burns the token and binds it to
-  the joining `node_id` — the M1 stand-in for the per-node cert docs/07
-  describes ("the token authenticates the join; the node cert authenticates
-  every subsequent stream"). A **reconnect** is that same node re-presenting its
-  now-burned token: admitted as an established identity so a node can re-dial
-  after a stream drop without a fresh token. A **different** node replaying that
-  burned token is refused (`AlreadyUsed`) — the reconnect path is identity-scoped,
-  never a bypass.
+### Rendered-manifest compilation ([`render.rs`](src/render.rs))
 
-- **Node auto-reconnect + hash self-verification** ([`gatewayd/src/client.rs`](../gatewayd/src/client.rs)).
-  The data-plane client SUPERVISES its stream: on a stream drop or a
-  control-plane outage it keeps serving its last bound snapshot (the control
-  plane is not a SPOF for serving) and re-dials with exponential backoff,
-  rejoining on its established identity and resuming pushes — it neither crashes
-  nor goes permanently quiet. On every push the node ACKs with the SHA-256 it
-  **recomputes** of the bytes it actually bound, not the control plane's
-  advertised `render_hash`; a control-plane bug (or tampering) that advertises a
-  hash inconsistent with the shipped config is therefore caught at the wave as a
-  `WrongHash` divergence — an independent verification, per docs/07 line 71
-  ("hashes the incoming config bytes ... before anything else").
+Assembles the four-scope fragments into one flat `Config` and validates it by
+reusing `gateway-core`'s scope composition + validation verbatim. Rendering is a
+**pure function** of the resolved bytes: fixed read order, canonical (sorted-key)
+serialization, SHA-256 of the *rendered* bytes as `render_hash`. Same commit →
+same bytes → same hash, forever — **the six-month rule made mechanical**: a
+control-plane restart re-derives the identical snapshot from the same commit, and
+"what was `edge-fra-2` running at 03:14" is a pure re-render of a recorded
+commit. An invalid repo is rejected at render time, before any node sees it.
 
-- **In-memory runtime state** ([`store.rs`](src/store.rs)). Connected nodes,
-  their acked versions, last NACK, observed hash, and health. **Postgres
-  replaces this later and is never truth** — every field is observed reality,
-  re-derivable from Git plus the stream. There is deliberately no field for
-  desired state ("this node *should* run vN"); that is recomputed from the
-  applied render every time, never stored.
+Repo layout (mirrors the four scopes, docs/07):
 
-- **Reload triggers.** SIGHUP (immediate) and a poll watcher both re-render the
-  repo and roll out a wave if the render changed — the fleet analog of the data
-  plane's single reload path. A broken repo edit is rejected loudly and the last
-  good render keeps being the fleet's desired state.
+```text
+<repo>/
+  providers.yaml            # the providers: map (fleet-wide refs)
+  rejections.yaml           # the mandatory GB-4 rejections: block
+  auth.yaml                 # optional auth: block
+  fleet/base.chain.yaml     # the fleet-scope attribution:/labels:
+  projects/<p>/base.chain.yaml
+  routes/<name>.route.yaml  # one routes: entry per file
+  apps.yaml                 # optional apps: block
+```
 
-## Deferred beyond M1 (stated, not implied)
+### Config-PR admission ([`admission.rs`](src/admission.rs))
+
+Admission runs against a **candidate** config (a directory or a Git ref/commit)
+**before it can become desired**, with a precise per-rule error naming exactly
+what is wrong. Two rule families:
+
+- **Built-in Baseline gates**: **GB-1** (every route enforces at least one
+  effective attribution key), **GB-4** (both mandatory rejection templates
+  present and non-empty), a **forbidden-construct** gate (an in-gateway-templating
+  `{{ … }}` directive outside the two allowed rejection placeholders is banned so
+  the reviewed diff is the served diff — docs/07), and an **override-governance**
+  gate (an app override that raises a pinned numeric cap beyond a configured
+  factor must carry an `override-approved` label).
+- **CEL-expressed rules**: operator-authored predicates over the candidate
+  document (`{ id, expr, message }`), evaluated with the same sandboxed `cel`
+  interpreter gateway-core compiles route conditions with. Must return `true` to
+  admit; a broken rule blocks rather than silently passing.
+
+Exposed two ways: the **`admit` subcommand** exits non-zero on a block so CI can
+gate a PR, and the pre-rollout gate runs admission **automatically before any
+rollout** (startup, SIGHUP, or poll) — a blocked candidate never becomes desired.
+
+### The gRPC stream ([`server.rs`](src/server.rs))
+
+The `FleetService.Session` bidi stream (wire types in
+[`gateway-proto`](../gateway-proto)): the control plane is the server, the data
+plane dials out. It authenticates each `Hello` via a **join token**, pushes the
+current snapshot to a freshly-joined node, and — on a reload — runs one
+**all-or-nothing wave** across every connected node, surfacing each node's
+Ack/Nack. It also **self-heals one drifted node** (`heal_node`) by re-pushing
+desired to just that node. The control plane never pushes imperative mutations;
+there is no `Patch` message and there will not be one (docs/07 at the protocol
+level).
+
+### All-or-nothing waves ([`fleet.rs`](src/fleet.rs))
+
+A single wave over all connected nodes (multi-wave grouping by failure domain is
+deferred). On **any** Nack (or a silent node past the timeout) the wave **halts**,
+the divergence is logged loudly and left surfaced (never silent), and the fleet's
+committed version does **not** advance. A fully-acked wave commits and advances
+it. The fleet also records each node's **delivered** `render_hash` (the last hash
+pushed) — the middle column of the drift truth table.
+
+### Drift detection and self-heal ([`reconcile.rs`](src/reconcile.rs))
+
+A periodic reconcile tick (`--reconcile-interval`, default 5s) compares three
+hashes per node — **desired** (what current Git renders), **delivered** (what the
+CP last pushed), **observed** (the `Status` heartbeat's `observed_render_hash`,
+already in the proto) — and drives the docs/07 truth table row-for-row:
+
+| desired | delivered | observed | case | action |
+|---|---|---|---|---|
+| = | = | = | `InSync` | none |
+| ≠ | = | = | `DeliveryStale` (new commit not yet delivered / lost push) | re-push desired |
+| = | = | ≠ | `NodeDrifted` (restart on stale file, break-glass, tamper) | re-push desired; node swaps back |
+| = | = | *unset* | `ObservedUnknown` (no heartbeat yet) | wait |
+
+Self-heal is a re-push. A node that **persistently NACKs** desired past a
+threshold is declared `PersistentlyDivergent` — surfaced loudly and left visibly
+divergent for a human, never retried into oblivion (docs/07). The classification
+is a **pure function** (`classify`) of the three hashes plus break-glass state,
+so every truth-table row is unit-tested without a network; the end-to-end
+drift→heal is proven over real gRPC in [`tests/reconcile.rs`](tests/reconcile.rs).
+
+### Break-glass with TTL ([`store.rs`](src/store.rs) + `--break-glass-file`)
+
+A node may be marked **break-glass** for a bounded window (`--break-glass-file`
+arms a SIGUSR2 handler; each line is `node_id [ttl_secs]`). While the window is
+open the reconciler **tolerates** the node's drift and does not fight it, logging
+the override and its expiry; when the TTL lapses the reconciler resumes and heals
+the node back to desired (docs/00 break-glass with TTL). Break-glass is checked
+first in `classify`, so it suppresses even a persistent-NACK surfacing for its
+duration.
+
+### Node auto-reconnect + hash self-verification ([`gatewayd/src/client.rs`](../gatewayd/src/client.rs))
+
+The data-plane client supervises its stream: on a stream drop or a control-plane
+outage it keeps serving its last bound snapshot (the control plane is not a SPOF
+for serving) and re-dials with backoff, rejoining on its established identity. On
+every push the node ACKs with the SHA-256 it **recomputes** of the bytes it bound
+— not the advertised `render_hash` — so an inconsistent advertisement (bug or
+tampering) is caught at the wave as a `WrongHash` divergence.
+
+### Join-token bootstrap + identity-scoped reconnect ([`token.rs`](src/token.rs))
+
+Single-use, short-TTL tokens bound to labels. A bad token refuses the stream; a
+failed check never burns a live token. The first join burns the token and binds
+it to the joining `node_id` (the M1 stand-in for a per-node cert); a reconnect is
+that same node re-presenting its burned token, and a different node replaying it
+is refused.
+
+### In-memory runtime state ([`store.rs`](src/store.rs))
+
+Connected nodes, acked versions, last NACK, consecutive-NACK count, observed
+hash, health, and break-glass windows. **Postgres replaces this later and is
+never truth** — every field is observed reality, re-derivable from Git plus the
+stream. There is deliberately no field for desired state; that is recomputed from
+the applied render every tick, never stored.
+
+## The `--push-raw` break-glass / drift affordance
+
+`--push-raw <file>` arms a SIGUSR1 handler that distributes that file's bytes as
+a raw snapshot **bypassing the render gate**. Two uses:
+
+- an **invalid** snapshot exercises the node's independent NACK defense (the M1
+  demo: both nodes NACK, the wave halts, the fleet stays committed);
+- a **valid-but-not-desired** snapshot makes a node **drift** out of band for the
+  milestone-2 demo — the node binds it, diverges from the Git desired, and the
+  reconciler heals it back.
+
+## Deferred beyond this milestone (stated, not implied)
 
 Per docs/07's open questions and the task's milestone scope:
 
-- **Git integration.** M1 reads a plain directory; libgit2 / commit hashes /
-  webhook-or-poll of a real repo are the layer *above* `render.rs`.
-  `source_commit` is a content-derived id in M1 (`m1-<hash>`), stable for
-  identical repo content, so the six-month reproducibility property already
-  holds — only the id's provenance changes when Git lands.
-- **Postgres.** The runtime store is in-memory (above).
-- **Drift detection and self-heal reconciler.** The `Status` heartbeat carries
-  the observed render hash (the input to drift detection) and the store records
-  it, and the node ACK now carries a locally-recomputed hash so a delivered-vs-
-  bound mismatch is caught at the wave; but the periodic
-  desired-vs-delivered-vs-observed reconciler *tick* (the loop that re-pushes on
-  observed drift between waves) is a later milestone.
-- **Per-node certificates.** M1 binds a burned join token to its node_id and
-  admits reconnects on that binding (the identity check above). Issuing a
-  separate, independently-revocable node certificate — and revoking it centrally
-  to eject a node — is the layer that replaces the token-binding stand-in later.
-- **Config-PR admission checks.** CEL validations on config PRs before render
-  are out of scope here.
-- **Multi-wave rollouts** grouped by failure domain, and per-node latching.
-  M1 is a single wave; the sequencing substrate is in place.
-
-## The `--push-raw` break-glass affordance
-
-`--push-raw <file>` arms a SIGUSR1 handler that distributes that file's bytes as
-a raw snapshot **bypassing the render gate**. This exercises the node's
-*independent* validation authority (docs/07: "A snapshot that fails local
-validation is Nacked and the old one keeps serving"): the control plane's render
-gate is the first defense, the node's NACK is the second, and this path proves
-the second is real. The demo uses it to show both nodes NACK an invalid snapshot
-while keeping their committed version.
+- **Postgres.** The runtime store is in-memory; Postgres replaces it later and,
+  per docs/07, is never truth (observed reality only, re-derivable from Git plus
+  the stream).
+- **Multi-wave rollouts** grouped by failure domain, and **per-node latching**.
+  This is a single wave; the sequencing substrate is in place.
+- **GatewaySets / label-generators** (docs/07 `selectors/gatewaysets.yaml`, a
+  Phase-5 stub). Selectors are not consulted yet, so every node's desired render
+  is the fleet's single applied render; per-node label-selected renders land with
+  GatewaySets.
+- **Config-repo webhook.** The change trigger is a poll (the floor, docs/07); a
+  webhook (fast, needs an inbound path) is the later optimization.
+- **Per-node certificates.** A burned join token bound to its node_id stands in
+  for the per-node cert; issuing a separately-revocable node certificate is
+  deferred.
 
 ## The two-binaries budget
 
 `gatewayctl` and `gatewayd` are the two binaries;
 [`gateway-proto`](../gateway-proto) and [`gateway-core`](../gateway-core) are the
-libraries they share. The reconciler, gRPC server, compiler, and wave state
-machine are modules in this one process, not services — docs/07's budget kept
-honest.
+libraries they share. The reconciler, gRPC server, compiler, admission-check
+runner, and wave state machine are modules in this one process, not services —
+docs/07's budget kept honest. `gix` is the only new dependency family
+(pure-Rust, local-read-only), and `cel` is already in the tree via gateway-core.

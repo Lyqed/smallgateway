@@ -1,4 +1,4 @@
-//! Rendered-manifest compilation: config repo directory -> per-node
+//! Rendered-manifest compilation: a resolved config repo -> per-node
 //! `RenderedSnapshot` (docs/07-control-plane.md, "Truth in Git" +
 //! "Rendered-manifest compilation").
 //!
@@ -8,13 +8,16 @@
 //! from one hand-written file, so the node validates and serves it through the
 //! unchanged `Reloader::reload` path.
 //!
-//! ## The repo layout (M1)
+//! ## The repo layout
 //!
 //! The directory structure mirrors the four scopes (docs/07, "Repo layout
-//! mirrors the four scopes"). M1 assembles the fragments into one flat
-//! `Config` document rather than integrating libgit2 — the Git layer sits
-//! ABOVE this and is deferred (see crates/gatewayctl/README.md). A plain
-//! directory is the repo for M1; `source_commit` is a content-derived id.
+//! mirrors the four scopes"). The same layout is read from a loose directory
+//! ([`crate::source::DirectorySource`]) or from a Git commit
+//! ([`crate::source::GitSource`]) — both resolve to a
+//! [`crate::source::ResolvedRepo`], and rendering is defined over THAT, never
+//! over a live filesystem. So the milestone-1 directory path and the
+//! milestone-2 Git path feed byte-identical inputs into byte-identical
+//! assembly.
 //!
 //! ```text
 //! <repo>/
@@ -29,19 +32,23 @@
 //!
 //! ## Determinism (the six-month rule, mechanical)
 //!
-//! Compilation is a pure function of the repo bytes. Files are read in a fixed
-//! (sorted) order, assembled into a `BTreeMap`-backed intermediate, and
-//! serialized canonically (serde_yaml over sorted keys). No wall-clock, no
-//! external lookups, no randomness. Same repo -> same flat bytes -> same
-//! `render_hash`, forever (docs/07, "Reproducible from a commit hash").
-//! `compiled_at` is stamped OUTSIDE the hashed bytes so it never perturbs the
-//! hash.
+//! Compilation is a pure function of the resolved bytes. Files are read in a
+//! fixed (sorted) order, assembled into an intermediate, and serialized
+//! canonically (serde_yaml over sorted keys). No wall-clock, no external
+//! lookups, no randomness. Same content -> same flat bytes -> same
+//! `render_hash`, forever (docs/07, "Reproducible from a commit hash"). The
+//! `RenderedSnapshot` records the `source_commit` the resolved repo came from —
+//! a real Git SHA under the Git source — so re-rendering that recorded commit
+//! reproduces the identical bytes and hash. `compiled_at` is stamped OUTSIDE
+//! the hashed bytes so it never perturbs the hash.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gateway_core::config::Config;
 use gateway_core::snapshot::content_hash;
 use gateway_proto::RenderedSnapshot;
+
+use crate::source::{ConfigSource, DirectorySource, ResolvedRepo, SourceError};
 
 /// A validation or IO failure while rendering the repo. The `reason` string is
 /// carried verbatim into logs and (on the node side) into a NACK.
@@ -64,9 +71,15 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
+impl From<SourceError> for RenderError {
+    fn from(e: SourceError) -> RenderError {
+        RenderError::Io(e.to_string())
+    }
+}
+
 /// The immutable result of rendering a repo: the canonical flat config bytes,
-/// its hash, and the synthetic commit id — everything a `RenderedSnapshot`
-/// needs except the per-node `fleet_version` (assigned at delivery, per node).
+/// its hash, and the source commit — everything a `RenderedSnapshot` needs
+/// except the per-node `fleet_version` (assigned at delivery, per node).
 #[derive(Debug, Clone)]
 pub struct Rendered {
     /// Canonical flat `Config` YAML bytes — what ships in
@@ -76,15 +89,15 @@ pub struct Rendered {
     /// SHA-256 (lowercase hex) of `config_bytes` — the RENDERED bytes, not the
     /// source fragments (docs/07's stated distinction).
     pub render_hash: String,
-    /// Content-derived repo id (M1 stand-in for a Git commit hash). Stable for
-    /// identical repo content.
+    /// The exact source state this render is reproducible from: a real Git
+    /// commit SHA (Git source) or a content-derived id (directory source).
     pub source_commit: String,
 }
 
 impl Rendered {
     /// Build the wire snapshot for one node at one delivered version. The
-    /// bytes and hash are node-independent in M1 (selectors are a Phase 5
-    /// stub, so every node gets the same rendered config); `node_id` and
+    /// bytes and hash are node-independent here (selectors are a Phase 5 stub,
+    /// so every node gets the same rendered config); `node_id` and
     /// `fleet_version` are the per-node addressing.
     pub fn to_snapshot(&self, node_id: &str, fleet_version: u64, compiled_at: i64) -> RenderedSnapshot {
         RenderedSnapshot {
@@ -98,14 +111,18 @@ impl Rendered {
     }
 }
 
-/// Load, compose, validate, and canonically serialize the repo at `root`.
-///
-/// The returned `config_bytes` are guaranteed to parse and validate via
-/// `Config::from_yaml` (this function calls it as the render-time gate — a repo
-/// that would produce an invalid flat config fails HERE, in the control plane,
-/// before any node sees it).
-pub fn render_repo(root: &Path) -> Result<Rendered, RenderError> {
-    let flat = assemble_flat_yaml(root)?;
+/// Render a config source: resolve it, then compile the resolved bytes. This is
+/// the source-agnostic entry point — the Git-sourced rollout and the directory
+/// demo both call it, so the reproducibility property holds across sources.
+pub fn render_source(source: &dyn ConfigSource) -> Result<Rendered, RenderError> {
+    let resolved = source.resolve()?;
+    render_resolved(&resolved)
+}
+
+/// Render an already-resolved repo. Compilation is a pure function of the
+/// resolved bytes and the recorded `source_commit`.
+pub fn render_resolved(resolved: &ResolvedRepo) -> Result<Rendered, RenderError> {
+    let flat = assemble_flat_yaml(resolved)?;
 
     // Render-time validation gate: the exact gateway-core composition +
     // validation the node will re-run. If it fails here, the operator's repo is
@@ -113,48 +130,41 @@ pub fn render_repo(root: &Path) -> Result<Rendered, RenderError> {
     Config::from_yaml(&flat).map_err(|e| RenderError::Invalid(e.to_string()))?;
 
     let render_hash = content_hash(&flat);
-    // M1 synthetic commit id: the hash of the canonical bytes, prefixed so it
-    // is visibly not a real Git sha. The Git layer replaces this with the
-    // actual commit; every consumer only relies on "stable for identical repo
-    // content", which this satisfies.
-    let source_commit = format!("m1-{}", &render_hash[..16]);
-
     Ok(Rendered {
         config_bytes: flat.into_bytes(),
         render_hash,
-        source_commit,
+        source_commit: resolved.source_commit.clone(),
     })
 }
 
-/// Read the repo fragments and assemble them into one canonical flat `Config`
-/// YAML string. Pure over the repo bytes: fixed read order, sorted keys.
-fn assemble_flat_yaml(root: &Path) -> Result<String, RenderError> {
-    if !root.is_dir() {
-        return Err(RenderError::Io(format!(
-            "config repo {} is not a directory",
-            root.display()
-        )));
-    }
+/// Render a loose directory (the milestone-1 convenience path). Thin wrapper
+/// over [`render_source`] with a [`DirectorySource`], kept because the demo and
+/// many tests address a directory directly.
+pub fn render_repo(root: &Path) -> Result<Rendered, RenderError> {
+    render_source(&DirectorySource::new(root))
+}
 
+/// Read the resolved fragments and assemble them into one canonical flat
+/// `Config` YAML string. Pure over the resolved bytes: fixed read order (the
+/// ResolvedRepo is pre-sorted), sorted keys.
+fn assemble_flat_yaml(repo: &ResolvedRepo) -> Result<String, RenderError> {
     // A serde_yaml::Value tree, built deterministically, then serialized. Using
     // Value (not string concatenation) keeps the output canonical regardless of
-    // fragment formatting — serde_yaml emits mapping keys in insertion order, so
-    // we insert in a fixed order and let nested maps stay BTreeMap-ordered.
+    // fragment formatting — we insert in a fixed order and recursively sort keys.
     let mut doc = serde_yaml::Mapping::new();
 
     // providers: (required)
-    let providers = read_yaml_mapping(&root.join("providers.yaml"), "providers.yaml")?;
+    let providers = read_yaml_mapping(repo, "providers.yaml")?
+        .ok_or_else(|| RenderError::Io("config repo has no providers.yaml".to_string()))?;
     doc.insert("providers".into(), sorted_value(providers));
 
     // fleet: (optional scope)
-    let fleet_path = root.join("fleet").join("base.chain.yaml");
-    if fleet_path.exists() {
-        let fleet = read_yaml_mapping(&fleet_path, "fleet/base.chain.yaml")?;
+    if let Some(fleet) = read_yaml_mapping(repo, "fleet/base.chain.yaml")? {
         doc.insert("fleet".into(), sorted_value(fleet));
     }
 
     // projects: (optional; one directory per project)
-    let projects = read_projects(root)?;
+    let projects = read_projects(repo)?;
     if !projects.is_empty() {
         let mut pm = serde_yaml::Mapping::new();
         for (name, val) in projects {
@@ -164,30 +174,26 @@ fn assemble_flat_yaml(root: &Path) -> Result<String, RenderError> {
     }
 
     // routes: (required; one file per route, sorted by filename for order)
-    let routes = read_routes(root)?;
+    let routes = read_routes(repo)?;
     if routes.is_empty() {
-        return Err(RenderError::Io(format!(
-            "config repo {} has no routes/*.route.yaml files",
-            root.display()
-        )));
+        return Err(RenderError::Io(
+            "config repo has no routes/*.route.yaml files".to_string(),
+        ));
     }
     doc.insert("routes".into(), serde_yaml::Value::Sequence(routes));
 
     // apps: (optional)
-    let apps_path = root.join("apps.yaml");
-    if apps_path.exists() {
-        let apps = read_yaml_mapping(&apps_path, "apps.yaml")?;
+    if let Some(apps) = read_yaml_mapping(repo, "apps.yaml")? {
         doc.insert("apps".into(), sorted_value(apps));
     }
 
     // rejections: (required GB-4 block)
-    let rejections = read_yaml_mapping(&root.join("rejections.yaml"), "rejections.yaml")?;
+    let rejections = read_yaml_mapping(repo, "rejections.yaml")?
+        .ok_or_else(|| RenderError::Io("config repo has no rejections.yaml".to_string()))?;
     doc.insert("rejections".into(), sorted_value(rejections));
 
     // auth: (optional)
-    let auth_path = root.join("auth.yaml");
-    if auth_path.exists() {
-        let auth = read_yaml_mapping(&auth_path, "auth.yaml")?;
+    if let Some(auth) = read_yaml_mapping(repo, "auth.yaml")? {
         doc.insert("auth".into(), sorted_value(auth));
     }
 
@@ -195,28 +201,23 @@ fn assemble_flat_yaml(root: &Path) -> Result<String, RenderError> {
         .map_err(|e| RenderError::Io(format!("serializing flat config: {e}")))
 }
 
-/// One project directory -> its scope Value. Each `projects/<name>/` contributes
-/// a `base.chain.yaml` (the project scope). Read sorted by project name.
-fn read_projects(root: &Path) -> Result<Vec<(String, serde_yaml::Value)>, RenderError> {
-    let dir = root.join("projects");
-    if !dir.is_dir() {
-        return Ok(Vec::new());
+/// One project directory -> its scope Value. Each `projects/<name>/`
+/// contributes a `base.chain.yaml` (the project scope). Read sorted by name.
+fn read_projects(repo: &ResolvedRepo) -> Result<Vec<(String, serde_yaml::Value)>, RenderError> {
+    // Collect the distinct project names from `projects/<name>/...` paths.
+    let mut names: Vec<String> = Vec::new();
+    for (rel, _) in repo.entries_under("projects") {
+        if let Some((name, _)) = rel.split_once('/') {
+            if !names.contains(&name.to_string()) {
+                names.push(name.to_string());
+            }
+        }
     }
-    let mut names: Vec<PathBuf> = list_dir(&dir)?
-        .into_iter()
-        .filter(|p| p.is_dir())
-        .collect();
     names.sort();
     let mut out = Vec::new();
-    for pdir in names {
-        let name = pdir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| RenderError::Io(format!("bad project dir name: {}", pdir.display())))?
-            .to_string();
-        let chain = pdir.join("base.chain.yaml");
-        if chain.exists() {
-            let scope = read_yaml_mapping(&chain, "project base.chain.yaml")?;
+    for name in names {
+        let chain_path = format!("projects/{name}/base.chain.yaml");
+        if let Some(scope) = read_yaml_mapping(repo, &chain_path)? {
             out.push((name, sorted_value(scope)));
         }
     }
@@ -225,54 +226,41 @@ fn read_projects(root: &Path) -> Result<Vec<(String, serde_yaml::Value)>, Render
 
 /// One `routes/*.route.yaml` file -> one `routes:` sequence entry. Sorted by
 /// filename so route order is deterministic and reviewable.
-fn read_routes(root: &Path) -> Result<Vec<serde_yaml::Value>, RenderError> {
-    let dir = root.join("routes");
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut files: Vec<PathBuf> = list_dir(&dir)?
+fn read_routes(repo: &ResolvedRepo) -> Result<Vec<serde_yaml::Value>, RenderError> {
+    let mut files: Vec<(String, &[u8])> = repo
+        .entries_under("routes")
         .into_iter()
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(".route.yaml"))
-        })
+        .filter(|(name, _)| name.ends_with(".route.yaml"))
         .collect();
-    files.sort();
+    files.sort_by(|(a, _), (b, _)| a.cmp(b));
     let mut out = Vec::new();
-    for f in files {
-        let val = read_yaml_value(&f, "route file")?;
+    for (name, bytes) in files {
+        let val = parse_yaml_value(bytes, &format!("routes/{name}"))?;
         out.push(sorted_value_any(val));
     }
     Ok(out)
 }
 
-fn list_dir(dir: &Path) -> Result<Vec<PathBuf>, RenderError> {
-    let mut out = Vec::new();
-    for entry in
-        std::fs::read_dir(dir).map_err(|e| RenderError::Io(format!("{}: {e}", dir.display())))?
-    {
-        let entry = entry.map_err(|e| RenderError::Io(format!("{}: {e}", dir.display())))?;
-        out.push(entry.path());
-    }
-    Ok(out)
-}
-
-fn read_yaml_value(path: &Path, what: &str) -> Result<serde_yaml::Value, RenderError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| RenderError::Io(format!("{what} {}: {e}", path.display())))?;
-    serde_yaml::from_str(&text)
-        .map_err(|e| RenderError::Io(format!("{what} {}: parse: {e}", path.display())))
-}
-
-fn read_yaml_mapping(path: &Path, what: &str) -> Result<serde_yaml::Mapping, RenderError> {
-    match read_yaml_value(path, what)? {
-        serde_yaml::Value::Mapping(m) => Ok(m),
+/// Parse a repo file's bytes as a YAML Value; `None` if the file is absent.
+fn read_yaml_mapping(
+    repo: &ResolvedRepo,
+    rel: &str,
+) -> Result<Option<serde_yaml::Mapping>, RenderError> {
+    let Some(bytes) = repo.get(rel) else {
+        return Ok(None);
+    };
+    match parse_yaml_value(bytes, rel)? {
+        serde_yaml::Value::Mapping(m) => Ok(Some(m)),
         other => Err(RenderError::Io(format!(
-            "{what} {}: expected a mapping, got {other:?}",
-            path.display()
+            "{rel}: expected a mapping, got {other:?}"
         ))),
     }
+}
+
+fn parse_yaml_value(bytes: &[u8], what: &str) -> Result<serde_yaml::Value, RenderError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| RenderError::Io(format!("{what}: not utf-8: {e}")))?;
+    serde_yaml::from_str(text).map_err(|e| RenderError::Io(format!("{what}: parse: {e}")))
 }
 
 /// Canonicalize a mapping: recursively sort every mapping's keys. This is what
@@ -341,7 +329,16 @@ pub mod testrepo {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("fleet")).unwrap();
         std::fs::create_dir_all(root.join("routes")).unwrap();
+        write_files(&root, env);
+        root
+    }
 
+    /// Write the minimal-valid repo fragments into an existing directory. Used
+    /// by the directory builder above and by the Git-source tests (which then
+    /// `git add && git commit` the directory).
+    pub fn write_files(root: &std::path::Path, env: &str) {
+        let _ = std::fs::create_dir_all(root.join("fleet"));
+        let _ = std::fs::create_dir_all(root.join("routes"));
         std::fs::write(
             root.join("providers.yaml"),
             "openai-main:\n  kind: openai\n  upstream: { host: 127.0.0.1, port: 6190 }\n",
@@ -371,7 +368,6 @@ pub mod testrepo {
             ),
         )
         .unwrap();
-        root
     }
 
     /// Write a repo whose flat config FAILS validation (a route references a
@@ -430,8 +426,6 @@ mod tests {
         // must hash the same — canonicalization sorts keys.
         let a = testrepo::write_named("order-a", "prod");
         let b = testrepo::write_named("order-b", "prod");
-        // Rewrite b's providers with an extra provider inserted "out of order";
-        // then rewrite a with the same two providers in the other order.
         let two_ordered = "aaa-main:\n  kind: openai\n  upstream: { host: 127.0.0.1, port: 6190 }\nopenai-main:\n  kind: openai\n  upstream: { host: 127.0.0.1, port: 6190 }\n";
         let two_reversed = "openai-main:\n  kind: openai\n  upstream: { host: 127.0.0.1, port: 6190 }\naaa-main:\n  kind: openai\n  upstream: { host: 127.0.0.1, port: 6190 }\n";
         std::fs::write(a.join("providers.yaml"), two_ordered).unwrap();

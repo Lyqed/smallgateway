@@ -127,6 +127,17 @@ impl Fleet {
         true
     }
 
+    /// The `render_hash` the control plane last PUSHED to `node_id` — the
+    /// "delivered" hash of the drift truth table (docs/07). `None` if the node
+    /// was never pushed. This is a record of what was delivered, not desired
+    /// state: desired is always recomputed from the applied render.
+    pub fn delivered_hash(&self, node_id: &str) -> Option<String> {
+        self.lock()
+            .per_node
+            .get(node_id)
+            .and_then(|v| v.last_pushed_hash.clone())
+    }
+
     /// Assign the next per-node version for a push of `hash` to `node_id`. If
     /// the node was already pushed this exact hash, its version is unchanged
     /// (an idempotent re-push is a no-op number-wise, matching the node's

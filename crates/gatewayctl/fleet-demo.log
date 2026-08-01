@@ -5,28 +5,29 @@
 
 === (0) control plane up: compiled the config repo into v1 ===
 --- gatewayctl log ---
-[2026-08-01T15:46:30Z INFO  gatewayctl] gatewayctl compiled repo /tmp/tmp.sKtSF7mhB6/config-repo -> render_hash=874ef08d4ffb source_commit=m1-874ef08d4ffb7148
-[2026-08-01T15:46:30Z INFO  gatewayctl] gatewayctl minted join token(s) (ttl=300s); nodes present --join-token to bootstrap
-[2026-08-01T15:46:30Z INFO  gatewayctl] [reload] watching /tmp/tmp.sKtSF7mhB6/config-repo every 1s (SIGHUP reloads immediately)
-[2026-08-01T15:46:30Z INFO  gatewayctl] gatewayctl serving FleetService on 127.0.0.1:6187
+[2026-08-01T16:22:08Z INFO  gatewayctl] gatewayctl compiled source dir:/tmp/tmp.Zwz3fN0K4a/config-repo -> render_hash=874ef08d4ffb source_commit=dir-d8e97dcca18b23e2
+[2026-08-01T16:22:08Z INFO  gatewayctl] gatewayctl minted join token(s) (ttl=300s); nodes present --join-token to bootstrap
+[2026-08-01T16:22:08Z INFO  gatewayctl] [reload] watching dir:/tmp/tmp.Zwz3fN0K4a/config-repo every 1s (SIGHUP reloads immediately)
+[2026-08-01T16:22:08Z INFO  gatewayctl] gatewayctl serving FleetService on 127.0.0.1:6187
+[2026-08-01T16:22:08Z INFO  gatewayctl::reconcile] [reconcile] drift reconciler running every 5s
 
 === (1) fan-out: BOTH nodes joined with a join token and received v1 ===
     (node-a used token 'demo-join'; node-b used the single-use sibling 'demo-join-2')
 --- gatewayctl log: two joins + two initial pushes + two acks ---
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [join] node "node-b" joined (fresh); labels={} current_fleet_version=v0
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [join] node "node-a" joined (fresh); labels={} current_fleet_version=v0
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [join] pushed initial render_hash=874ef08d4ffb v=1 to "node-b"
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [join] pushed initial render_hash=874ef08d4ffb v=1 to "node-a"
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [ack] node "node-a" acked v1 hash=874ef08d4ffb
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [join] node "node-a" answered bootstrap v1: ACK (hash=874ef08d4ffb); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [ack] node "node-b" acked v1 hash=874ef08d4ffb
-[2026-08-01T15:46:30Z INFO  gatewayctl::server] [join] node "node-b" answered bootstrap v1: ACK (hash=874ef08d4ffb); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [join] node "node-b" joined (fresh); labels={} current_fleet_version=v0
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [join] pushed initial render_hash=874ef08d4ffb v=1 to "node-b"
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [join] node "node-a" joined (fresh); labels={} current_fleet_version=v0
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [join] pushed initial render_hash=874ef08d4ffb v=1 to "node-a"
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [ack] node "node-a" acked v1 hash=874ef08d4ffb
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [ack] node "node-b" acked v1 hash=874ef08d4ffb
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [join] node "node-a" answered bootstrap v1: ACK (hash=874ef08d4ffb); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
+[2026-08-01T16:22:08Z INFO  gatewayctl::server] [join] node "node-b" answered bootstrap v1: ACK (hash=874ef08d4ffb); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
 --- node-a log: bound the first snapshot v1 ---
-[2026-08-01T15:46:30Z INFO  gatewayd::client] [cp-client] node "node-a" joined http://127.0.0.1:6187; awaiting first snapshot
-[2026-08-01T15:46:30Z INFO  gatewayd::client] [cp-client] node "node-a" bound first snapshot fleet_version=v1 advertised_render_hash=874ef08d4ffb bound_hash=874ef08d4ffb -> local cfg=v1
+[2026-08-01T16:22:08Z INFO  gatewayd::client] [cp-client] node "node-a" joined http://127.0.0.1:6187; awaiting first snapshot
+[2026-08-01T16:22:08Z INFO  gatewayd::client] [cp-client] node "node-a" bound first snapshot fleet_version=v1 advertised_render_hash=874ef08d4ffb bound_hash=874ef08d4ffb -> local cfg=v1
 --- node-b log: bound the first snapshot v1 ---
-[2026-08-01T15:46:30Z INFO  gatewayd::client] [cp-client] node "node-b" joined http://127.0.0.1:6187; awaiting first snapshot
-[2026-08-01T15:46:30Z INFO  gatewayd::client] [cp-client] node "node-b" bound first snapshot fleet_version=v1 advertised_render_hash=874ef08d4ffb bound_hash=874ef08d4ffb -> local cfg=v1
+[2026-08-01T16:22:08Z INFO  gatewayd::client] [cp-client] node "node-b" joined http://127.0.0.1:6187; awaiting first snapshot
+[2026-08-01T16:22:08Z INFO  gatewayd::client] [cp-client] node "node-b" bound first snapshot fleet_version=v1 advertised_render_hash=874ef08d4ffb bound_hash=874ef08d4ffb -> local cfg=v1
 
 --- a bad join token is REJECTED (a third node with a garbage token) ---
 gatewayd: control-plane bootstrap failed: join rejected by control plane: code: 'The request does not have valid authentication credentials', message: "join rejected: unknown join token"
@@ -37,15 +38,15 @@ node-b:
 
 === (2) config change committed (env pin prod -> canary): v2 rolled out ===
 --- gatewayctl log: re-render + wave push v2 + BOTH acks + COMMITTED ---
-[2026-08-01T15:46:41Z INFO  gatewayctl] [reload] trigger=poll repo re-rendered -> render_hash=e954d34dcff5; rolling out
-[2026-08-01T15:46:41Z INFO  gatewayctl::server] [rollout] trigger=poll pushing render_hash=e954d34dcff5 v=2 to 2 node(s): ["node-a", "node-b"]
-[2026-08-01T15:46:41Z INFO  gatewayctl::server] [ack] node "node-a" acked v2 hash=e954d34dcff5
-[2026-08-01T15:46:41Z INFO  gatewayctl::server] [ack] node "node-b" acked v2 hash=e954d34dcff5
-[2026-08-01T15:46:41Z INFO  gatewayctl::server] [rollout] COMMITTED trigger=poll render_hash=e954d34dcff5 across 2 node(s); fleet committed_version=v2
+[2026-08-01T16:22:19Z INFO  gatewayctl] [reload] trigger=poll re-rendered -> render_hash=e954d34dcff5 source_commit=dir-5bf1fa0ea4c88828; rolling out
+[2026-08-01T16:22:19Z INFO  gatewayctl::server] [rollout] trigger=poll pushing render_hash=e954d34dcff5 v=2 to 2 node(s): ["node-a", "node-b"]
+[2026-08-01T16:22:19Z INFO  gatewayctl::server] [ack] node "node-b" acked v2 hash=e954d34dcff5
+[2026-08-01T16:22:19Z INFO  gatewayctl::server] [ack] node "node-a" acked v2 hash=e954d34dcff5
+[2026-08-01T16:22:19Z INFO  gatewayctl::server] [rollout] COMMITTED trigger=poll render_hash=e954d34dcff5 across 2 node(s); fleet committed_version=v2
 --- node-a log: swapped to v2 and ACKed ---
-[2026-08-01T15:46:41Z INFO  gatewayd::client] [cp-client] node "node-a" ACK v2 (swapped local cfg v1->v2, bound_hash=e954d34dcff5)
+[2026-08-01T16:22:19Z INFO  gatewayd::client] [cp-client] node "node-a" ACK v2 (swapped local cfg v1->v2, bound_hash=e954d34dcff5)
 --- node-b log: swapped to v2 and ACKed ---
-[2026-08-01T15:46:41Z INFO  gatewayd::client] [cp-client] node "node-b" ACK v2 (swapped local cfg v1->v2, bound_hash=e954d34dcff5)
+[2026-08-01T16:22:19Z INFO  gatewayd::client] [cp-client] node "node-b" ACK v2 (swapped local cfg v1->v2, bound_hash=e954d34dcff5)
 
 --- curl through each node (v2): x-echo-attr-env now reads canary on BOTH ---
 node-a:
@@ -56,23 +57,23 @@ node-b:
      a provider that does not exist, so each node's local validation
      REJECTS it. The wave HALTS and the fleet version does NOT advance.)
 --- gatewayctl log: push + TWO nacks + HALTED (committed version frozen) ---
-[2026-08-01T15:46:43Z INFO  gatewayctl] [inject] SIGUSR1: distributing raw snapshot demo/invalid-snapshot.yaml (942 bytes), BYPASSING the render gate — nodes are the validation authority
-[2026-08-01T15:46:43Z INFO  gatewayctl::server] [rollout] trigger=sigusr1-raw pushing render_hash=ab597c93410d v=3 to 2 node(s): ["node-a", "node-b"]
-[2026-08-01T15:46:43Z WARN  gatewayctl::server] [nack] node "node-a" NACKed v3: pushed config failed local validation; still serving local cfg=v2 (node keeps its prior version)
-[2026-08-01T15:46:43Z WARN  gatewayctl::server] [nack] node "node-b" NACKed v3: pushed config failed local validation; still serving local cfg=v2 (node keeps its prior version)
-[2026-08-01T15:46:43Z ERROR gatewayctl::server] [rollout] HALTED trigger=sigusr1-raw render_hash=ab597c93410d: the wave did not fully ack; fleet committed_version STAYS v2 (not advanced). 2 divergence(s):
-[2026-08-01T15:46:43Z ERROR gatewayctl::server] [rollout]   divergent node node-a NACKed v3: pushed config failed local validation; still serving local cfg=v2
-[2026-08-01T15:46:43Z ERROR gatewayctl::server] [rollout]   divergent node node-b NACKed v3: pushed config failed local validation; still serving local cfg=v2
+[2026-08-01T16:22:21Z INFO  gatewayctl] [inject] SIGUSR1: distributing raw snapshot demo/invalid-snapshot.yaml (942 bytes), BYPASSING the render gate — nodes are the validation authority
+[2026-08-01T16:22:21Z INFO  gatewayctl::server] [rollout] trigger=sigusr1-raw pushing render_hash=ab597c93410d v=3 to 2 node(s): ["node-a", "node-b"]
+[2026-08-01T16:22:21Z WARN  gatewayctl::server] [nack] node "node-a" NACKed v3: pushed config failed local validation; still serving local cfg=v2 (node keeps its prior version)
+[2026-08-01T16:22:21Z WARN  gatewayctl::server] [nack] node "node-b" NACKed v3: pushed config failed local validation; still serving local cfg=v2 (node keeps its prior version)
+[2026-08-01T16:22:21Z ERROR gatewayctl::server] [rollout] HALTED trigger=sigusr1-raw render_hash=ab597c93410d: the wave did not fully ack; fleet committed_version STAYS v2 (not advanced). 2 divergence(s):
+[2026-08-01T16:22:21Z ERROR gatewayctl::server] [rollout]   divergent node node-a NACKed v3: pushed config failed local validation; still serving local cfg=v2
+[2026-08-01T16:22:21Z ERROR gatewayctl::server] [rollout]   divergent node node-b NACKed v3: pushed config failed local validation; still serving local cfg=v2
 --- node-a log: NACKed the bad snapshot, still serving its good version ---
-[2026-08-01T15:46:43Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=push): new config invalid; still serving cfg=v2 hash=e954d34dcff5
-[2026-08-01T15:46:43Z WARN  gatewayd::client] [cp-client] HASH MISMATCH: control plane advertised render_hash=ab597c93410d but the bytes it sent hash to e954d34dcff5; ACKing with the bytes' true hash (control plane will diverge)
-[2026-08-01T15:46:43Z WARN  gatewayd::client] [cp-client] node "node-a" NACK v3: pushed config failed local validation; still serving local cfg=v2
-[2026-08-01T15:46:43Z ERROR gatewayd::client] [cp-client] NACK reason: pushed config failed local validation; still serving local cfg=v2
+[2026-08-01T16:22:21Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=push): new config invalid; still serving cfg=v2 hash=e954d34dcff5
+[2026-08-01T16:22:21Z WARN  gatewayd::client] [cp-client] HASH MISMATCH: control plane advertised render_hash=ab597c93410d but the bytes it sent hash to e954d34dcff5; ACKing with the bytes' true hash (control plane will diverge)
+[2026-08-01T16:22:21Z WARN  gatewayd::client] [cp-client] node "node-a" NACK v3: pushed config failed local validation; still serving local cfg=v2
+[2026-08-01T16:22:21Z ERROR gatewayd::client] [cp-client] NACK reason: pushed config failed local validation; still serving local cfg=v2
 --- node-b log: NACKed the bad snapshot, still serving its good version ---
-[2026-08-01T15:46:43Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=push): new config invalid; still serving cfg=v2 hash=e954d34dcff5
-[2026-08-01T15:46:43Z WARN  gatewayd::client] [cp-client] HASH MISMATCH: control plane advertised render_hash=ab597c93410d but the bytes it sent hash to e954d34dcff5; ACKing with the bytes' true hash (control plane will diverge)
-[2026-08-01T15:46:43Z WARN  gatewayd::client] [cp-client] node "node-b" NACK v3: pushed config failed local validation; still serving local cfg=v2
-[2026-08-01T15:46:43Z ERROR gatewayd::client] [cp-client] NACK reason: pushed config failed local validation; still serving local cfg=v2
+[2026-08-01T16:22:21Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=push): new config invalid; still serving cfg=v2 hash=e954d34dcff5
+[2026-08-01T16:22:21Z WARN  gatewayd::client] [cp-client] HASH MISMATCH: control plane advertised render_hash=ab597c93410d but the bytes it sent hash to e954d34dcff5; ACKing with the bytes' true hash (control plane will diverge)
+[2026-08-01T16:22:21Z WARN  gatewayd::client] [cp-client] node "node-b" NACK v3: pushed config failed local validation; still serving local cfg=v2
+[2026-08-01T16:22:21Z ERROR gatewayd::client] [cp-client] NACK reason: pushed config failed local validation; still serving local cfg=v2
 
 --- curl through each node AFTER the NACK: still v2 (canary), still serving ---
 node-a:
@@ -89,33 +90,33 @@ node-b (CP down):
 HTTP/1.1 200 OK
 x-echo-attr-env: canary
 --- node-a log while the CP is down: stream ended, keeps serving, re-dialing ---
-[2026-08-01T15:46:44Z WARN  gatewayd::client] [cp-client] stream error: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) }); supervisor will re-dial
-[2026-08-01T15:46:44Z INFO  gatewayd::client] [cp-client] stream to http://127.0.0.1:6187 ended; node keeps serving its last snapshot
-[2026-08-01T15:46:45Z INFO  gatewayd::client] [cp-client] node "node-a" re-dialing http://127.0.0.1:6187 (still serving cfg=v2 hash=e954d34dcff5 meanwhile)
-[2026-08-01T15:46:45Z WARN  gatewayd::client] [cp-client] node "node-a" reconnect to http://127.0.0.1:6187 failed: dial http://127.0.0.1:6187: transport error; still serving last snapshot, retrying in 500ms
+[2026-08-01T16:22:22Z WARN  gatewayd::client] [cp-client] stream error: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) }); supervisor will re-dial
+[2026-08-01T16:22:22Z INFO  gatewayd::client] [cp-client] stream to http://127.0.0.1:6187 ended; node keeps serving its last snapshot
+[2026-08-01T16:22:23Z INFO  gatewayd::client] [cp-client] node "node-a" re-dialing http://127.0.0.1:6187 (still serving cfg=v2 hash=e954d34dcff5 meanwhile)
+[2026-08-01T16:22:23Z WARN  gatewayd::client] [cp-client] node "node-a" reconnect to http://127.0.0.1:6187 failed: dial http://127.0.0.1:6187: transport error; still serving last snapshot, retrying in 500ms
 
 === (4 cont.) control plane RESTARTED: both nodes AUTO-RECONNECTED ===
     (no operator action, no node restart — the cp-client supervisor
      re-dialed on its established identity and resumed pushes)
 --- node-a log: rejoined the control plane and resumed ---
-[2026-08-01T15:46:46Z INFO  gatewayd::client] [cp-client] node "node-a" re-dialing http://127.0.0.1:6187 (still serving cfg=v2 hash=e954d34dcff5 meanwhile)
-[2026-08-01T15:46:46Z INFO  gatewayd::client] [cp-client] node "node-a" rejoined http://127.0.0.1:6187; resuming pushes
-[2026-08-01T15:46:46Z INFO  gatewayd::client] [cp-client] node "node-a" ACK v1 (no-op; already at bound_hash=e954d34dcff5, local cfg=v2)
-[2026-08-01T15:46:50Z INFO  gatewayd::client] [cp-client] node "node-a" heartbeat stopped (stream gone)
+[2026-08-01T16:22:24Z INFO  gatewayd::client] [cp-client] node "node-a" re-dialing http://127.0.0.1:6187 (still serving cfg=v2 hash=e954d34dcff5 meanwhile)
+[2026-08-01T16:22:24Z INFO  gatewayd::client] [cp-client] node "node-a" rejoined http://127.0.0.1:6187; resuming pushes
+[2026-08-01T16:22:24Z INFO  gatewayd::client] [cp-client] node "node-a" ACK v1 (no-op; already at bound_hash=e954d34dcff5, local cfg=v2)
+[2026-08-01T16:22:28Z INFO  gatewayd::client] [cp-client] node "node-a" heartbeat stopped (stream gone)
 --- node-b log: rejoined the control plane and resumed ---
-[2026-08-01T15:46:46Z INFO  gatewayd::client] [cp-client] node "node-b" re-dialing http://127.0.0.1:6187 (still serving cfg=v2 hash=e954d34dcff5 meanwhile)
-[2026-08-01T15:46:46Z INFO  gatewayd::client] [cp-client] node "node-b" rejoined http://127.0.0.1:6187; resuming pushes
-[2026-08-01T15:46:46Z INFO  gatewayd::client] [cp-client] node "node-b" ACK v1 (no-op; already at bound_hash=e954d34dcff5, local cfg=v2)
-[2026-08-01T15:46:50Z INFO  gatewayd::client] [cp-client] node "node-b" heartbeat stopped (stream gone)
+[2026-08-01T16:22:24Z INFO  gatewayd::client] [cp-client] node "node-b" re-dialing http://127.0.0.1:6187 (still serving cfg=v2 hash=e954d34dcff5 meanwhile)
+[2026-08-01T16:22:24Z INFO  gatewayd::client] [cp-client] node "node-b" rejoined http://127.0.0.1:6187; resuming pushes
+[2026-08-01T16:22:24Z INFO  gatewayd::client] [cp-client] node "node-b" ACK v1 (no-op; already at bound_hash=e954d34dcff5, local cfg=v2)
+[2026-08-01T16:22:28Z INFO  gatewayd::client] [cp-client] node "node-b" heartbeat stopped (stream gone)
 --- gatewayctl log: both nodes reconnected and were re-pushed the render ---
-[2026-08-01T15:46:40Z WARN  gatewayctl::server] [join] REJECTED node "node-bad": unknown join token
-[2026-08-01T15:46:46Z INFO  gatewayctl] gatewayctl minted join token(s) (ttl=300s); nodes present --join-token to bootstrap
-[2026-08-01T15:46:46Z INFO  gatewayctl::server] [join] node "node-b" joined (fresh); labels={} current_fleet_version=v2
-[2026-08-01T15:46:46Z INFO  gatewayctl::server] [join] pushed initial render_hash=e954d34dcff5 v=1 to "node-b"
-[2026-08-01T15:46:46Z INFO  gatewayctl::server] [join] node "node-a" joined (fresh); labels={} current_fleet_version=v2
-[2026-08-01T15:46:46Z INFO  gatewayctl::server] [join] node "node-b" answered bootstrap v1: ACK (hash=e954d34dcff5); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
-[2026-08-01T15:46:46Z INFO  gatewayctl::server] [join] pushed initial render_hash=e954d34dcff5 v=1 to "node-a"
-[2026-08-01T15:46:46Z INFO  gatewayctl::server] [join] node "node-a" answered bootstrap v1: ACK (hash=e954d34dcff5); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
+[2026-08-01T16:22:18Z WARN  gatewayctl::server] [join] REJECTED node "node-bad": unknown join token
+[2026-08-01T16:22:24Z INFO  gatewayctl] gatewayctl minted join token(s) (ttl=300s); nodes present --join-token to bootstrap
+[2026-08-01T16:22:24Z INFO  gatewayctl::server] [join] node "node-b" joined (fresh); labels={} current_fleet_version=v2
+[2026-08-01T16:22:24Z INFO  gatewayctl::server] [join] pushed initial render_hash=e954d34dcff5 v=1 to "node-b"
+[2026-08-01T16:22:24Z INFO  gatewayctl::server] [join] node "node-a" joined (fresh); labels={} current_fleet_version=v2
+[2026-08-01T16:22:24Z INFO  gatewayctl::server] [join] pushed initial render_hash=e954d34dcff5 v=1 to "node-a"
+[2026-08-01T16:22:24Z INFO  gatewayctl::server] [join] node "node-b" answered bootstrap v1: ACK (hash=e954d34dcff5); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
+[2026-08-01T16:22:24Z INFO  gatewayctl::server] [join] node "node-a" answered bootstrap v1: ACK (hash=e954d34dcff5); recorded (fleet committed_version NOT advanced by a single-node bootstrap — that needs a full wave)
 
 --- curl through each node AFTER reconnect: still serving (canary) ---
 node-a:
