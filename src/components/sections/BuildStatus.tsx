@@ -1,4 +1,6 @@
 import { HandArrow } from "@/components/art/marks";
+import { PaintBloomCool, SplashArcs } from "@/components/art/PaintField";
+import { AnarchyStar, ScribbleCircle } from "@/components/art/graffiti";
 import { Reveal } from "@/components/reveal/Reveal";
 
 /** Honest, dated status — sourced from docs/04-build-plan.md (the Phase 0
@@ -83,9 +85,21 @@ export function BuildStatus() {
     <section
       id="build"
       aria-labelledby="build-heading"
-      className="py-[var(--space-section)]"
+      className="relative overflow-x-clip py-[var(--space-section)]"
     >
-      <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
+      {/* paint bleeds behind the header and margins only; every fact-bearing
+          surface below keeps its clean/wash ground so no mural touches a
+          number, chip, or phase state (MURAL-DIRECTION non-negotiable) */}
+      <PaintBloomCool
+        id="build-bloom"
+        className="paint-live pointer-events-none absolute -right-48 -top-24 h-[46rem] w-[46rem] max-w-[100vw] opacity-40"
+      />
+      <SplashArcs
+        id="build-arcs"
+        className="paint-live-slow pointer-events-none absolute -left-16 top-8 h-[18rem] w-[120%] opacity-45"
+      />
+
+      <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <header className="flex max-w-3xl flex-wrap items-baseline gap-x-5 gap-y-2">
           <div>
             <p className="voice-mono text-xs text-steel-dark">
@@ -98,24 +112,37 @@ export function BuildStatus() {
               Build status
             </h2>
           </div>
-          <p className="voice-mono rounded-sm border border-steel bg-panel px-2.5 py-1 text-xs text-steel-dark">
-            as of 2026-08-01
-          </p>
+          <span className="relative inline-block">
+            <p className="voice-mono rounded-sm border border-steel bg-panel px-2.5 py-1 text-xs text-steel-dark">
+              as of 2026-08-01
+            </p>
+            {/* the hand rings the date — precision, circled by the mural */}
+            <ScribbleCircle
+              className="pointer-events-none absolute -inset-x-3 -inset-y-2 h-[calc(100%+1rem)] w-[calc(100%+1.5rem)]"
+              color="var(--violet)"
+            />
+          </span>
         </header>
         <p className="mt-4 max-w-2xl leading-relaxed text-steel-dark">
           Risk-ordered: the highest-risk novel claim gets validated first, and
           every phase ships something a platform team can run.
         </p>
         <div aria-hidden className="mt-2 flex items-center gap-2">
-          <p className="voice-hand -rotate-2 text-lg">
+          <p className="marker -rotate-2 text-xl text-monarch">
             the scariest claim first
           </p>
           <HandArrow className="h-8 w-10 -scale-y-100" />
+          <AnarchyStar className="w-9 -rotate-6" />
         </div>
 
-        {/* Phase 0 — closed 1 August 2026 (docs/04-build-plan.md callout) */}
+        {/* Phase 0 — closed 1 August 2026 (docs/04-build-plan.md callout).
+            Torn open to teal, but the well and its cards keep clean grounds
+            so every chip and the measured error bound stay fully legible. */}
         <Reveal className="mt-12">
-          <div className="border border-steel border-l-4 border-l-teal bg-teal-wash p-7 sm:p-9">
+          <div
+            className="torn-top relative border border-steel border-l-4 border-l-teal bg-teal-wash p-7 sm:p-9"
+            style={{ ["--torn-color" as string]: "var(--teal)" }}
+          >
             <div className="flex flex-wrap items-center gap-3">
               <h3 className="voice-display text-2xl">Phase 0 · the spikes</h3>
               <StatusChip tone="teal" label="closed · 1 August 2026" />

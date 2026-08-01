@@ -1,11 +1,15 @@
-import { Monarch } from "@/components/art/Monarch";
+import { MonarchPlanet } from "@/components/art/MonarchPlanet";
+import { PaintBloom, SplashArcs } from "@/components/art/PaintField";
+import { CrayonUnderline } from "@/components/art/graffiti";
 import { HandCircle } from "@/components/art/marks";
 import { Reveal } from "@/components/reveal/Reveal";
 
 /**
- * The ownership contract (brief §8.5) — the mural moment. The butterfly
- * lands here, once per site, at the moment of transformation. Half
- * machined type, the key phrase circled by hand.
+ * The ownership contract (MURAL-DIRECTION) — the mural climax. The monarch
+ * lands here on a deep-blue planet, once per site, at the moment of
+ * transformation, ringed by splash arcs and a full-color bloom that bleed
+ * off the edges. The contract sentence stays on clean ground, circled by
+ * hand; the body copy sits on the atrium, never on paint. Contrast holds.
  */
 export function Ownership() {
   return (
@@ -13,20 +17,35 @@ export function Ownership() {
       aria-labelledby="ownership-heading"
       className="relative overflow-x-clip pb-[var(--space-section)] pt-[clamp(7rem,42svh,26rem)]"
     >
-      {/* The generous top gap is deliberate: the monolith band above must
-          never share a viewport with this section's mural moment. */}
-      <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
+      {/* The generous top gap keeps the dark build band out of this section's
+          viewport. Paint bleeds up into that gap and off both edges. */}
+      <PaintBloom
+        id="own-bloom"
+        className="paint-live pointer-events-none absolute -left-40 top-0 h-[52rem] w-[52rem] max-w-[110vw] opacity-60"
+      />
+      <SplashArcs
+        id="own-arcs"
+        className="paint-live-slow pointer-events-none absolute -right-10 top-24 h-[24rem] w-[125%] opacity-60"
+      />
+
+      <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <div className="relative border-y border-steel py-16 sm:py-20">
-          <Monarch className="pointer-events-none absolute -bottom-12 right-2 w-24 rotate-6 sm:-bottom-14 sm:right-10 sm:w-32" />
+          {/* the monarch on its deep-blue planet — the once-per-site mural */}
+          <MonarchPlanet className="pointer-events-none absolute -bottom-24 right-0 aspect-square w-56 rotate-6 sm:-bottom-28 sm:right-6 sm:w-72" />
 
-          <p className="voice-mono text-sm font-medium uppercase tracking-[0.2em] text-monarch sm:text-base">
-            The ownership contract
-          </p>
+          <div className="relative inline-block">
+            <p className="voice-mono text-sm font-medium uppercase tracking-[0.2em] text-monarch-deep sm:text-base">
+              The ownership contract
+            </p>
+            <CrayonUnderline
+              className="pointer-events-none absolute -bottom-2 left-0 h-3 w-full"
+              color="var(--monarch)"
+            />
+          </div>
 
-          <Reveal className="mt-8">
-            {/* The hand circle wraps the WHOLE sentence, not one phrase:
-                a large ellipse sized to the heading's bounding box, drawn
-                behind the multi-line text. */}
+          <Reveal className="mt-10">
+            {/* The hand circle wraps the whole sentence; the sentence sits on
+                the clean atrium ground behind the paint, at full contrast. */}
             <div className="relative inline-block max-w-4xl px-[3%] py-[6%]">
               <HandCircle className="pointer-events-none absolute inset-0 h-full w-full" />
               <h2
@@ -37,12 +56,12 @@ export function Ownership() {
                 you are responsible.
               </h2>
             </div>
-            <p aria-hidden className="voice-hand mt-6 rotate-[-2deg] text-xl">
+            <p aria-hidden className="marker mt-6 rotate-[-2deg] text-2xl text-violet">
               not blamed. responsible
             </p>
           </Reveal>
 
-          <div className="mt-10 grid gap-8 lg:grid-cols-2">
+          <div className="mt-10 grid max-w-4xl gap-8 lg:grid-cols-2">
             <p className="leading-relaxed text-steel-dark">
               You show up, you diagnose, you fix or revert, and the postmortem
               names the mechanism, not the person. This is the community&rsquo;s

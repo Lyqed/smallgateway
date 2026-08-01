@@ -1,19 +1,40 @@
 import { ThreeBoxes } from "@/components/art/ThreeBoxes";
+import { PaintBloomCool, SplashArcs } from "@/components/art/PaintField";
+import {
+  AnarchyStar,
+  Drips,
+  ScribbleCircle,
+  TornStrip,
+} from "@/components/art/graffiti";
 import { HandArrow, HandUnderline } from "@/components/art/marks";
 import { Reveal } from "@/components/reveal/Reveal";
 
 /**
- * Principles (brief §8.2) — three walls, sourced from
- * docs/00-principles.md: same claims, tightened copy.
+ * Principles (MURAL-DIRECTION) — the three walls, now mural-hosted. A cool
+ * paint bloom and splash arcs bleed across the section boundary behind the
+ * machined cards; each numbered wall is a clean panel torn open to color
+ * along its top edge, with graffiti punctuating exactly where the
+ * engineering is most precise (the numbers, the anti-goal). Card body copy
+ * stays on the clean panel ground and never on paint.
  */
 export function Principles() {
   return (
     <section
       id="principles"
       aria-labelledby="principles-heading"
-      className="relative py-[var(--space-section)]"
+      className="relative overflow-x-clip py-[var(--space-section)]"
     >
-      <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
+      {/* paint bleeding UP across the boundary from the hero, behind cards */}
+      <PaintBloomCool
+        id="prin-bloom"
+        className="paint-live-slow pointer-events-none absolute -left-52 -top-24 h-[54rem] w-[54rem] max-w-[110vw] opacity-55"
+      />
+      <SplashArcs
+        id="prin-arcs"
+        className="paint-live pointer-events-none absolute -right-16 top-40 h-[22rem] w-[120%] opacity-55"
+      />
+
+      <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <header className="max-w-2xl">
           <p className="voice-mono text-xs text-steel-dark">00-principles.md</p>
           <h2
@@ -28,11 +49,26 @@ export function Principles() {
           </p>
         </header>
 
-        {/* Wall 1 — wide, with the hand-sketched system beside it */}
-        <Reveal className="mt-14">
-          <article className="lift-card grid gap-8 border border-steel bg-panel p-7 sm:p-10 lg:grid-cols-[5fr_6fr] lg:items-center">
-            <div>
-              <p className="voice-mono text-xs text-steel-dark">01</p>
+        {/* Wall 1 — wide, torn open to monarch, the sketched system beside it */}
+        <Reveal className="relative mt-14">
+          {/* a scrap of torn newsprint underneath the tear — the literal
+              "torn newsprint underneath" reference, ripped open at the top edge */}
+          <TornStrip
+            id="prin-news"
+            className="pointer-events-none absolute -top-6 right-10 z-0 w-44 rotate-2 opacity-90 sm:right-16 sm:w-52"
+          />
+          <article
+            className="lift-card torn-top relative z-10 grid gap-8 border border-steel bg-panel p-7 sm:p-10 lg:grid-cols-[5fr_6fr] lg:items-center"
+            style={{ ["--torn-color" as string]: "var(--monarch)" }}
+          >
+            <div className="relative">
+              <span className="relative inline-block">
+                <p className="voice-mono text-xs text-steel-dark">01</p>
+                <ScribbleCircle
+                  className="pointer-events-none absolute -left-3 -top-2 h-8 w-14"
+                  color="var(--monarch)"
+                />
+              </span>
               <h3 className="voice-display mt-2 text-2xl sm:text-3xl">
                 Two binaries plus Git
               </h3>
@@ -45,7 +81,7 @@ export function Principles() {
                 Postgres for <em>runtime state</em>, never for truth. Truth
                 lives in Git, always.
               </p>
-              <p className="voice-mono mt-5 border-l-2 border-steel pl-3 text-xs text-steel-dark">
+              <p className="voice-mono mt-5 border-l-2 border-monarch pl-3 text-xs text-steel-dark">
                 anti-goal, restated at every phase: don&rsquo;t accrete
                 Spinnaker
               </p>
@@ -54,10 +90,13 @@ export function Principles() {
           </article>
         </Reveal>
 
-        {/* Walls 2 + 3 — offset editorial pair, not a uniform grid */}
+        {/* Walls 2 + 3 — offset editorial pair, each torn to a different color */}
         <div className="mt-8 grid gap-8 lg:grid-cols-12">
           <Reveal className="lg:col-span-7">
-            <article className="lift-card relative h-full border border-steel bg-panel p-7 sm:p-10">
+            <article
+              className="lift-card torn-top relative h-full border border-steel bg-panel p-7 sm:p-10"
+              style={{ ["--torn-color" as string]: "var(--violet)" }}
+            >
               <p className="voice-mono text-xs text-steel-dark">02</p>
               <h3 className="voice-display mt-2 text-2xl sm:text-3xl">
                 Defer, defer, defer
@@ -74,15 +113,24 @@ export function Principles() {
               </p>
               <div aria-hidden className="mt-6 flex items-end gap-3">
                 <HandArrow className="h-10 w-12 -scale-x-100" />
-                <p className="voice-hand rotate-[2deg] pb-1 text-2xl">
+                <p className="marker rotate-[2deg] pb-1 text-2xl text-violet">
                   you don&rsquo;t need to buy anything, yet
                 </p>
               </div>
+              {/* drips off the torn edge, low-left */}
+              <Drips
+                className="pointer-events-none absolute -top-3 left-8 h-10 w-24"
+                color="var(--violet)"
+              />
             </article>
           </Reveal>
 
           <Reveal delay={120} className="lg:col-span-5 lg:mt-16">
-            <article className="lift-card h-full border border-steel bg-panel p-7 sm:p-10">
+            <article
+              className="lift-card torn-top relative h-full border border-steel bg-panel p-7 sm:p-10"
+              style={{ ["--torn-color" as string]: "var(--gold)" }}
+            >
+              <AnarchyStar className="pointer-events-none absolute -right-3 -top-6 w-14 rotate-6" />
               <p className="voice-mono text-xs text-steel-dark">03</p>
               <h3 className="voice-display mt-2 text-2xl sm:text-3xl">
                 The six-month rule

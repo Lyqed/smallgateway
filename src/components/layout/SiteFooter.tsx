@@ -1,14 +1,22 @@
 import { SITE_CONFIG } from "@/lib/site-config";
+import { SplashArcs } from "@/components/art/PaintField";
 
 /**
  * The polished floor (brief §4): the one dark surface on the site.
- * Dark band with a faint vertical reflection of the content above,
- * mono small print, sister-site and repo links.
+ * Dark band with a faint vertical reflection of the content above, mono
+ * small print, sister-site and repo links. Splash arcs bleed across the
+ * top edge where the light mural meets the dark floor — the paint follows
+ * the movement down onto the floor. Links stay fully legible on dark.
  */
 export function SiteFooter() {
   return (
-    <footer className="polished-floor mt-auto text-[oklch(88%_0.01_250)]">
-      <div className="mx-auto w-full max-w-[80rem] px-5 py-16 sm:px-8">
+    <footer className="polished-floor relative mt-auto overflow-x-clip text-[oklch(88%_0.01_250)]">
+      {/* the mural spilling onto the floor along the top seam */}
+      <SplashArcs
+        id="footer-arcs"
+        className="paint-live pointer-events-none absolute -left-8 -top-6 h-40 w-[120%] opacity-70"
+      />
+      <div className="relative mx-auto w-full max-w-[80rem] px-5 py-16 sm:px-8">
         <div className="flex flex-col justify-between gap-10 md:flex-row md:items-end">
           <div className="max-w-md">
             <p className="voice-display text-2xl text-atrium">

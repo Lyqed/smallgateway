@@ -1,6 +1,7 @@
 import { SITE_CONFIG } from "@/lib/site-config";
 import { ButtonLink } from "@/components/ui/ButtonLink";
-import { SparkMark } from "@/components/art/marks";
+import { PaintBloom } from "@/components/art/PaintField";
+import { AnarchyStar, ScribbleCircle, SprayTag } from "@/components/art/graffiti";
 import { Reveal } from "@/components/reveal/Reveal";
 
 const STARTING_POINTS = [
@@ -22,21 +23,32 @@ const STARTING_POINTS = [
 ] as const;
 
 /**
- * Contribute (brief §8.6) — where to start. Violet is the human layer:
- * annotations, community, contribution.
+ * Contribute (MURAL-DIRECTION) — the human-layer panel, led by violet. The
+ * panel is torn open to violet and carries a spray tag and a hand star; the
+ * step numbers are ringed by crayon where the machined ordering is most
+ * precise. Body copy stays on the violet-wash ground, never on paint.
  */
 export function Contribute() {
   return (
     <section
       id="contribute"
       aria-labelledby="contribute-heading"
-      className="py-[var(--space-section)] pt-0"
+      className="relative overflow-x-clip py-[var(--space-section)] pt-0"
     >
-      <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
+      <PaintBloom
+        id="contrib-bloom"
+        className="paint-live-slow pointer-events-none absolute -right-40 top-10 h-[42rem] w-[42rem] max-w-[100vw] opacity-45"
+      />
+      <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <Reveal>
-          <div className="relative border border-violet/30 bg-violet-wash p-7 sm:p-12">
-            <SparkMark
-              className="pointer-events-none absolute right-6 top-6 w-6 sm:right-10 sm:top-10"
+          <div
+            className="torn-top relative border border-violet/30 bg-violet-wash p-7 sm:p-12"
+            style={{ ["--torn-color" as string]: "var(--violet)" }}
+          >
+            <AnarchyStar className="pointer-events-none absolute right-6 top-6 w-12 -rotate-6 sm:right-10 sm:top-10 sm:w-16" />
+            <SprayTag
+              id="contrib-tag"
+              className="pointer-events-none absolute -bottom-3 right-8 w-36 rotate-3 opacity-80"
             />
             <p className="voice-mono text-xs text-steel-dark">start here</p>
             <h2
@@ -51,11 +63,19 @@ export function Contribute() {
             </p>
 
             <ol className="mt-10 grid gap-x-10 gap-y-8 md:grid-cols-3">
-              {STARTING_POINTS.map((point) => (
+              {STARTING_POINTS.map((point, i) => (
                 <li key={point.step}>
-                  <p className="voice-mono text-xs text-violet-deep">
-                    {point.step}
-                  </p>
+                  <span className="relative inline-block">
+                    <p className="voice-mono text-xs text-violet-deep">
+                      {point.step}
+                    </p>
+                    {i === 0 && (
+                      <ScribbleCircle
+                        className="pointer-events-none absolute -left-3 -top-2 h-8 w-12"
+                        color="var(--violet)"
+                      />
+                    )}
+                  </span>
                   <h3 className="mt-2 text-lg font-medium tracking-tight">
                     {point.title}
                   </h3>

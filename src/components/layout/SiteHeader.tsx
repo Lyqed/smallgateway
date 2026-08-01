@@ -14,6 +14,13 @@ export function SiteHeader() {
           className="flex items-center gap-2.5 text-sm font-medium tracking-tight text-ink"
         >
           <svg aria-hidden viewBox="0 0 28 28" className="size-6 shrink-0">
+            <defs>
+              <linearGradient id="wm-tick" x1="0" y1="1" x2="1" y2="0">
+                <stop offset="0%" stopColor="var(--violet)" />
+                <stop offset="55%" stopColor="var(--monarch)" />
+                <stop offset="100%" stopColor="var(--gold)" />
+              </linearGradient>
+            </defs>
             <circle
               cx="14"
               cy="14"
@@ -22,13 +29,16 @@ export function SiteHeader() {
               stroke="var(--ink)"
               strokeWidth="2"
             />
+            {/* the brush tick, escalated to a full-color paint stroke */}
             <path
-              d="M5 20 C 10 15, 18 11, 25 9"
+              d="M4 21 C 10 15, 19 10, 26 8"
               fill="none"
-              stroke="var(--violet)"
-              strokeWidth="3"
+              stroke="url(#wm-tick)"
+              strokeWidth="3.5"
               strokeLinecap="round"
             />
+            {/* a small sprayed color dot — the mural, contained */}
+            <circle cx="22" cy="9" r="2" fill="var(--monarch)" />
           </svg>
           {SITE_CONFIG.name}
         </a>
