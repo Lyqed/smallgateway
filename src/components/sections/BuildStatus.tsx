@@ -40,7 +40,7 @@ const PHASES = [
   {
     id: "2",
     title: "Control plane MVP",
-    note: "Git sync, rendered snapshots over gRPC, drift detection, join-token bootstrap, admission on config PRs; under way in crates/",
+    note: "Two milestones landed and adversarially verified: fleet distribution (rendered snapshots over gRPC, join-token auth, all-or-nothing waves) and Git-as-truth with drift self-heal and config-PR admission. A node's drain semantics carry over the network unchanged. Multi-wave and GatewaySets remain.",
     state: "in progress" as const,
   },
   {
