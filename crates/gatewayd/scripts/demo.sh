@@ -28,6 +28,17 @@
 #             the old snapshot keeps serving
 #   (9)       no-op: reloading identical content is hash-detected and
 #             debug-logged, no new version
+#   (10) GB-8 vertex billing labels: operator labels (static +
+#             attribution-derived + CEL) merged into the generateContent
+#             BODY; operator wins over the client's spoof; the mock echoes
+#             the body labels it received as x-echo-label-* headers.
+#             Runs under cfg=v2, so the env label reads "canary".
+#   (11) GB-7 STS session tags: AssumeRole against a MOCK STS with tags
+#             from resolved attribution; the mock Bedrock REQUIRES a valid
+#             SigV4 signature, decodes the session tags from the security
+#             token, and echoes them as x-echo-session-tag-* headers. A
+#             second identical request is served from the credential cache
+#             (same access key, no second AssumeRole in the mock-sts log).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -48,6 +59,8 @@ cp demo/gateway.yaml "$CFG"
 cleanup() {
   [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null || true
   [ -n "${GW_PID:-}" ] && kill "$GW_PID" 2>/dev/null || true
+  [ -n "${STS_PID:-}" ] && kill "$STS_PID" 2>/dev/null || true
+  [ -n "${BEDROCK_PID:-}" ] && kill "$BEDROCK_PID" 2>/dev/null || true
   rm -rf "$CFG_DIR"
 }
 trap cleanup EXIT
@@ -299,6 +312,58 @@ sleep 0.5
   echo "=== (9) no-op reload: content identical to the active snapshot ==="
   echo "--- gateway log: hash check short-circuits at debug level, no new version ---"
   gw_since "$M"
+  echo
 } >>"$OUT"
+
+# --- (10) GB-8: operator billing labels merged into the Vertex body -------
+start_mock demo/vertex.sse vertex
+M=$(mark)
+{
+  echo "=== (10) GB-8: operator labels merged into the generateContent BODY (cfg=v2) ==="
+  echo "    /vertex composes fleet -> project ml-platform -> route -> app ml-research:"
+  echo "    cost_center=platform-eng (static), team (from attribution),"
+  echo "    env (from the FLEET pin: canary under cfg=v2), channel (CEL-derived)."
+  echo "    The client tries to spoof cost_center and sends its own extra label;"
+  echo "    x-echo-label-* shows what the UPSTREAM actually received in the body."
+  echo "--- curl -s -D - (client body labels: cost_center spoofed, note kept) ---"
+  curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/vertex/v1/models/gemini-2.5-flash:streamGenerateContent" \
+    -H 'x-attr-team: ml-research' -H 'content-type: application/json' \
+    -d '{"contents":[{"parts":[{"text":"hi"}]}],"labels":{"cost_center":"client-spoof","note":"client-label"}}'
+  echo "--- gateway log: [gb8] resolved labels + body merge ---"
+  gw_since "$M"
+  echo
+} >>"$OUT"
+stop_mock
+
+# --- (11) GB-7: STS session-tag credentials, SigV4-verified ---------------
+STS_LOG=$(mktemp)
+"$BIN/mock_sts" --port 6199 2>"$STS_LOG" &
+STS_PID=$!
+"$BIN/mock_upstream" --port 6191 --fixture "$FIXTURES/bedrock.jsonl" \
+  --provider bedrock --delay-ms 40 --require-sigv4 2>/dev/null &
+BEDROCK_PID=$!
+sleep 0.3
+M=$(mark)
+{
+  echo "=== (11) GB-7: AssumeRole session tags from resolved attribution (cfg=v2) ==="
+  echo "    /bedrock-sts pins billing_team=ml-platform; env is the fleet pin (canary)."
+  echo "    The mock Bedrock REQUIRES a valid SigV4 signature and decodes the"
+  echo "    session tags from the SECURITY TOKEN — x-echo-session-tag-* proves the"
+  echo "    attribution rode the CREDENTIALS, not a header. Tag sources are"
+  echo "    operator/attribution-derived ONLY; a caller-raw tag is a config error."
+  echo "--- request 1: exchange + sign (expect cache=miss, ASIAMOCK0001) ---"
+  curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/bedrock-sts/model/anthropic.claude/converse-stream" \
+    -H 'x-attr-team: ml-research' -H 'content-type: application/json' -d '{}'
+  echo "--- request 2: same tag-set (expect cache=hit, SAME access key) ---"
+  curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/bedrock-sts/model/anthropic.claude/converse-stream" \
+    -H 'x-attr-team: ml-research' -H 'content-type: application/json' -d '{}'
+  echo "--- mock-sts log: ONE AssumeRole for the two requests ---"
+  cat "$STS_LOG"
+  echo "--- gateway log: [gb7] exchange, cache hit, and the meter join ---"
+  gw_since "$M"
+} >>"$OUT"
+kill "$STS_PID" "$BEDROCK_PID" 2>/dev/null || true
+wait "$STS_PID" "$BEDROCK_PID" 2>/dev/null || true
+rm -f "$STS_LOG"
 
 echo "wrote $OUT"

@@ -15,3 +15,8 @@ serde_yaml = "0.9"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
+# Milestone 3: tier-1 CEL (the maintained continuation of cel-interpreter;
+# sandboxed, no I/O) and timestamp handling for SigV4/STS (GB-7). chrono is
+# already in the tree transitively via cel's default features.
+cel = "0.14"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

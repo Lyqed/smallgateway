@@ -10,6 +10,7 @@
 //! Bootstrap promoted from `spikes/proxy-pingora/src/main.rs` (Phase 0,
 //! Spike B), now config-driven.
 
+mod aws_auth;
 mod proxy;
 mod reload;
 
@@ -108,17 +109,33 @@ fn main() {
     );
     for route in &snap.config.routes {
         let p = &snap.config.providers[&route.provider];
+        // The COMPOSED policy (fleet → project → route), not the raw route
+        // block: what this route actually enforces.
+        let policy = route.policy();
         info!(
-            "[route] {} -> {} ({}) upstream {}:{} tls={} | required={:?} pinned={:?} from_claims={:?}",
+            "[route] {} -> {} ({}) upstream {}:{} tls={}{}{} | required={:?} pinned={:?} \
+             from_claims={:?} derived={:?} labels={:?}{}",
             route.prefix,
             route.provider,
             p.kind.name(),
             p.upstream.host,
             p.upstream.port,
             p.upstream.tls,
-            route.attribution.required_keys,
-            route.attribution.pinned.keys().collect::<Vec<_>>(),
-            route.attribution.from_claims.keys().collect::<Vec<_>>(),
+            route.project.as_deref().map(|pr| format!(" project={pr}")).unwrap_or_default(),
+            route.condition.as_deref().map(|c| format!(" match={c:?}")).unwrap_or_default(),
+            policy.required_keys,
+            policy.pinned.keys().collect::<Vec<_>>(),
+            policy.from_claims.keys().collect::<Vec<_>>(),
+            policy.derived.keys().collect::<Vec<_>>(),
+            policy.labels.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(),
+            p.sts
+                .as_ref()
+                .map(|s| format!(
+                    " sts[role={} tags={:?}]",
+                    s.role_arn,
+                    s.tags.iter().map(|t| t.key.as_str()).collect::<Vec<_>>()
+                ))
+                .unwrap_or_default(),
         );
     }
 

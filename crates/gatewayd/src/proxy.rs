@@ -1,19 +1,38 @@
-//! The config-driven Pingora proxy: route resolution by path prefix,
-//! attribution enforcement (GB-1 required keys, GB-2 proven claims, GB-3
-//! assigned pins), operator-defined rejections (GB-4), and the streaming
-//! tap — every response chunk flows through the provider's adapter and the
-//! meter while the identical bytes stream on to the client, nothing
-//! buffered whole.
+//! The config-driven Pingora proxy: route resolution (path prefix + CEL
+//! conditions), the scoped attribution contract (GB-1 required keys, GB-2
+//! proven claims, GB-3 assigned pins, CEL-derived values, app-scope
+//! overrides), operator-defined rejections (GB-4), Vertex billing-label
+//! injection (GB-8), STS session-tag credentials + SigV4 signing for
+//! Bedrock (GB-7), and the streaming tap — every response chunk flows
+//! through the provider's adapter and the meter while the identical bytes
+//! stream on to the client, nothing buffered whole.
 //!
 //! Milestone 2: every request binds one `Arc<Snapshot>` at request start
 //! (`new_ctx`) and consults ONLY that snapshot for its whole lifetime,
 //! streaming included — no torn reads, and an old version drains out with
 //! its last in-flight stream (docs/03-hot-swap.md). Every `[req]` and
-//! `[meter]` line carries `cfg=vN`: the published bounded-staleness
-//! evidence of exactly which version served which stream.
+//! `[meter]` line carries `cfg=vN`.
 //!
-//! The tap and ctx shape are promoted from `spikes/proxy-pingora/src/main.rs`
-//! (Phase 0, Spike B); the governance around them is new in Phase 1.
+//! Milestone 3 request flow (request_filter):
+//! 1. normalize the path, build the CEL context (request meta + verified
+//!    claims), select the route (prefix + condition);
+//! 2. resolve attribution against the route's composed fleet→project→route
+//!    policy (derived CEL values evaluated here; failures leave the key
+//!    unresolved — required keys then reject, fail closed);
+//! 3. if the resolved value of `apps.key` selects an app override,
+//!    re-resolve under the composed route⊕app policy (its templates and
+//!    labels included);
+//! 4. GB-8 (vertex): resolve the effective labels (static /
+//!    from_attribution / CEL); any failure → the effective GB-4
+//!    `missing_attribution` rejection. The merge into the request BODY
+//!    happens in `request_body_filter` (the body is buffered for labeled
+//!    vertex routes only — a malformed JSON body there is refused with a
+//!    plain 400 before any spend can occur);
+//! 5. GB-7 (bedrock + sts): resolve session tags from ATTRIBUTION values
+//!    (never caller-raw — enforced statically at config load and
+//!    re-checked here), get credentials (per-tag-set cache, else one
+//!    AssumeRole exchange), then SigV4-sign the upstream request in
+//!    `upstream_request_filter`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,30 +40,42 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use log::info;
+use log::{error, info};
 use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::prelude::*;
 
 use gateway_core::adapters::Adapter;
-use gateway_core::attribution::{self, Tag};
-use gateway_core::config::{self, Config, ProviderKind, RejectionTemplate, ATTR_HEADER_PREFIX};
+use gateway_core::attribution::{self, Origin, Tag};
+use gateway_core::aws::{CredentialCache, Credentials};
+use gateway_core::config::{self, Config, ProviderKind, RejectionTemplate, StsConfig, ATTR_HEADER_PREFIX};
 use gateway_core::event::Event;
+use gateway_core::expr::EvalCtx;
 use gateway_core::jwt;
+use gateway_core::labels;
 use gateway_core::metering::Meter;
+use gateway_core::scope::{validate_session_tag_value, EffectivePolicy};
 use gateway_core::snapshot::Snapshot;
 use gateway_core::template;
 
+use crate::aws_auth;
 use crate::reload::SharedSnapshot;
 
 pub struct Gateway {
     /// The swap cell. Touched exactly once per request, in `new_ctx`;
     /// every later hook reads the request's own pinned snapshot instead.
     shared: SharedSnapshot,
+    /// GB-7: credentials per unique (role, endpoint, tag-set). Lives
+    /// across config swaps on purpose — the key carries every input that
+    /// changes the minted credentials.
+    sts_cache: CredentialCache,
 }
 
 impl Gateway {
     pub fn new(shared: SharedSnapshot) -> Self {
-        Gateway { shared }
+        Gateway {
+            shared,
+            sts_cache: CredentialCache::new(),
+        }
     }
 }
 
@@ -55,10 +86,17 @@ struct RouteBinding {
     kind: ProviderKind,
 }
 
+/// GB-7 material carried from request_filter to upstream_request_filter.
+struct AwsSigning {
+    creds: Credentials,
+    region: String,
+}
+
 /// Per-request state: the pinned config snapshot, the chosen adapter, the
 /// running meter, the resolved attribution tags, and summary counters.
-/// Deliberately bounded — the tap stores counts, never the body. (Promoted
-/// shape from Spike B.)
+/// Deliberately bounded — the response tap stores counts, never the body;
+/// the request body is buffered ONLY on labeled vertex routes (GB-8 must
+/// rewrite it). (Promoted shape from Spike B.)
 pub struct ReqCtx {
     /// The snapshot this request bound at start. Held for the request's
     /// whole lifetime — including the full streaming response — so a swap
@@ -69,6 +107,12 @@ pub struct ReqCtx {
     adapter: Option<Box<dyn Adapter + Send + Sync>>,
     meter: Meter,
     tags: Vec<Tag>,
+    /// GB-8: resolved operator labels to merge into the request body.
+    vertex_labels: Option<Vec<(String, String)>>,
+    /// GB-8: request-body accumulator (labeled vertex routes only).
+    body_buf: Vec<u8>,
+    /// GB-7: credentials + region for SigV4 signing.
+    aws: Option<AwsSigning>,
     body_bytes: usize,
     body_chunks: usize,
     event_counts: [usize; 6],
@@ -82,6 +126,9 @@ impl ReqCtx {
             adapter: None,
             meter: Meter::new(),
             tags: Vec::new(),
+            vertex_labels: None,
+            body_buf: Vec::new(),
+            aws: None,
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
@@ -141,6 +188,26 @@ fn caller_attrs(head: &RequestHeader) -> BTreeMap<String, String> {
     out
 }
 
+/// The documented CEL context: request meta (+ claims); `attribution` is
+/// filled in later for label expressions.
+fn eval_ctx(head: &RequestHeader, path: &str, claims: Option<&serde_json::Map<String, serde_json::Value>>) -> EvalCtx {
+    let mut headers = BTreeMap::new();
+    for (name, value) in head.headers.iter() {
+        if let Ok(v) = value.to_str() {
+            headers
+                .entry(name.as_str().to_ascii_lowercase())
+                .or_insert_with(|| v.to_string());
+        }
+    }
+    EvalCtx {
+        method: head.method.as_str().to_string(),
+        path: path.to_string(),
+        headers,
+        claims: claims.map(|c| serde_json::Value::Object(c.clone())),
+        attribution: BTreeMap::new(),
+    }
+}
+
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -165,9 +232,10 @@ async fn respond_rejection(
 }
 
 /// GB-2: claims from a verified HS256 token, or `None` (absent header,
-/// bad signature, expired — each logged). Only consulted on routes with
-/// claim mappings; config validation guarantees `auth` exists for them.
-/// Takes the request's pinned config, never the live cell.
+/// bad signature, expired — each logged). Consulted whenever auth is
+/// configured: claim mappings, CEL derivations, and label expressions all
+/// read from the SAME verified source. Takes the request's pinned config,
+/// never the live cell.
 fn verified_claims(
     cfg: &Config,
     head: &RequestHeader,
@@ -187,6 +255,64 @@ fn verified_claims(
     }
 }
 
+/// Resolve one policy's contract: derived CEL values evaluated against the
+/// request context (an eval error is logged and leaves the key unresolved
+/// — required keys then report missing, fail closed).
+fn resolve_policy(
+    policy: &EffectivePolicy,
+    caller: &BTreeMap<String, String>,
+    claims: Option<&serde_json::Map<String, serde_json::Value>>,
+    ctx: &EvalCtx,
+    prefix: &str,
+) -> attribution::Resolution {
+    attribution::resolve(
+        policy,
+        |key| caller.get(key).cloned(),
+        claims,
+        |key| match policy.derived.get(key) {
+            None => None,
+            Some(expr) => match expr.eval_string(ctx) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    info!("[attr {prefix}] derived {key:?} failed: {e}");
+                    None
+                }
+            },
+        },
+    )
+}
+
+/// GB-7: session tags from RESOLVED attribution values. Static config
+/// values pass through; `from_attribution` reads the adjudicated tag —
+/// and re-checks (defense in depth; config validation already guarantees
+/// it) that the value is not caller-origin.
+fn resolve_session_tags(
+    sts: &StsConfig,
+    tags: &[Tag],
+) -> std::result::Result<Vec<(String, String)>, (String, String)> {
+    let mut out = Vec::with_capacity(sts.tags.len());
+    for spec in &sts.tags {
+        let value = match (&spec.value, &spec.from_attribution) {
+            (Some(v), _) => v.clone(),
+            (None, Some(key)) => {
+                let tag = tags.iter().find(|t| &t.key == key).ok_or_else(|| {
+                    (key.clone(), format!("attribution key {key:?} did not resolve"))
+                })?;
+                if tag.origin == Origin::Caller {
+                    // Statically unreachable; never sign caller-raw anyway.
+                    return Err((key.clone(), format!("attribution key {key:?} is caller-origin")));
+                }
+                validate_session_tag_value(&tag.value)
+                    .map_err(|e| (key.clone(), e))?;
+                tag.value.clone()
+            }
+            (None, None) => unreachable!("config validation enforces exactly-one-of"),
+        };
+        out.push((spec.key.clone(), value));
+    }
+    Ok(out)
+}
+
 #[async_trait]
 impl ProxyHttp for Gateway {
     type CTX = ReqCtx;
@@ -194,9 +320,7 @@ impl ProxyHttp for Gateway {
     fn new_ctx(&self) -> Self::CTX {
         // Atomic per-request binding: ONE load of the current snapshot at
         // request start; every later hook reads ctx.snapshot, so this
-        // request can never observe two config versions. The route itself
-        // is unknown until the request headers are visible; request_filter
-        // fills the binding (same dance as the spike).
+        // request can never observe two config versions.
         ReqCtx::bound(self.shared.load())
     }
 
@@ -251,8 +375,14 @@ impl ProxyHttp for Gateway {
             }
         }
 
-        // Route resolution by longest path prefix; unknown → GB-4 template.
-        let Some(route) = cfg.match_route(&path) else {
+        // Verified claims feed claim mappings, CEL conditions/derivations,
+        // and label expressions alike.
+        let claims = verified_claims(cfg, session.req_header());
+        let cel_ctx = eval_ctx(session.req_header(), &path, claims.as_ref());
+
+        // Route resolution: longest prefix + CEL condition; unknown → the
+        // fleet-scope GB-4 template (no route matched, so no scoped one).
+        let Some(route) = cfg.match_route(&path, &cel_ctx) else {
             info!("[req] {method} {path} -> no route (rejecting: unknown_route) cfg=v{v}");
             respond_rejection(
                 session,
@@ -262,39 +392,138 @@ impl ProxyHttp for Gateway {
             .await?;
             return Ok(true);
         };
-
-        let claims = if route.attribution.from_claims.is_empty() {
-            None
-        } else {
-            verified_claims(cfg, session.req_header())
-        };
         let caller = caller_attrs(session.req_header());
 
-        // GB-1: every required key satisfied (assigned, proven, or caller)
-        // or the request never reaches the upstream.
-        let tags = match attribution::resolve(
-            &route.attribution,
-            |key| caller.get(key).cloned(),
-            claims.as_ref(),
-        ) {
-            Ok(tags) => tags,
-            Err(missing) => {
-                let missing_list = missing.join(", ");
-                info!(
-                    "[req] {method} {path} -> route={} (rejecting: missing_attribution: {missing_list}) cfg=v{v}",
-                    route.prefix
-                );
-                respond_rejection(
-                    session,
-                    &cfg.rejections.missing_attribution,
-                    &[("key", missing_list.as_str()), ("route", route.prefix.as_str())],
-                )
-                .await?;
-                return Ok(true);
+        // Phase 1 of resolution: the composed fleet→project→route policy.
+        // Deliberately LENIENT — enforcement waits for the final policy of
+        // the chain, because the app scope (selected by a RESOLVED value)
+        // may itself satisfy a still-missing requirement (e.g. pin it).
+        let mut policy = route.policy();
+        let mut resolution =
+            resolve_policy(policy, &caller, claims.as_ref(), &cel_ctx, &route.prefix);
+
+        // Phase 2: the app scope. The RESOLVED value of apps.key selects
+        // the override; the request re-resolves under route⊕app (which may
+        // add requirements, satisfy them, override pins, templates, labels).
+        if let Some(apps) = &cfg.apps {
+            let app_value = resolution.value(&apps.key).map(str::to_string);
+            if let Some(app_policy) = app_value.as_deref().and_then(|value| route.app_policy(value)) {
+                let value = app_value.expect("checked above");
+                info!("[app {}] {}={value} -> app override cfg=v{v}", route.prefix, apps.key);
+                policy = app_policy;
+                resolution =
+                    resolve_policy(policy, &caller, claims.as_ref(), &cel_ctx, &route.prefix);
             }
-        };
+        }
+
+        // GB-1 enforcement against the FINAL policy: every required key
+        // satisfied (assigned, proven, derived, or caller) or the request
+        // never reaches the upstream — with the effective scope's template.
+        if !resolution.ok() {
+            let missing_list = resolution.missing.join(", ");
+            info!(
+                "[req] {method} {path} -> route={} (rejecting: missing_attribution: {missing_list}) cfg=v{v}",
+                route.prefix
+            );
+            respond_rejection(
+                session,
+                &policy.missing_attribution,
+                &[("key", missing_list.as_str()), ("route", route.prefix.as_str())],
+            )
+            .await?;
+            return Ok(true);
+        }
+        let tags = resolution.tags;
 
         let kind = cfg.providers[&route.provider].kind;
+
+        // GB-8: resolve the effective labels now — fail closed BEFORE the
+        // upstream sees anything. The body merge happens in
+        // request_body_filter.
+        if kind == ProviderKind::Vertex && !policy.labels.is_empty() {
+            let attribution = tags
+                .iter()
+                .map(|t| (t.key.clone(), t.value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let mut label_ctx = cel_ctx.clone();
+            label_ctx.attribution = attribution.clone();
+            match labels::resolve(&policy.labels, &attribution, &label_ctx) {
+                Ok(resolved) => {
+                    info!(
+                        "[gb8 {}] labels{{{}}} cfg=v{v}",
+                        route.prefix,
+                        resolved
+                            .iter()
+                            .map(|(k, val)| format!("{k}={val}"))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                    ctx.vertex_labels = Some(resolved);
+                }
+                Err(e) => {
+                    info!(
+                        "[req] {method} {path} -> route={} (rejecting: unresolvable label: {e}) cfg=v{v}",
+                        route.prefix
+                    );
+                    respond_rejection(
+                        session,
+                        &policy.missing_attribution,
+                        &[("key", e.key.as_str()), ("route", route.prefix.as_str())],
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+            }
+        }
+
+        // GB-7: session-tag credentials for bedrock providers with sts.
+        if let Some(sts) = &cfg.providers[&route.provider].sts {
+            let session_tags = match resolve_session_tags(sts, &tags) {
+                Ok(t) => t,
+                Err((key, reason)) => {
+                    info!(
+                        "[req] {method} {path} -> route={} (rejecting: session tag: {reason}) cfg=v{v}",
+                        route.prefix
+                    );
+                    respond_rejection(
+                        session,
+                        &policy.missing_attribution,
+                        &[("key", key.as_str()), ("route", route.prefix.as_str())],
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+            };
+            match aws_auth::credentials_for(&self.sts_cache, sts, &session_tags, now_unix()).await
+            {
+                Ok((creds, cached)) => {
+                    info!(
+                        "[gb7 {}] session_tags{{{}}} access_key={} cache={} cfg=v{v}",
+                        route.prefix,
+                        session_tags
+                            .iter()
+                            .map(|(k, val)| format!("{k}={val}"))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        creds.access_key_id,
+                        if cached { "hit" } else { "miss" },
+                    );
+                    ctx.aws = Some(AwsSigning { creds, region: sts.region.clone() });
+                }
+                Err(e) => {
+                    // Fail closed: a request whose invoice-grade identity
+                    // cannot be minted never reaches Bedrock. This is an
+                    // exchange failure, not an attribution failure, so it
+                    // is a 502, loudly logged — not a GB-4 template.
+                    error!("[gb7 {}] credential exchange FAILED: {e} cfg=v{v}", route.prefix);
+                    return Err(Error::explain(
+                        HTTPStatus(502),
+                        format!("sts credential exchange failed: {e}"),
+                    ));
+                }
+            }
+        }
+
         info!(
             "[req] {method} {path} -> route={} provider={}({}) cfg=v{v}",
             route.prefix,
@@ -342,9 +571,9 @@ impl ProxyHttp for Gateway {
     ) -> Result<()> {
         // Only the resolved contract crosses this boundary: strip EVERY
         // caller-sent x-attr-* header, then insert the resolved tags. A key
-        // outside the route's contract (neither required, pinned, nor
-        // claim-mapped) never reaches the upstream, so a caller cannot
-        // smuggle attribution the gateway never adjudicated.
+        // outside the route's contract (neither required, pinned,
+        // claim-mapped, nor derived) never reaches the upstream, so a
+        // caller cannot smuggle attribution the gateway never adjudicated.
         let stray: Vec<_> = upstream_request
             .headers
             .keys()
@@ -361,7 +590,67 @@ impl ProxyHttp for Gateway {
             upstream_request
                 .insert_header(format!("{ATTR_HEADER_PREFIX}{}", tag.key), tag.value.clone())?;
         }
+
+        // GB-8: the body will be rewritten in request_body_filter, so its
+        // length changes — switch the upstream leg to chunked framing.
+        if ctx.vertex_labels.is_some() {
+            upstream_request.remove_header("content-length");
+            upstream_request.insert_header("transfer-encoding", "chunked")?;
+        }
+
+        // GB-7: SigV4 with the session-tagged credentials.
+        if let Some(aws) = &ctx.aws {
+            let binding = ctx.route.as_ref().expect("route bound in request_filter");
+            let up = &ctx.snapshot.config.providers[&binding.provider].upstream;
+            aws_auth::sign_bedrock_request(upstream_request, up, &aws.region, &aws.creds, now_unix())?;
+        }
         Ok(())
+    }
+
+    /// GB-8's merge point: on labeled vertex routes the request body is
+    /// buffered (these are small JSON `generateContent` requests, and the
+    /// operator's labels MUST be inside them), merged, and forwarded as
+    /// one chunk. Unlabeled routes stream through untouched. A body that
+    /// is not a JSON object is refused with a plain 400 — no spend can
+    /// have occurred, and Vertex itself would reject it anyway.
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        let Some(operator_labels) = &ctx.vertex_labels else {
+            return Ok(()); // not a labeled vertex route: pass through
+        };
+        if let Some(chunk) = body.take() {
+            ctx.body_buf.extend_from_slice(&chunk);
+        }
+        if !end_of_stream {
+            return Ok(());
+        }
+        match labels::merge_into_body(&ctx.body_buf, operator_labels) {
+            Ok(merged) => {
+                let binding = ctx.route.as_ref().expect("route bound");
+                info!(
+                    "[gb8 {}] merged {} operator label(s) into request body ({} -> {} bytes)",
+                    binding.prefix,
+                    operator_labels.len(),
+                    ctx.body_buf.len(),
+                    merged.len(),
+                );
+                ctx.body_buf.clear();
+                *body = Some(Bytes::from(merged));
+                Ok(())
+            }
+            Err(e) => {
+                error!("[gb8] request body rejected: {e}");
+                Err(Error::explain(
+                    HTTPStatus(400),
+                    format!("vertex request body must be a JSON object: {e}"),
+                ))
+            }
+        }
     }
 
     /// The tap (promoted from Spike B). Pingora hands each body chunk as
@@ -461,5 +750,17 @@ mod tests {
         assert_eq!(ctx_a.snapshot.config.routes[0].attribution.pinned["env"], "prod");
         assert_eq!(ctx_b.snapshot.version, 2);
         assert_eq!(ctx_b.snapshot.config.routes[0].attribution.pinned["env"], "canary");
+    }
+
+    /// The effective policy is what the proxy consults; the raw config is
+    /// what the operator wrote. The snapshot carries both, composed once.
+    #[test]
+    fn bound_snapshot_carries_composed_policies() {
+        let path = temp_cfg(&valid_yaml("prod"));
+        let reloader = Reloader::bootstrap(path).unwrap();
+        let gateway = Gateway::new(reloader.shared());
+        let ctx = gateway.new_ctx();
+        let policy = ctx.snapshot.config.routes[0].policy();
+        assert_eq!(policy.pinned["env"], "prod");
     }
 }

@@ -1,32 +1,56 @@
 //! The static config file (Phase 1: Baseline-conformant from a file).
 //!
-//! Serde YAML types for providers, routes, attribution rules (GB-1/2/3),
-//! and operator-defined rejection templates (GB-4), plus the startup
-//! validation that makes a bad file fail fast with precise errors —
-//! unknown provider refs, empty required keys, placeholder typos — instead
-//! of failing at request time.
+//! Serde YAML types for providers, the four policy scopes
+//! (`fleet → project → route → app`, docs/02-architecture.md), attribution
+//! rules (GB-1/2/3, plus CEL-derived values), operator-defined rejection
+//! templates (GB-4), Vertex billing labels (GB-8), and STS session-tag
+//! credentials for Bedrock (GB-7). Startup validation makes a bad file fail
+//! fast with precise errors — unknown provider refs, contradictory pins,
+//! CEL typos — instead of failing at request time; composition and
+//! validation live in [`crate::scope`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::adapters::{
-    anthropic::AnthropicAdapter, bedrock::BedrockAdapter, openai::OpenAiAdapter, Adapter,
+    anthropic::AnthropicAdapter, bedrock::BedrockAdapter, openai::OpenAiAdapter,
+    vertex::VertexAdapter, Adapter,
 };
-use crate::template;
+use crate::expr::EvalCtx;
+use crate::scope::CompiledRoute;
 
 /// Attribution keys travel as `x-attr-<key>` request headers.
 pub const ATTR_HEADER_PREFIX: &str = "x-attr-";
+
+/// The explicit base marker (docs/02: "each level prepends/appends around
+/// an explicit base marker"). In `required_keys` it is a plain list entry;
+/// in `labels` it is a plain string entry among the label mappings. A list
+/// WITHOUT the marker replaces the parent's list; a list with it splices
+/// the parent in at the marker's position; an absent/empty list inherits.
+pub const BASE_MARKER: &str = "<base>";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// name → provider; routes reference providers by name.
     pub providers: BTreeMap<String, Provider>,
+    /// Scope 1: fleet-wide policy (a single node today; the composition
+    /// model is day-one — docs/04, Phase 1 item 2).
+    #[serde(default)]
+    pub fleet: Option<Scope>,
+    /// Scope 2: projects; routes opt in via `route.project`.
+    #[serde(default)]
+    pub projects: BTreeMap<String, Scope>,
+    /// Scope 3: routes.
     pub routes: Vec<Route>,
-    /// GB-4: the operator owns every rejection body, verbatim.
+    /// Scope 4: apps, keyed by the resolved value of one attribution key.
+    #[serde(default)]
+    pub apps: Option<Apps>,
+    /// GB-4: the fleet-scope rejection templates — both reasons mandatory.
+    /// Lower scopes may override per reason via their `rejections` block.
     pub rejections: Rejections,
     /// GB-2 (optional): JWT verification for claim-mapped attribution.
     #[serde(default)]
@@ -38,6 +62,10 @@ pub struct Config {
 pub struct Provider {
     pub kind: ProviderKind,
     pub upstream: Upstream,
+    /// GB-7 (bedrock kind only): exchange attribution values for STS
+    /// session-tag credentials and SigV4-sign every upstream request.
+    #[serde(default)]
+    pub sts: Option<StsConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -46,6 +74,7 @@ pub enum ProviderKind {
     OpenAi,
     Anthropic,
     Bedrock,
+    Vertex,
 }
 
 impl ProviderKind {
@@ -54,6 +83,7 @@ impl ProviderKind {
             ProviderKind::OpenAi => "openai",
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::Bedrock => "bedrock",
+            ProviderKind::Vertex => "vertex",
         }
     }
 
@@ -66,11 +96,12 @@ impl ProviderKind {
             ProviderKind::OpenAi => Box::new(OpenAiAdapter::new()),
             ProviderKind::Anthropic => Box::new(AnthropicAdapter::new()),
             ProviderKind::Bedrock => Box::new(BedrockAdapter::new()),
+            ProviderKind::Vertex => Box::new(VertexAdapter::new()),
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Upstream {
     pub host: String,
@@ -88,6 +119,77 @@ impl Upstream {
     }
 }
 
+/// GB-7: AssumeRole-with-session-tags against an STS endpoint; the tags are
+/// the invoice-grade join — operator/attribution-derived only, never
+/// caller-raw (validation rejects a tag sourced from a caller-origin key).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StsConfig {
+    pub endpoint: Upstream,
+    pub role_arn: String,
+    #[serde(default = "default_session_name")]
+    pub session_name: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+    /// Requested credential lifetime; the cache honors the Expiration the
+    /// STS response actually grants.
+    #[serde(default = "default_sts_duration")]
+    pub duration_secs: u32,
+    pub tags: Vec<SessionTag>,
+}
+
+fn default_session_name() -> String {
+    "gatewayd".to_string()
+}
+
+fn default_region() -> String {
+    "us-east-1".to_string()
+}
+
+fn default_sts_duration() -> u32 {
+    900
+}
+
+/// One session tag: a static operator value, or the resolved value of an
+/// attribution key (which validation requires to be pinned, claim-mapped,
+/// or derived — never a plain caller-asserted key).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionTag {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub from_attribution: Option<String>,
+}
+
+/// One composable policy layer: what fleet, a project, or an app override
+/// may specify. Routes carry the same fields inline.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scope {
+    #[serde(default)]
+    pub attribution: Attribution,
+    /// GB-8: Vertex billing labels; consulted only where the route's
+    /// provider is vertex-kind.
+    #[serde(default)]
+    pub labels: Vec<LabelEntry>,
+    #[serde(default)]
+    pub rejections: Option<RejectionOverrides>,
+}
+
+/// Apps: the fourth scope. `key` names the attribution key whose RESOLVED
+/// value selects the override — an app is an adjudicated identity, never a
+/// caller-chosen header alone (the key's value comes out of the
+/// fleet→project→route resolution first).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Apps {
+    pub key: String,
+    #[serde(default)]
+    pub overrides: BTreeMap<String, Scope>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
@@ -96,18 +198,55 @@ pub struct Route {
     pub prefix: String,
     /// Name of a provider in [`Config::providers`].
     pub provider: String,
+    /// Optional project reference (scope 2).
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Optional CEL route-match condition beyond the prefix (header/method
+    /// predicates). Compiled at load; an erroring condition never selects
+    /// the route. Among matching routes: longest prefix wins, then a
+    /// conditioned route beats an unconditioned one at the same prefix.
+    #[serde(rename = "match", default)]
+    pub condition: Option<String>,
     #[serde(default)]
     pub attribution: Attribution,
+    #[serde(default)]
+    pub labels: Vec<LabelEntry>,
+    #[serde(default)]
+    pub rejections: Option<RejectionOverrides>,
+    /// Filled by [`crate::scope::finalize`]: compiled condition + the
+    /// composed effective policies for this route and its app overrides.
+    #[serde(skip)]
+    pub compiled: Option<CompiledRoute>,
 }
 
-/// The route's attribution contract. Every tag on a forwarded request has an
-/// origin — assigned (pinned), proven (JWT claim), or caller — resolved by
-/// [`crate::attribution::resolve`].
+impl Route {
+    /// The composed fleet→project→route policy. Panics only if the config
+    /// skipped finalization — impossible via [`Config::from_yaml`].
+    pub fn policy(&self) -> &crate::scope::EffectivePolicy {
+        &self.compiled.as_ref().expect("config finalized").effective
+    }
+
+    /// The composed policy including the app layer for `app_value`, if an
+    /// override exists.
+    pub fn app_policy(&self, app_value: &str) -> Option<&crate::scope::EffectivePolicy> {
+        self.compiled
+            .as_ref()
+            .expect("config finalized")
+            .apps
+            .get(app_value)
+    }
+}
+
+/// One scope's attribution contract. Every tag on a forwarded request has
+/// an origin — assigned (pinned), proven (JWT claim), derived (CEL), or
+/// caller — resolved by [`crate::attribution::resolve`] against the
+/// COMPOSED policy.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attribution {
     /// GB-1: keys that must be present (from any origin) or the request is
-    /// rejected with the operator's `missing_attribution` template.
+    /// rejected with the effective `missing_attribution` template. May
+    /// contain the `<base>` marker to splice the parent scope's list.
     #[serde(default)]
     pub required_keys: Vec<String>,
     /// GB-3: key → value assigned by the gateway. A caller-sent value for a
@@ -118,12 +257,42 @@ pub struct Attribution {
     /// token; a caller header for a claim-mapped key is never believed.
     #[serde(default)]
     pub from_claims: BTreeMap<String, String>,
+    /// CEL tier 1: key → expression over `request` + `jwt` (e.g. a claim
+    /// transform). Compiled at load; an eval failure leaves the key
+    /// unresolved, which for a required key is a GB-4 rejection.
+    #[serde(default)]
+    pub derived: BTreeMap<String, String>,
+}
+
+/// One entry in a scope's GB-8 label list: either the `<base>` splice
+/// marker (a plain string) or a label mapping.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum LabelEntry {
+    Base(String),
+    Spec(LabelSpec),
+}
+
+/// GB-8: one Vertex billing label. Exactly one of `value` (static),
+/// `from_attribution` (a resolved attribution key), or `expression` (CEL
+/// over request + jwt + attribution) must be set. Unresolvable at request
+/// time → the effective GB-4 rejection, fail closed.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LabelSpec {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub from_attribution: Option<String>,
+    #[serde(default)]
+    pub expression: Option<String>,
 }
 
 /// GB-4: one operator-defined template per rejection reason. Both reasons
-/// are mandatory — a gateway that invents its own 4xx body is exactly what
-/// the Baseline forbids.
-#[derive(Debug, Deserialize)]
+/// are mandatory at fleet scope — a gateway that invents its own 4xx body
+/// is exactly what the Baseline forbids.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rejections {
     /// Placeholders: `{{key}}` (the missing keys), `{{route}}` (the prefix).
@@ -132,7 +301,17 @@ pub struct Rejections {
     pub unknown_route: RejectionTemplate,
 }
 
-#[derive(Debug, Deserialize)]
+/// Lower-scope rejection overrides: each reason overrides independently.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RejectionOverrides {
+    #[serde(default)]
+    pub missing_attribution: Option<RejectionTemplate>,
+    #[serde(default)]
+    pub unknown_route: Option<RejectionTemplate>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RejectionTemplate {
     pub status: u16,
@@ -150,7 +329,7 @@ pub struct RejectionTemplate {
 /// Shape of the operator's terminal event for a cut stream, rendered into
 /// the response's native framing (an SSE `event:`/`data:` block for SSE
 /// providers, a single event-stream frame for Bedrock).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamingRejection {
     /// Event name (`event:` line / `:event-type` header). `None` → a bare
@@ -217,91 +396,44 @@ impl Config {
     }
 
     pub fn from_yaml(text: &str) -> Result<Config, ConfigError> {
-        let cfg: Config =
+        let mut cfg: Config =
             serde_yaml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
-        cfg.validate().map_err(ConfigError::Invalid)?;
+        crate::scope::finalize(&mut cfg).map_err(ConfigError::Invalid)?;
         Ok(cfg)
     }
 
-    /// Longest-prefix route match on segment boundaries.
+    /// Route selection: longest prefix on segment boundaries, with CEL
+    /// conditions consulted per request. Among candidate routes whose
+    /// prefix matches AND whose condition (if any) evaluates true: the
+    /// longest prefix wins; at equal prefix length a conditioned route
+    /// beats an unconditioned fallback; remaining ties go to config order.
+    /// A condition that ERRORS evaluates as "does not match" — an erroring
+    /// predicate can never select a route.
     ///
     /// Callers must pass a path already run through [`normalize_path`]:
     /// matching a raw path lets `/openai/../claims/...` select the `/openai`
     /// contract while the upstream serves `/claims/...` — the governance
     /// bypass the normalization exists to close. The proxy normalizes once
     /// in `request_filter` and forwards the same resolved path upstream.
-    pub fn match_route(&self, path: &str) -> Option<&Route> {
+    pub fn match_route(&self, path: &str, ctx: &EvalCtx) -> Option<&Route> {
         self.routes
             .iter()
-            .filter(|r| prefix_matches(&r.prefix, path))
-            .max_by_key(|r| r.prefix.trim_end_matches('/').len())
-    }
-
-    fn validate(&self) -> Result<(), Vec<String>> {
-        let mut errs = Vec::new();
-
-        if self.providers.is_empty() {
-            errs.push("providers: at least one provider is required".to_string());
-        }
-        for (name, p) in &self.providers {
-            if name.trim().is_empty() {
-                errs.push("providers: provider name must not be empty".to_string());
-            }
-            if p.upstream.host.trim().is_empty() {
-                errs.push(format!("provider {name:?}: upstream.host must not be empty"));
-            }
-            if p.upstream.port == 0 {
-                errs.push(format!("provider {name:?}: upstream.port must be 1-65535"));
-            }
-        }
-
-        if self.routes.is_empty() {
-            errs.push("routes: at least one route is required".to_string());
-        }
-        let mut seen_prefixes = BTreeSet::new();
-        let has_jwt = self.auth.is_some();
-        for route in &self.routes {
-            let label = format!("route {:?}", route.prefix);
-            if !route.prefix.starts_with('/') {
-                errs.push(format!("{label}: prefix must start with '/'"));
-            }
-            if !seen_prefixes.insert(route.prefix.trim_end_matches('/').to_string()) {
-                errs.push(format!("{label}: duplicate prefix"));
-            }
-            if !self.providers.contains_key(&route.provider) {
-                let known: Vec<&str> = self.providers.keys().map(String::as_str).collect();
-                errs.push(format!(
-                    "{label}: unknown provider {:?} (defined providers: {})",
-                    route.provider,
-                    known.join(", ")
-                ));
-            }
-            validate_attribution(&route.attribution, &label, has_jwt, &mut errs);
-        }
-
-        if let Some(auth) = &self.auth {
-            if auth.jwt.hs256_secret.is_empty() {
-                errs.push("auth.jwt.hs256_secret must not be empty".to_string());
-            }
-            if auth.jwt.header.trim().is_empty() {
-                errs.push("auth.jwt.header must not be empty".to_string());
-            }
-        }
-
-        // GB-4 templates: {{key}} only makes sense where a key is missing.
-        validate_template(
-            &self.rejections.missing_attribution,
-            "missing_attribution",
-            &["key", "route"],
-            &mut errs,
-        );
-        validate_template(&self.rejections.unknown_route, "unknown_route", &["route"], &mut errs);
-
-        if errs.is_empty() {
-            Ok(())
-        } else {
-            Err(errs)
-        }
+            .enumerate()
+            .filter(|(_, r)| prefix_matches(&r.prefix, path))
+            .filter(|(_, r)| {
+                match &r.compiled.as_ref().expect("config finalized").condition {
+                    None => true,
+                    Some(cond) => cond.eval_bool(ctx).unwrap_or(false),
+                }
+            })
+            .max_by_key(|(i, r)| {
+                (
+                    r.prefix.trim_end_matches('/').len(),
+                    r.condition.is_some(),
+                    std::cmp::Reverse(*i),
+                )
+            })
+            .map(|(_, r)| r)
     }
 }
 
@@ -391,100 +523,12 @@ fn dot_segment(seg: &str) -> Option<DotSegment> {
 
 /// Segment-boundary prefix match: `/openai` matches `/openai` and
 /// `/openai/v1`, never `/openaix`. A `/` prefix matches everything.
-fn prefix_matches(prefix: &str, path: &str) -> bool {
+pub(crate) fn prefix_matches(prefix: &str, path: &str) -> bool {
     let p = prefix.trim_end_matches('/');
     if p.is_empty() {
         return true; // prefix was "/" (or "//"): the catch-all route
     }
     path == p || path.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
-}
-
-fn validate_attribution(attr: &Attribution, label: &str, has_jwt: bool, errs: &mut Vec<String>) {
-    let mut seen_required = BTreeSet::new();
-    for key in &attr.required_keys {
-        check_key(key, &format!("{label}: required_keys"), errs);
-        if !seen_required.insert(key.as_str()) {
-            errs.push(format!("{label}: required_keys: duplicate key {key:?}"));
-        }
-    }
-    for (key, value) in &attr.pinned {
-        check_key(key, &format!("{label}: pinned"), errs);
-        if value.is_empty() {
-            errs.push(format!("{label}: pinned {key:?}: value must not be empty"));
-        }
-    }
-    for (key, claim) in &attr.from_claims {
-        check_key(key, &format!("{label}: from_claims"), errs);
-        if claim.trim().is_empty() {
-            errs.push(format!("{label}: from_claims {key:?}: claim name must not be empty"));
-        }
-        if attr.pinned.contains_key(key) {
-            errs.push(format!(
-                "{label}: key {key:?} is both pinned and claim-mapped; pick one origin"
-            ));
-        }
-    }
-    if !attr.from_claims.is_empty() && !has_jwt {
-        errs.push(format!(
-            "{label}: from_claims requires auth.jwt to be configured"
-        ));
-    }
-}
-
-/// Keys become `x-attr-<key>` header names, so the charset is the safe
-/// header subset — reject at load rather than panic at request time.
-fn check_key(key: &str, ctx: &str, errs: &mut Vec<String>) {
-    if key.is_empty() {
-        errs.push(format!("{ctx}: empty attribution key"));
-        return;
-    }
-    let ok = key
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-    if !ok {
-        errs.push(format!(
-            "{ctx}: attribution key {key:?} must be lowercase [a-z0-9_-] \
-             (it becomes the {ATTR_HEADER_PREFIX}{key} header)"
-        ));
-    }
-}
-
-fn validate_template(t: &RejectionTemplate, reason: &str, allowed: &[&str], errs: &mut Vec<String>) {
-    if !(100..=599).contains(&t.status) {
-        errs.push(format!("rejections.{reason}: status {} is not a valid HTTP status", t.status));
-    }
-    if t.content_type.trim().is_empty() {
-        errs.push(format!("rejections.{reason}: content_type must not be empty"));
-    }
-    check_placeholders(&t.body, &format!("rejections.{reason}.body"), allowed, errs);
-    if let Some(streaming) = &t.streaming {
-        check_placeholders(
-            &streaming.data,
-            &format!("rejections.{reason}.streaming.data"),
-            allowed,
-            errs,
-        );
-    }
-}
-
-fn check_placeholders(text: &str, ctx: &str, allowed: &[&str], errs: &mut Vec<String>) {
-    match template::placeholders(text) {
-        Ok(names) => {
-            for name in names {
-                if !allowed.contains(&name.as_str()) {
-                    errs.push(format!(
-                        "{ctx}: unknown placeholder {{{{{name}}}}} (allowed: {})",
-                        allowed
-                            .iter()
-                            .map(|a| format!("{{{{{a}}}}}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-            }
-        }
-        Err(e) => errs.push(format!("{ctx}: {e}")),
-    }
 }
 
 #[cfg(test)]
@@ -520,96 +564,23 @@ rejections:
         .to_string()
     }
 
-    fn errors_of(yaml: &str) -> Vec<String> {
-        match Config::from_yaml(yaml) {
-            Err(ConfigError::Invalid(errs)) => errs,
-            other => panic!("expected Invalid, got {other:?}"),
+    fn ctx() -> EvalCtx {
+        EvalCtx {
+            method: "POST".to_string(),
+            ..EvalCtx::default()
         }
     }
 
     #[test]
-    fn valid_config_parses() {
+    fn valid_config_parses_and_finalizes() {
         let cfg = Config::from_yaml(&valid_yaml()).unwrap();
         assert_eq!(cfg.providers["openai-main"].kind, ProviderKind::OpenAi);
         assert_eq!(cfg.routes[0].attribution.pinned["env"], "prod");
+        let policy = cfg.routes[0].policy();
+        assert_eq!(policy.pinned["env"], "prod");
+        assert_eq!(policy.required_keys, vec!["team"]);
         let streaming = cfg.rejections.missing_attribution.streaming.as_ref().unwrap();
         assert_eq!(streaming.event.as_deref(), Some("error"));
-    }
-
-    #[test]
-    fn unknown_provider_ref_names_the_route_and_provider() {
-        let yaml = valid_yaml().replace("provider: openai-main", "provider: nope");
-        let errs = errors_of(&yaml);
-        assert!(errs.iter().any(|e| e.contains("unknown provider \"nope\"")), "{errs:?}");
-    }
-
-    #[test]
-    fn empty_required_key_is_rejected() {
-        let yaml = valid_yaml().replace("required_keys: [team]", "required_keys: [team, '']");
-        let errs = errors_of(&yaml);
-        assert!(errs.iter().any(|e| e.contains("empty attribution key")), "{errs:?}");
-    }
-
-    #[test]
-    fn placeholder_typo_is_named() {
-        let yaml = valid_yaml().replace("{{key}} on {{route}}", "{{keys}} on {{route}}");
-        let errs = errors_of(&yaml);
-        assert!(
-            errs.iter().any(|e| e.contains("unknown placeholder {{keys}}")),
-            "{errs:?}"
-        );
-    }
-
-    #[test]
-    fn key_placeholder_is_invalid_for_unknown_route() {
-        let yaml = valid_yaml().replace("no route for {{route}}", "no route for {{key}}");
-        let errs = errors_of(&yaml);
-        assert!(
-            errs.iter()
-                .any(|e| e.contains("unknown_route.body") && e.contains("{{key}}")),
-            "{errs:?}"
-        );
-    }
-
-    #[test]
-    fn from_claims_without_auth_is_rejected() {
-        let yaml = valid_yaml().replace(
-            "pinned: { env: prod }",
-            "pinned: { env: prod }\n      from_claims: { user: sub }",
-        );
-        let errs = errors_of(&yaml);
-        assert!(errs.iter().any(|e| e.contains("requires auth.jwt")), "{errs:?}");
-    }
-
-    #[test]
-    fn pinned_and_claim_mapped_key_conflict_is_rejected() {
-        let yaml = valid_yaml().replace(
-            "pinned: { env: prod }",
-            "pinned: { env: prod }\n      from_claims: { env: environment }",
-        );
-        let yaml = format!("{yaml}auth:\n  jwt:\n    hs256_secret: s\n");
-        let errs = errors_of(&yaml);
-        assert!(
-            errs.iter().any(|e| e.contains("both pinned and claim-mapped")),
-            "{errs:?}"
-        );
-    }
-
-    #[test]
-    fn uppercase_key_is_rejected_with_header_hint() {
-        let yaml = valid_yaml().replace("required_keys: [team]", "required_keys: [Team]");
-        let errs = errors_of(&yaml);
-        assert!(errs.iter().any(|e| e.contains("x-attr-Team")), "{errs:?}");
-    }
-
-    #[test]
-    fn duplicate_prefixes_collide_even_with_trailing_slash() {
-        let yaml = valid_yaml().replace(
-            "routes:",
-            "routes:\n  - prefix: /openai/\n    provider: openai-main",
-        );
-        let errs = errors_of(&yaml);
-        assert!(errs.iter().any(|e| e.contains("duplicate prefix")), "{errs:?}");
     }
 
     #[test]
@@ -668,9 +639,9 @@ rejections:
         );
         let cfg = Config::from_yaml(&yaml).unwrap();
         let path = normalize_path("/openai/../claims/v1/chat");
-        assert_eq!(cfg.match_route(&path).unwrap().prefix, "/claims");
+        assert_eq!(cfg.match_route(&path, &ctx()).unwrap().prefix, "/claims");
         let path = normalize_path("/openai/%2e%2e/claims/v1/chat");
-        assert_eq!(cfg.match_route(&path).unwrap().prefix, "/claims");
+        assert_eq!(cfg.match_route(&path, &ctx()).unwrap().prefix, "/claims");
     }
 
     #[test]
@@ -680,13 +651,58 @@ rejections:
             "routes:\n  - prefix: /openai/v1/special\n    provider: openai-main",
         );
         let cfg = Config::from_yaml(&yaml).unwrap();
-        assert_eq!(cfg.match_route("/openai/v1/chat").unwrap().prefix, "/openai");
+        assert_eq!(cfg.match_route("/openai/v1/chat", &ctx()).unwrap().prefix, "/openai");
         assert_eq!(
-            cfg.match_route("/openai/v1/special/x").unwrap().prefix,
+            cfg.match_route("/openai/v1/special/x", &ctx()).unwrap().prefix,
             "/openai/v1/special"
         );
-        assert_eq!(cfg.match_route("/openai").unwrap().prefix, "/openai");
-        assert!(cfg.match_route("/openaix/v1").is_none());
-        assert!(cfg.match_route("/other").is_none());
+        assert_eq!(cfg.match_route("/openai", &ctx()).unwrap().prefix, "/openai");
+        assert!(cfg.match_route("/openaix/v1", &ctx()).is_none());
+        assert!(cfg.match_route("/other", &ctx()).is_none());
+    }
+
+    #[test]
+    fn route_conditions_gate_matching_and_erroring_conditions_never_select() {
+        let yaml = valid_yaml().replace(
+            "routes:",
+            concat!(
+                "routes:\n",
+                "  - prefix: /openai\n",
+                "    provider: openai-main\n",
+                "    match: 'request.method == \"GET\"'\n",
+                "    attribution: { pinned: { tier: readonly } }\n",
+                "  - prefix: /cond\n",
+                "    provider: openai-main\n",
+                "    match: 'request.headers[\"x-absent\"] == \"x\"'\n",
+            ),
+        );
+        let cfg = Config::from_yaml(&yaml).unwrap();
+
+        // POST → the conditioned /openai route does not match; the
+        // unconditioned fallback with the same prefix does.
+        let post = cfg.match_route("/openai/v1/chat", &ctx()).unwrap();
+        assert!(post.condition.is_none());
+
+        // GET → the conditioned route wins over the unconditioned fallback.
+        let get_ctx = EvalCtx { method: "GET".to_string(), ..EvalCtx::default() };
+        let get = cfg.match_route("/openai/v1/chat", &get_ctx).unwrap();
+        assert_eq!(get.condition.as_deref(), Some(r#"request.method == "GET""#));
+
+        // An erroring condition (absent header lookup) never selects.
+        assert!(cfg.match_route("/cond/x", &ctx()).is_none());
+    }
+
+    #[test]
+    fn bad_cel_condition_fails_config_load() {
+        let yaml = valid_yaml().replace(
+            "provider: openai-main",
+            "provider: openai-main\n    match: 'request.method =='",
+        );
+        match Config::from_yaml(&yaml) {
+            Err(ConfigError::Invalid(errs)) => {
+                assert!(errs.iter().any(|e| e.contains("parse error")), "{errs:?}")
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 }

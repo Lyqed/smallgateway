@@ -1,6 +1,10 @@
 # Demo config for scripts/demo.sh — one static file, Baseline-conformant.
-# All three providers point at the local mock upstream (port 6190), which
-# streams the Phase 0 spike fixtures and echoes received x-attr-* headers.
+# All providers point at local mocks: mock_upstream on 6190 (streams the
+# Phase 0 spike fixtures / demo/vertex.sse, echoes received x-attr-*
+# headers, body labels, and verified session tags), mock_sts on 6199.
+#
+# Milestone 3: the four policy scopes are all exercised here —
+# fleet → project → route → app (docs/02-architecture.md).
 
 providers:
   openai-demo:
@@ -12,33 +16,92 @@ providers:
   bedrock-demo:
     kind: bedrock
     upstream: { host: 127.0.0.1, port: 6190 }
+  # GB-7: session-tag credentials. Tags come from ATTRIBUTION values that
+  # the gateway itself establishes (env is pinned at fleet scope) — a tag
+  # from a plain caller-asserted key is a config ERROR, never caller-raw.
+  bedrock-sts-demo:
+    kind: bedrock
+    upstream: { host: 127.0.0.1, port: 6191 }
+    sts:
+      endpoint: { host: 127.0.0.1, port: 6199 }
+      role_arn: arn:aws:iam::000000000000:role/gateway-demo
+      region: us-east-1
+      tags:
+        - { key: team, from_attribution: billing_team }
+        - { key: env, from_attribution: env }
+  vertex-demo:
+    kind: vertex
+    upstream: { host: 127.0.0.1, port: 6190 }
+
+# Scope 1 — fleet: every route inherits the team requirement and the
+# env pin unless a lower scope explicitly replaces it.
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: { env: prod }
+
+# Scope 2 — projects. /vertex opts into ml-platform, which extends the
+# fleet's required keys around the explicit <base> marker and adds a
+# CEL-derived channel tag (tier-1 extensibility: a real derivation, not a
+# copied header — total, so it resolves with or without the header).
+projects:
+  ml-platform:
+    attribution:
+      required_keys: ['<base>', purpose]
+      derived:
+        channel: '"x-channel" in request.headers ? request.headers["x-channel"] : "api"'
+    labels:
+      - key: env
+        from_attribution: env
+      - key: channel
+        from_attribution: channel
 
 routes:
-  # GB-1 (required tag) + GB-3 (operator pin): callers must name their team;
-  # the gateway itself asserts env=prod, whatever the caller claims.
+  # GB-1 (required tag) + GB-3 (operator pin, inherited from fleet).
   - prefix: /openai
     provider: openai-demo
-    attribution:
-      required_keys: [team]
-      pinned: { env: prod }
 
   - prefix: /anthropic
     provider: anthropic-demo
-    attribution:
-      required_keys: [team]
 
   - prefix: /bedrock
     provider: bedrock-demo
+
+  # GB-7: invoice-grade attribution on AWS — session-tagged credentials.
+  - prefix: /bedrock-sts
+    provider: bedrock-sts-demo
     attribution:
-      required_keys: [team]
+      pinned: { billing_team: ml-platform }
+
+  # GB-8: invoice-grade attribution on Vertex — operator billing labels
+  # merged into the generateContent body; operator wins over client labels.
+  - prefix: /vertex
+    provider: vertex-demo
+    project: ml-platform
+    labels:
+      - key: cost_center
+        value: platform-eng
+      - key: team
+        from_attribution: team
+      - '<base>'
 
   # GB-2: `user` is proven from the verified JWT's `sub` claim — a caller
   # header x-attr-user is never believed on this route.
   - prefix: /claims
     provider: openai-demo
     attribution:
-      required_keys: [team, user]
+      required_keys: ['<base>', user]
       from_claims: { user: sub }
+
+# Scope 4 — apps, keyed by the RESOLVED team value: the ml-research app
+# tightens its own contract (adds a purpose pin so its requests are
+# self-describing on the invoice).
+apps:
+  key: team
+  overrides:
+    ml-research:
+      attribution:
+        pinned: { purpose: research }
 
 # GB-2 verification. Demo-only shared secret — a real deployment injects
 # this from a secret manager, never from a committed file.
