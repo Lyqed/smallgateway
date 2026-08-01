@@ -1,0 +1,28 @@
+# Deliberately broken config for scripts/demo.sh scenario (8): the NACK
+# proof. Two precise validation errors — a route referencing a provider
+# that does not exist, and a placeholder typo in a rejection template —
+# so the reload is REJECTED and the old snapshot keeps serving.
+
+providers:
+  openai-demo:
+    kind: openai
+    upstream: { host: 127.0.0.1, port: 6190 }
+
+routes:
+  # ERROR 1: no provider named "openai-typo" is defined.
+  - prefix: /openai
+    provider: openai-typo
+    attribution:
+      required_keys: [team]
+      pinned: { env: canary }
+
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    # ERROR 2: {{keys}} is not a known placeholder ({{key}} is).
+    body: '{"error":"attribution_required","missing":"{{keys}}","route":"{{route}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'

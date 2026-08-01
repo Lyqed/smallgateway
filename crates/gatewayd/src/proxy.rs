@@ -5,6 +5,13 @@
 //! meter while the identical bytes stream on to the client, nothing
 //! buffered whole.
 //!
+//! Milestone 2: every request binds one `Arc<Snapshot>` at request start
+//! (`new_ctx`) and consults ONLY that snapshot for its whole lifetime,
+//! streaming included — no torn reads, and an old version drains out with
+//! its last in-flight stream (docs/03-hot-swap.md). Every `[req]` and
+//! `[meter]` line carries `cfg=vN`: the published bounded-staleness
+//! evidence of exactly which version served which stream.
+//!
 //! The tap and ctx shape are promoted from `spikes/proxy-pingora/src/main.rs`
 //! (Phase 0, Spike B); the governance around them is new in Phase 1.
 
@@ -24,15 +31,20 @@ use gateway_core::config::{self, Config, ProviderKind, RejectionTemplate, ATTR_H
 use gateway_core::event::Event;
 use gateway_core::jwt;
 use gateway_core::metering::Meter;
+use gateway_core::snapshot::Snapshot;
 use gateway_core::template;
 
+use crate::reload::SharedSnapshot;
+
 pub struct Gateway {
-    cfg: Arc<Config>,
+    /// The swap cell. Touched exactly once per request, in `new_ctx`;
+    /// every later hook reads the request's own pinned snapshot instead.
+    shared: SharedSnapshot,
 }
 
 impl Gateway {
-    pub fn new(cfg: Arc<Config>) -> Self {
-        Gateway { cfg }
+    pub fn new(shared: SharedSnapshot) -> Self {
+        Gateway { shared }
     }
 }
 
@@ -43,10 +55,16 @@ struct RouteBinding {
     kind: ProviderKind,
 }
 
-/// Per-request state: the chosen adapter, the running meter, the resolved
-/// attribution tags, and summary counters. Deliberately bounded — the tap
-/// stores counts, never the body. (Promoted shape from Spike B.)
+/// Per-request state: the pinned config snapshot, the chosen adapter, the
+/// running meter, the resolved attribution tags, and summary counters.
+/// Deliberately bounded — the tap stores counts, never the body. (Promoted
+/// shape from Spike B.)
 pub struct ReqCtx {
+    /// The snapshot this request bound at start. Held for the request's
+    /// whole lifetime — including the full streaming response — so a swap
+    /// mid-stream never rebinds it, and the old snapshot stays alive until
+    /// the last such holder drops (drain semantics, doc 03 limitation 2).
+    snapshot: Arc<Snapshot>,
     route: Option<RouteBinding>,
     adapter: Option<Box<dyn Adapter + Send + Sync>>,
     meter: Meter,
@@ -57,8 +75,9 @@ pub struct ReqCtx {
 }
 
 impl ReqCtx {
-    fn empty() -> Self {
+    fn bound(snapshot: Arc<Snapshot>) -> Self {
         ReqCtx {
+            snapshot,
             route: None,
             adapter: None,
             meter: Meter::new(),
@@ -145,26 +164,25 @@ async fn respond_rejection(
     Ok(())
 }
 
-impl Gateway {
-    /// GB-2: claims from a verified HS256 token, or `None` (absent header,
-    /// bad signature, expired — each logged). Only consulted on routes with
-    /// claim mappings; config validation guarantees `auth` exists for them.
-    fn verified_claims(
-        &self,
-        head: &RequestHeader,
-    ) -> Option<serde_json::Map<String, serde_json::Value>> {
-        let auth = self.cfg.auth.as_ref()?;
-        let raw = head.headers.get(auth.jwt.header.as_str())?.to_str().ok()?;
-        let token = raw
-            .strip_prefix("Bearer ")
-            .or_else(|| raw.strip_prefix("bearer "))?
-            .trim();
-        match jwt::verify_hs256(token, auth.jwt.hs256_secret.as_bytes(), now_unix()) {
-            Ok(claims) => Some(claims),
-            Err(e) => {
-                info!("[auth] jwt rejected: {e}");
-                None
-            }
+/// GB-2: claims from a verified HS256 token, or `None` (absent header,
+/// bad signature, expired — each logged). Only consulted on routes with
+/// claim mappings; config validation guarantees `auth` exists for them.
+/// Takes the request's pinned config, never the live cell.
+fn verified_claims(
+    cfg: &Config,
+    head: &RequestHeader,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let auth = cfg.auth.as_ref()?;
+    let raw = head.headers.get(auth.jwt.header.as_str())?.to_str().ok()?;
+    let token = raw
+        .strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))?
+        .trim();
+    match jwt::verify_hs256(token, auth.jwt.hs256_secret.as_bytes(), now_unix()) {
+        Ok(claims) => Some(claims),
+        Err(e) => {
+            info!("[auth] jwt rejected: {e}");
+            None
         }
     }
 }
@@ -174,12 +192,22 @@ impl ProxyHttp for Gateway {
     type CTX = ReqCtx;
 
     fn new_ctx(&self) -> Self::CTX {
-        // The route is unknown until the request headers are visible;
-        // request_filter fills the binding (same dance as the spike).
-        ReqCtx::empty()
+        // Atomic per-request binding: ONE load of the current snapshot at
+        // request start; every later hook reads ctx.snapshot, so this
+        // request can never observe two config versions. The route itself
+        // is unknown until the request headers are visible; request_filter
+        // fills the binding (same dance as the spike).
+        ReqCtx::bound(self.shared.load())
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
+        // The pinned snapshot, cloned out of ctx so the borrow checker lets
+        // the rejection paths below take &mut ctx state (an Arc clone: same
+        // snapshot, refcount bump).
+        let snap = ctx.snapshot.clone();
+        let cfg = &snap.config;
+        let v = snap.version;
+
         let head = session.req_header();
         let method = head.method.clone();
         let raw_path = head.uri.path().to_owned();
@@ -200,7 +228,7 @@ impl ProxyHttp for Gateway {
             };
             match http::Uri::try_from(target.as_str()) {
                 Ok(uri) => {
-                    info!("[req] path normalized: {raw_path} -> {path}");
+                    info!("[req] path normalized: {raw_path} -> {path} cfg=v{v}");
                     session.req_header_mut().set_uri(uri);
                 }
                 Err(e) => {
@@ -210,11 +238,11 @@ impl ProxyHttp for Gateway {
                     // template, operator's body).
                     info!(
                         "[req] {method} {raw_path} -> unrepresentable after normalization ({e}) \
-                         (rejecting: unknown_route)"
+                         (rejecting: unknown_route) cfg=v{v}"
                     );
                     respond_rejection(
                         session,
-                        &self.cfg.rejections.unknown_route,
+                        &cfg.rejections.unknown_route,
                         &[("route", raw_path.as_str())],
                     )
                     .await?;
@@ -224,11 +252,11 @@ impl ProxyHttp for Gateway {
         }
 
         // Route resolution by longest path prefix; unknown → GB-4 template.
-        let Some(route) = self.cfg.match_route(&path) else {
-            info!("[req] {method} {path} -> no route (rejecting: unknown_route)");
+        let Some(route) = cfg.match_route(&path) else {
+            info!("[req] {method} {path} -> no route (rejecting: unknown_route) cfg=v{v}");
             respond_rejection(
                 session,
-                &self.cfg.rejections.unknown_route,
+                &cfg.rejections.unknown_route,
                 &[("route", path.as_str())],
             )
             .await?;
@@ -238,7 +266,7 @@ impl ProxyHttp for Gateway {
         let claims = if route.attribution.from_claims.is_empty() {
             None
         } else {
-            self.verified_claims(session.req_header())
+            verified_claims(cfg, session.req_header())
         };
         let caller = caller_attrs(session.req_header());
 
@@ -253,12 +281,12 @@ impl ProxyHttp for Gateway {
             Err(missing) => {
                 let missing_list = missing.join(", ");
                 info!(
-                    "[req] {method} {path} -> route={} (rejecting: missing_attribution: {missing_list})",
+                    "[req] {method} {path} -> route={} (rejecting: missing_attribution: {missing_list}) cfg=v{v}",
                     route.prefix
                 );
                 respond_rejection(
                     session,
-                    &self.cfg.rejections.missing_attribution,
+                    &cfg.rejections.missing_attribution,
                     &[("key", missing_list.as_str()), ("route", route.prefix.as_str())],
                 )
                 .await?;
@@ -266,9 +294,9 @@ impl ProxyHttp for Gateway {
             }
         };
 
-        let kind = self.cfg.providers[&route.provider].kind;
+        let kind = cfg.providers[&route.provider].kind;
         info!(
-            "[req] {method} {path} -> route={} provider={}({})",
+            "[req] {method} {path} -> route={} provider={}({}) cfg=v{v}",
             route.prefix,
             route.provider,
             kind.name()
@@ -282,7 +310,7 @@ impl ProxyHttp for Gateway {
         });
         ctx.adapter = Some(kind.new_adapter());
         ctx.tags = tags;
-        info!("[attr {}] {}", route.prefix, ctx.tag_summary());
+        info!("[attr {}] {} cfg=v{v}", route.prefix, ctx.tag_summary());
         Ok(false)
     }
 
@@ -295,7 +323,9 @@ impl ProxyHttp for Gateway {
             .route
             .as_ref()
             .ok_or_else(|| Error::explain(InternalError, "upstream_peer without a bound route"))?;
-        let up = &self.cfg.providers[&binding.provider].upstream;
+        // The request's pinned snapshot, never the live cell: a swap between
+        // request_filter and here must not retarget this request.
+        let up = &ctx.snapshot.config.providers[&binding.provider].upstream;
         let peer = HttpPeer::new(
             format!("{}:{}", up.host, up.port),
             up.tls,
@@ -369,11 +399,14 @@ impl ProxyHttp for Gateway {
             let binding = ctx.route.as_ref().expect("route bound above");
             // The attribution→spend join: tags and token counts on ONE
             // line, so "who spent what" is a grep, not a correlation.
+            // cfg=vN names the version that metered THIS stream — the
+            // bounded-staleness evidence during a drain overlap.
             let report = ctx.meter.report();
             info!(
-                "[meter {}] provider={}({}) attribution{{{}}} events{{{}}} chunks={} bytes={} \
+                "[meter {}] cfg=v{} provider={}({}) attribution{{{}}} events{{{}}} chunks={} bytes={} \
                  est_output_tokens={} auth_input_tokens={} auth_output_tokens={} est_err={}",
                 binding.prefix,
+                ctx.snapshot.version,
                 binding.provider,
                 binding.kind.name(),
                 ctx.tag_summary(),
@@ -395,4 +428,38 @@ impl ProxyHttp for Gateway {
 
 fn opt(n: Option<u64>) -> String {
     n.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reload::testutil::{temp_cfg, valid_yaml};
+    use crate::reload::{ReloadOutcome, Reloader};
+
+    /// The proxy-level half of the drain contract: `new_ctx` is the ONLY
+    /// place a request touches the live cell, so a ctx created before a
+    /// swap keeps its version for its whole lifetime while a ctx created
+    /// after binds the new one — two versions live side by side.
+    #[test]
+    fn request_ctx_pins_the_snapshot_bound_at_request_start() {
+        let path = temp_cfg(&valid_yaml("prod"));
+        let reloader = Reloader::bootstrap(path.clone()).unwrap();
+        let gateway = Gateway::new(reloader.shared());
+
+        // Request A starts under v1...
+        let ctx_a = gateway.new_ctx();
+        assert_eq!(ctx_a.snapshot.version, 1);
+
+        // ...the operator swaps to v2 while A is still streaming...
+        std::fs::write(&path, valid_yaml("canary")).unwrap();
+        assert_eq!(reloader.reload("test"), ReloadOutcome::Swapped { old: 1, new: 2 });
+
+        // ...and a concurrent request B binds v2 while A still sees v1,
+        // config content included: no torn read, no mid-stream rebind.
+        let ctx_b = gateway.new_ctx();
+        assert_eq!(ctx_a.snapshot.version, 1);
+        assert_eq!(ctx_a.snapshot.config.routes[0].attribution.pinned["env"], "prod");
+        assert_eq!(ctx_b.snapshot.version, 2);
+        assert_eq!(ctx_b.snapshot.config.routes[0].attribution.pinned["env"], "canary");
+    }
 }

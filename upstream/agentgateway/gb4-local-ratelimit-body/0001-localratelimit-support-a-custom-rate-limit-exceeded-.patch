@@ -1,0 +1,598 @@
+From 8ea8421905fd717607eb22acf1af2d57edcef2cd Mon Sep 17 00:00:00 2001
+From: Lyqed <antondoeswonders@gmail.com>
+Date: Sat, 1 Aug 2026 15:52:09 +0300
+Subject: [PATCH] localratelimit: support a custom rate limit exceeded response
+
+Adds an optional `response` field to the local rate limit policy so
+operators can customize the body, content type, and status code returned
+when a limit is exceeded, mirroring how the remote rate limiter already
+returns the rate limit service's raw_body on rejection.
+
+The X-RateLimit-* headers are still attached, and gRPC requests keep the
+trailers-only grpc-status response. When `response` is unset the
+existing plain-text 429 behavior is unchanged.
+---
+ .../agentgateway/src/http/localratelimit.rs   |  38 ++++
+ .../src/http/localratelimit_tests.rs          | 203 ++++++++++++++++++
+ .../src/http/remoteratelimit_tests.rs         |   1 +
+ crates/agentgateway/src/llm/tests.rs          |   1 +
+ crates/agentgateway/src/proxy/mod.rs          |  24 ++-
+ crates/agentgateway/src/types/agent_xds.rs    |   2 +
+ schema/config.json                            |  50 +++++
+ schema/config.md                              |  44 ++++
+ 8 files changed, 362 insertions(+), 1 deletion(-)
+ create mode 100644 crates/agentgateway/src/http/localratelimit_tests.rs
+
+diff --git a/crates/agentgateway/src/http/localratelimit.rs b/crates/agentgateway/src/http/localratelimit.rs
+index c0b269e3..8a8c4e54 100644
+--- a/crates/agentgateway/src/http/localratelimit.rs
++++ b/crates/agentgateway/src/http/localratelimit.rs
+@@ -1,9 +1,15 @@
++use bytes::Bytes;
+ use serde::de::Error;
+ 
++use crate::http::StatusCode;
+ use crate::llm::LLMRequest;
+ use crate::proxy::ProxyError;
+ use crate::*;
+ 
++#[cfg(test)]
++#[path = "localratelimit_tests.rs"]
++mod tests;
++
+ #[derive(Debug, Clone)]
+ #[cfg_attr(feature = "schema", derive(JsonSchema))]
+ #[cfg_attr(feature = "schema", schemars(with = "RateLimitSpec"))]
+@@ -41,6 +47,31 @@ pub struct RateLimitSpec {
+ 	#[serde(default)]
+ 	#[serde(rename = "type")]
+ 	pub limit_type: RateLimitType,
++	/// Custom response returned when the limit is exceeded. When unset, a plain-text
++	/// 429 response is returned.
++	#[serde(default, skip_serializing_if = "Option::is_none")]
++	pub response: Option<RateLimitResponse>,
++}
++
++/// Response returned to the client when this rate limit rejects a request.
++/// The `X-RateLimit-*` headers are attached regardless of this configuration.
++#[apply(schema!)]
++pub struct RateLimitResponse {
++	/// Static response body.
++	#[serde(default, skip_serializing_if = "is_default")]
++	#[serde(serialize_with = "serdes::serde_base64::serialize")]
++	pub body: Bytes,
++	/// Content-Type of the response body. Defaults to `text/plain`.
++	#[serde(default, skip_serializing_if = "Option::is_none")]
++	pub content_type: Option<Strng>,
++	/// HTTP status code to return. Defaults to 429 (Too Many Requests).
++	#[serde(
++		default,
++		skip_serializing_if = "is_default",
++		with = "http_serde::option::status_code"
++	)]
++	#[cfg_attr(feature = "schema", schemars(with = "Option<std::num::NonZeroU16>"))]
++	pub status: Option<StatusCode>,
+ }
+ 
+ #[apply(schema!)]
+@@ -82,9 +113,14 @@ impl RateLimit {
+ 				limit,
+ 				remaining,
+ 				reset_seconds: reset.as_secs(),
++				response: self.custom_response(),
+ 			})
+ 	}
+ 
++	fn custom_response(&self) -> Option<Box<RateLimitResponse>> {
++		self.spec.response.clone().map(Box::new)
++	}
++
+ 	pub fn check_llm_request(&self, req: &LLMRequest) -> Result<(), ProxyError> {
+ 		if self.spec.limit_type != RateLimitType::Tokens {
+ 			return Ok(());
+@@ -99,6 +135,7 @@ impl RateLimit {
+ 					limit,
+ 					remaining,
+ 					reset_seconds: reset.as_secs(),
++					response: self.custom_response(),
+ 				})
+ 		} else {
+ 			// Otherwise, make sure at least 1 token is allowed.
+@@ -112,6 +149,7 @@ impl RateLimit {
+ 					remaining: avail,
+ 					reset_seconds: (self.ratelimit.next_refill() - clocksource::precise::Instant::now())
+ 						.as_secs(),
++					response: self.custom_response(),
+ 				})
+ 			}
+ 		}
+diff --git a/crates/agentgateway/src/http/localratelimit_tests.rs b/crates/agentgateway/src/http/localratelimit_tests.rs
+new file mode 100644
+index 00000000..ccc82c62
+--- /dev/null
++++ b/crates/agentgateway/src/http/localratelimit_tests.rs
+@@ -0,0 +1,203 @@
++use super::*;
++use crate::http::StatusCode;
++
++/// Helper: build a `RateLimit` that allows one request before rejecting.
++fn make_rate_limit(response: Option<RateLimitResponse>) -> RateLimit {
++	RateLimit::try_from(RateLimitSpec {
++		max_tokens: 1,
++		tokens_per_fill: 1,
++		fill_interval: std::time::Duration::from_secs(3600),
++		limit_type: RateLimitType::Requests,
++		response,
++	})
++	.expect("valid rate limit spec")
++}
++
++/// Helper: exhaust the limiter and return the rejection error.
++fn exhaust(rl: &RateLimit) -> ProxyError {
++	rl.check_request().expect("first request is allowed");
++	rl.check_request()
++		.expect_err("second request is rate limited")
++}
++
++#[tokio::test]
++async fn rejection_defaults_to_plain_text_429() {
++	let rl = make_rate_limit(None);
++	let response = exhaust(&rl).into_response_with_grpc(false);
++
++	assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
++	assert_eq!(
++		response
++			.headers()
++			.get(::http::header::CONTENT_TYPE)
++			.unwrap(),
++		"text/plain"
++	);
++	let body = crate::http::read_body_with_limit(response.into_body(), 1024)
++		.await
++		.unwrap();
++	assert_eq!(body.as_ref(), b"rate limit exceeded");
++}
++
++#[tokio::test]
++async fn rejection_uses_custom_response() {
++	let rl = make_rate_limit(Some(RateLimitResponse {
++		body: Bytes::from_static(b"{\"error\":\"slow down\"}"),
++		content_type: Some("application/json".into()),
++		status: Some(StatusCode::SERVICE_UNAVAILABLE),
++	}));
++	let response = exhaust(&rl).into_response_with_grpc(false);
++
++	assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
++	assert_eq!(
++		response
++			.headers()
++			.get(::http::header::CONTENT_TYPE)
++			.unwrap(),
++		"application/json"
++	);
++	// The rate limit headers are attached regardless of the custom response
++	assert_eq!(
++		response
++			.headers()
++			.get(crate::http::x_headers::X_RATELIMIT_LIMIT)
++			.unwrap(),
++		"1"
++	);
++	let body = crate::http::read_body_with_limit(response.into_body(), 1024)
++		.await
++		.unwrap();
++	assert_eq!(body.as_ref(), b"{\"error\":\"slow down\"}");
++}
++
++#[tokio::test]
++async fn custom_response_defaults_status_and_content_type() {
++	let rl = make_rate_limit(Some(RateLimitResponse {
++		body: Bytes::from_static(b"try again later"),
++		content_type: None,
++		status: None,
++	}));
++	let response = exhaust(&rl).into_response_with_grpc(false);
++
++	assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
++	assert_eq!(
++		response
++			.headers()
++			.get(::http::header::CONTENT_TYPE)
++			.unwrap(),
++		"text/plain"
++	);
++	let body = crate::http::read_body_with_limit(response.into_body(), 1024)
++		.await
++		.unwrap();
++	assert_eq!(body.as_ref(), b"try again later");
++}
++
++#[tokio::test]
++async fn grpc_rejection_ignores_custom_body() {
++	let rl = make_rate_limit(Some(RateLimitResponse {
++		body: Bytes::from_static(b"{\"error\":\"slow down\"}"),
++		content_type: Some("application/json".into()),
++		status: None,
++	}));
++	let response = exhaust(&rl).into_response_with_grpc(true);
++
++	// gRPC requests keep the trailers-only style response
++	assert_eq!(response.status(), StatusCode::OK);
++	assert_eq!(
++		response
++			.headers()
++			.get(::http::header::CONTENT_TYPE)
++			.unwrap(),
++		"application/grpc"
++	);
++	assert!(response.headers().contains_key("grpc-status"));
++	let body = crate::http::read_body_with_limit(response.into_body(), 1024)
++		.await
++		.unwrap();
++	assert!(body.is_empty());
++}
++
++#[test]
++fn llm_token_rejection_carries_custom_response() {
++	let rl = RateLimit::try_from(RateLimitSpec {
++		max_tokens: 5,
++		tokens_per_fill: 5,
++		fill_interval: std::time::Duration::from_secs(3600),
++		limit_type: RateLimitType::Tokens,
++		response: Some(RateLimitResponse {
++			body: Bytes::from_static(b"token budget exhausted"),
++			content_type: None,
++			status: None,
++		}),
++	})
++	.expect("valid rate limit spec");
++
++	let llm_request = crate::llm::LLMRequest {
++		input_tokens: Some(100),
++		input_format: crate::llm::InputFormat::Completions,
++		cache_convention: crate::llm::CacheTokenConvention::pending(),
++		request_model: "test-model".into(),
++		provider: "test-provider".into(),
++		streaming: false,
++		params: Default::default(),
++		prompt: None,
++		provider_state: None,
++	};
++	let err = rl
++		.check_llm_request(&llm_request)
++		.expect_err("request exceeds the token budget");
++	let ProxyError::RateLimitExceeded {
++		response: Some(response),
++		..
++	} = err
++	else {
++		panic!("expected RateLimitExceeded with a custom response, got {err}");
++	};
++	assert_eq!(response.body.as_ref(), b"token budget exhausted");
++}
++
++// --- Config deserialization tests ---
++
++#[test]
++fn config_without_response_deserializes() {
++	let yaml = r#"
++maxTokens: 10
++tokensPerFill: 1
++fillInterval: 60s
++"#;
++	let rl: RateLimit = serdes::yamlviajson::from_str(yaml).unwrap();
++	assert_eq!(rl.spec.max_tokens, 10);
++	assert!(rl.spec.response.is_none());
++}
++
++#[test]
++fn config_with_custom_response_deserializes() {
++	let yaml = r#"
++maxTokens: 10
++tokensPerFill: 1
++fillInterval: 60s
++response:
++  body: '{"error":"rate limited"}'
++  contentType: application/json
++  status: 503
++"#;
++	let rl: RateLimit = serdes::yamlviajson::from_str(yaml).unwrap();
++	let response = rl.spec.response.as_ref().expect("response is set");
++	assert_eq!(response.body.as_ref(), br#"{"error":"rate limited"}"#);
++	assert_eq!(response.content_type.as_deref(), Some("application/json"));
++	assert_eq!(response.status, Some(StatusCode::SERVICE_UNAVAILABLE));
++}
++
++#[test]
++fn config_with_unknown_response_field_is_rejected() {
++	let yaml = r#"
++maxTokens: 10
++tokensPerFill: 1
++fillInterval: 60s
++response:
++  body: "rate limited"
++  bodyExpression: "1 + 1"
++"#;
++	assert!(serdes::yamlviajson::from_str::<RateLimit>(yaml).is_err());
++}
+diff --git a/crates/agentgateway/src/http/remoteratelimit_tests.rs b/crates/agentgateway/src/http/remoteratelimit_tests.rs
+index 5c0ce8cf..61605f29 100644
+--- a/crates/agentgateway/src/http/remoteratelimit_tests.rs
++++ b/crates/agentgateway/src/http/remoteratelimit_tests.rs
+@@ -692,6 +692,7 @@ fn rate_limit_exceeded_maps_to_429() {
+ 		limit: 10,
+ 		remaining: 0,
+ 		reset_seconds: 60,
++		response: None,
+ 	};
+ 	let response = err.into_response_with_grpc(false);
+ 	assert_eq!(
+diff --git a/crates/agentgateway/src/llm/tests.rs b/crates/agentgateway/src/llm/tests.rs
+index eaac01d2..903bef9e 100644
+--- a/crates/agentgateway/src/llm/tests.rs
++++ b/crates/agentgateway/src/llm/tests.rs
+@@ -54,6 +54,7 @@ fn streaming_amend_on_drop_updates_local_rate_limit() {
+ 			tokens_per_fill: 10,
+ 			fill_interval: std::time::Duration::from_secs(60),
+ 			limit_type: crate::http::localratelimit::RateLimitType::Tokens,
++			response: None,
+ 		})
+ 		.unwrap();
+ 	let log = AsyncLog::default();
+diff --git a/crates/agentgateway/src/proxy/mod.rs b/crates/agentgateway/src/proxy/mod.rs
+index 85dbc68f..33298768 100644
+--- a/crates/agentgateway/src/proxy/mod.rs
++++ b/crates/agentgateway/src/proxy/mod.rs
+@@ -206,6 +206,7 @@ pub enum ProxyError {
+ 		limit: u64,
+ 		remaining: u64,
+ 		reset_seconds: u64,
++		response: Option<Box<http::localratelimit::RateLimitResponse>>,
+ 	},
+ 	#[error("rate limit failed")]
+ 	RateLimitFailed,
+@@ -293,7 +294,10 @@ impl ProxyError {
+ 			ProxyError::Http(_) => StatusCode::SERVICE_UNAVAILABLE,
+ 			ProxyError::Body(_) => StatusCode::SERVICE_UNAVAILABLE,
+ 			ProxyError::ProcessingString(_) => StatusCode::SERVICE_UNAVAILABLE,
+-			ProxyError::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
++			ProxyError::RateLimitExceeded { ref response, .. } => response
++				.as_ref()
++				.and_then(|r| r.status)
++				.unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+ 			// Rate limit service communication failure is a server error (500), not a rate limit (429).
+ 			// This matches Envoy's behavior (status_on_error defaults to 500).
+ 			ProxyError::RateLimitFailed => StatusCode::INTERNAL_SERVER_ERROR,
+@@ -342,6 +346,7 @@ impl ProxyError {
+ 			limit,
+ 			remaining,
+ 			reset_seconds,
++			..
+ 		} = self
+ 		{
+ 			if let Ok(hv) = HeaderValue::try_from(limit.to_string()) {
+@@ -392,6 +397,23 @@ impl ProxyError {
+ 				)))
+ 				.unwrap();
+ 		}
++		// A local rate limit can carry an operator-configured rejection response
++		if let ProxyError::RateLimitExceeded {
++			response: Some(response),
++			..
++		} = &self
++		{
++			let content_type = response
++				.content_type
++				.as_deref()
++				.and_then(|ct| HeaderValue::try_from(ct).ok())
++				.unwrap_or(HeaderValue::from_static("text/plain"));
++			return rb
++				.header(hyper::header::CONTENT_TYPE, content_type)
++				.body(http::Body::from(response.body.clone()))
++				.unwrap();
++		}
++
+ 		if let ProxyError::MCP(e) = self
+ 			&& let Some(body) = e.jsonrpc_error_body()
+ 		{
+diff --git a/crates/agentgateway/src/types/agent_xds.rs b/crates/agentgateway/src/types/agent_xds.rs
+index 9bde14c1..f9b9a17f 100644
+--- a/crates/agentgateway/src/types/agent_xds.rs
++++ b/crates/agentgateway/src/types/agent_xds.rs
+@@ -2392,6 +2392,8 @@ fn traffic_policy_from_proto(
+ 					tps::local_rate_limit::Type::Request => http::localratelimit::RateLimitType::Requests,
+ 					tps::local_rate_limit::Type::Token => http::localratelimit::RateLimitType::Tokens,
+ 				},
++				// Not currently configurable over XDS.
++				response: None,
+ 			};
+ 			// Yes, its single with a vec, because we originally supported multiple rate limit policies before
+ 			// we added the generic multiple support.
+diff --git a/schema/config.json b/schema/config.json
+index 8a58c567..40b4db22 100644
+--- a/schema/config.json
++++ b/schema/config.json
+@@ -5509,6 +5509,17 @@
+           "description": "Whether this limit counts requests or LLM tokens.",
+           "$ref": "#/$defs/RateLimitType",
+           "default": "requests"
++        },
++        "response": {
++          "description": "Custom response returned when the limit is exceeded. When unset, a plain-text\n429 response is returned.",
++          "anyOf": [
++            {
++              "$ref": "#/$defs/RateLimitResponse"
++            },
++            {
++              "type": "null"
++            }
++          ]
+         }
+       },
+       "required": [
+@@ -5529,6 +5540,34 @@
+         }
+       ]
+     },
++    "RateLimitResponse": {
++      "description": "Response returned to the client when this rate limit rejects a request.\nThe `X-RateLimit-*` headers are attached regardless of this configuration.",
++      "type": "object",
++      "properties": {
++        "body": {
++          "description": "Static response body.",
++          "$ref": "#/$defs/Bytes"
++        },
++        "contentType": {
++          "description": "Content-Type of the response body. Defaults to `text/plain`.",
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "status": {
++          "description": "HTTP status code to return. Defaults to 429 (Too Many Requests).",
++          "type": [
++            "integer",
++            "null"
++          ],
++          "format": "uint16",
++          "minimum": 1,
++          "maximum": 65535
++        }
++      },
++      "additionalProperties": false
++    },
+     "RateLimitSpec": {
+       "type": "object",
+       "properties": {
+@@ -5554,6 +5593,17 @@
+           "description": "Whether this limit counts requests or LLM tokens.",
+           "$ref": "#/$defs/RateLimitType",
+           "default": "requests"
++        },
++        "response": {
++          "description": "Custom response returned when the limit is exceeded. When unset, a plain-text\n429 response is returned.",
++          "anyOf": [
++            {
++              "$ref": "#/$defs/RateLimitResponse"
++            },
++            {
++              "type": "null"
++            }
++          ]
+         }
+       },
+       "additionalProperties": false,
+diff --git a/schema/config.md b/schema/config.md
+index 48e61140..e593445c 100644
+--- a/schema/config.md
++++ b/schema/config.md
+@@ -2861,10 +2861,18 @@
+ |`binds[].listeners[].routes[].policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`binds[].listeners[].routes[].policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
+ |`binds[].listeners[].routes[].policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response.body`|array|Static response body.|
++|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`binds[].listeners[].routes[].policies.localRateLimit[].maxTokens`|integer|Maximum number of tokens that can accumulate in the local bucket.|
+ |`binds[].listeners[].routes[].policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`binds[].listeners[].routes[].policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
+ |`binds[].listeners[].routes[].policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`binds[].listeners[].routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`binds[].listeners[].routes[].policies.localRateLimit[].response.body`|array|Static response body.|
++|`binds[].listeners[].routes[].policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`binds[].listeners[].routes[].policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`binds[].listeners[].routes[].policies.remoteRateLimit`|object|Remote rate limit checks for incoming requests.|
+ |`binds[].listeners[].routes[].policies.remoteRateLimit.conditional`|[]object|conditional policy entries. An entry without a condition must be the final fallback.|
+ |`binds[].listeners[].routes[].policies.remoteRateLimit.conditional[].service`|object|Service reference. Service must be defined in the top level services list.|
+@@ -18985,10 +18993,18 @@
+ |`policies[].policy.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`policies[].policy.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
+ |`policies[].policy.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`policies[].policy.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`policies[].policy.localRateLimit.conditional[].response.body`|array|Static response body.|
++|`policies[].policy.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`policies[].policy.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`policies[].policy.localRateLimit[].maxTokens`|integer|Maximum number of tokens that can accumulate in the local bucket.|
+ |`policies[].policy.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`policies[].policy.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
+ |`policies[].policy.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`policies[].policy.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`policies[].policy.localRateLimit[].response.body`|array|Static response body.|
++|`policies[].policy.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`policies[].policy.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`policies[].policy.remoteRateLimit`|object|Remote rate limit checks for incoming requests.|
+ |`policies[].policy.remoteRateLimit.conditional`|[]object|conditional policy entries. An entry without a condition must be the final fallback.|
+ |`policies[].policy.remoteRateLimit.conditional[].service`|object|Service reference. Service must be defined in the top level services list.|
+@@ -32903,10 +32919,18 @@
+ |`routeGroups[].routes[].policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`routeGroups[].routes[].policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
+ |`routeGroups[].routes[].policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`routeGroups[].routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routeGroups[].routes[].policies.localRateLimit.conditional[].response.body`|array|Static response body.|
++|`routeGroups[].routes[].policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`routeGroups[].routes[].policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`routeGroups[].routes[].policies.localRateLimit[].maxTokens`|integer|Maximum number of tokens that can accumulate in the local bucket.|
+ |`routeGroups[].routes[].policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`routeGroups[].routes[].policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
+ |`routeGroups[].routes[].policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`routeGroups[].routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routeGroups[].routes[].policies.localRateLimit[].response.body`|array|Static response body.|
++|`routeGroups[].routes[].policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`routeGroups[].routes[].policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`routeGroups[].routes[].policies.remoteRateLimit`|object|Remote rate limit checks for incoming requests.|
+ |`routeGroups[].routes[].policies.remoteRateLimit.conditional`|[]object|conditional policy entries. An entry without a condition must be the final fallback.|
+ |`routeGroups[].routes[].policies.remoteRateLimit.conditional[].service`|object|Service reference. Service must be defined in the top level services list.|
+@@ -49388,10 +49412,18 @@
+ |`routes[].policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`routes[].policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
+ |`routes[].policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routes[].policies.localRateLimit.conditional[].response.body`|array|Static response body.|
++|`routes[].policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`routes[].policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`routes[].policies.localRateLimit[].maxTokens`|integer|Maximum number of tokens that can accumulate in the local bucket.|
+ |`routes[].policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`routes[].policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
+ |`routes[].policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routes[].policies.localRateLimit[].response.body`|array|Static response body.|
++|`routes[].policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`routes[].policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`routes[].policies.remoteRateLimit`|object|Remote rate limit checks for incoming requests.|
+ |`routes[].policies.remoteRateLimit.conditional`|[]object|conditional policy entries. An entry without a condition must be the final fallback.|
+ |`routes[].policies.remoteRateLimit.conditional[].service`|object|Service reference. Service must be defined in the top level services list.|
+@@ -66693,6 +66725,10 @@
+ |`llm.policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`llm.policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
+ |`llm.policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`llm.policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`llm.policies.localRateLimit[].response.body`|array|Static response body.|
++|`llm.policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`llm.policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`llm.policies.remoteRateLimit`|object|Remote rate limit checks for incoming requests.|
+ |`llm.policies.remoteRateLimit.service`|object|Service reference. Service must be defined in the top level services list.|
+ |`llm.policies.remoteRateLimit.service.name`|string|Name of the target Service, as defined in the top-level `services` list.|
+@@ -69995,10 +70031,18 @@
+ |`mcp.policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`mcp.policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
+ |`mcp.policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`mcp.policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`mcp.policies.localRateLimit.conditional[].response.body`|array|Static response body.|
++|`mcp.policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`mcp.policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`mcp.policies.localRateLimit[].maxTokens`|integer|Maximum number of tokens that can accumulate in the local bucket.|
+ |`mcp.policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
+ |`mcp.policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
+ |`mcp.policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
++|`mcp.policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`mcp.policies.localRateLimit[].response.body`|array|Static response body.|
++|`mcp.policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
++|`mcp.policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
+ |`mcp.policies.remoteRateLimit`|object|Remote rate limit checks for incoming requests.|
+ |`mcp.policies.remoteRateLimit.conditional`|[]object|conditional policy entries. An entry without a condition must be the final fallback.|
+ |`mcp.policies.remoteRateLimit.conditional[].service`|object|Service reference. Service must be defined in the top level services list.|
+-- 
+2.47.0
+

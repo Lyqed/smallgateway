@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# End-to-end proof for Phase 1, milestone 1: gatewayd serving the Baseline
-# from one static config file (demo/gateway.yaml). Produces ../demo.log.
+# End-to-end proof for Phase 1, milestones 1 + 2: gatewayd serving the
+# Baseline from one config file, hot-swapped live. Produces ../demo.log.
 # Harness promoted from spikes/proxy-pingora/scripts/demo.sh (Phase 0).
+#
+# The gateway runs against a MUTABLE COPY of demo/gateway.yaml (in a temp
+# dir) so scenarios 7-9 can rewrite it; --poll-interval 2 arms the file
+# watcher and SIGHUP is the immediate trigger. Every [req]/[attr]/[meter]
+# log line carries cfg=vN — the version that served that request.
 #
 # Scenarios, each with real curl output plus the gateway's own log:
 #   (1) GB-1  missing attribution tag -> the operator's body and status
@@ -16,6 +21,13 @@
 #   (6)       hardening: dot-segment paths (literal and %2e-encoded) are
 #             resolved BEFORE route matching, so a traversal spelling can
 #             never select a weaker attribution contract
+#   (7)       hot swap: SIGHUP mid-stream -> the in-flight stream drains
+#             under cfg=v1 while a concurrent request runs cfg=v2; the
+#             poll watcher then hash-no-ops the same change (doc 03)
+#   (8)       NACK: an invalid config is REJECTED loudly by both triggers;
+#             the old snapshot keeps serving
+#   (9)       no-op: reloading identical content is hash-detected and
+#             debug-logged, no new version
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,20 +39,29 @@ OUT=demo.log
 GW_LOG=$(mktemp)
 FIXTURES=../../spikes/event-model/fixtures
 
+# Milestone 2: the served config is a mutable copy — the repo's demo file
+# stays pristine while scenarios 7-9 swap versions underneath the gateway.
+CFG_DIR=$(mktemp -d)
+CFG="$CFG_DIR/gateway.yaml"
+cp demo/gateway.yaml "$CFG"
+
 cleanup() {
   [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null || true
   [ -n "${GW_PID:-}" ] && kill "$GW_PID" 2>/dev/null || true
+  rm -rf "$CFG_DIR"
 }
 trap cleanup EXIT
 
-"$BIN/gatewayd" --config demo/gateway.yaml --listen "127.0.0.1:$PORT" \
-  >"$GW_LOG" 2>&1 &
+# gatewayd=debug so the no-op reload lines (debug level by design) are
+# visible; everything else stays at info.
+RUST_LOG="info,gatewayd=debug" "$BIN/gatewayd" --config "$CFG" \
+  --listen "127.0.0.1:$PORT" --poll-interval 2 >"$GW_LOG" 2>&1 &
 GW_PID=$!
 sleep 0.6
 
-start_mock() { # $1 = fixture, $2 = provider
+start_mock() { # $1 = fixture, $2 = provider, $3 = delay-ms (default 80)
   "$BIN/mock_upstream" --port "$MOCK_PORT" --fixture "$1" --provider "$2" \
-    --delay-ms 80 2>/dev/null &
+    --delay-ms "${3:-80}" 2>/dev/null &
   MOCK_PID=$!
   sleep 0.3
 }
@@ -87,10 +108,12 @@ print(f"{h}.{p}.{sig}")
 : >"$OUT"
 {
   echo "# Captured $(date -u +%Y-%m-%dT%H:%M:%SZ) by scripts/demo.sh"
-  echo "# gatewayd on 127.0.0.1:$PORT, config demo/gateway.yaml,"
-  echo "# mock upstream on 127.0.0.1:$MOCK_PORT streaming spike fixtures"
-  echo "# (one frame per 80ms) and echoing received x-attr-* headers back"
-  echo "# as x-echo-attr-* response headers."
+  echo "# gatewayd on 127.0.0.1:$PORT, serving a mutable copy of"
+  echo "# demo/gateway.yaml (hot-swapped live in scenarios 7-9; SIGHUP +"
+  echo "# a 2s poll watcher). Mock upstream on 127.0.0.1:$MOCK_PORT streams"
+  echo "# spike fixtures (one frame per 80ms unless noted) and echoes"
+  echo "# received x-attr-* headers back as x-echo-attr-* response headers."
+  echo "# Every [req]/[attr]/[meter] line carries cfg=vN."
   echo
   echo "=== (0) startup: config loaded, validated, routes bound ==="
   gw_since 0
@@ -200,6 +223,81 @@ M=$(mark)
     -H 'content-type: application/json' -d '{}'
   echo
   echo "--- gateway log ---"
+  gw_since "$M"
+} >>"$OUT"
+
+# --- (7) hot swap: the drain overlap made visible -------------------------
+# A slow stream (600ms/frame, ~3.5s total) starts under cfg=v1; mid-stream
+# the config is swapped to v2 (env pin prod -> canary) via SIGHUP. The old
+# stream finishes and METERS under v1; a concurrent request binds v2 and
+# its upstream echo shows env=canary. The poll watcher then notices the
+# same mtime change and hash-no-ops it: two triggers, one reload path.
+start_mock "$FIXTURES/openai.sse" openai 600
+STREAM_A=$(mktemp)
+M=$(mark)
+{
+  echo
+  echo "=== (7) hot swap: SIGHUP mid-stream; v1 stream drains while v2 serves new requests ==="
+  echo "    (demo/gateway.v2.yaml flips the /openai pin env=prod -> env=canary)"
+} >>"$OUT"
+stream_client "http://127.0.0.1:$PORT/openai/v1/chat/completions" \
+  -H 'x-attr-team: ml-research' \
+  -H 'content-type: application/json' -d '{}' >"$STREAM_A" 2>&1 &
+A_PID=$!
+sleep 1.2 # the v1 stream is mid-flight
+cp demo/gateway.v2.yaml "$CFG"
+kill -HUP "$GW_PID"
+sleep 0.5
+{
+  echo "--- concurrent request WHILE the v1 stream is still in flight (binds v2) ---"
+  curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/openai/v1/chat/completions" \
+    -H 'x-attr-team: ml-research' -H 'x-attr-env: shadow-prod' \
+    -H 'content-type: application/json' -d '{}'
+} >>"$OUT"
+wait "$A_PID"
+sleep 2.5 # let the poll watcher observe the mtime change and hash-no-op it
+{
+  echo "--- client A: the stream that started under v1, uninterrupted ---"
+  cat "$STREAM_A"
+  echo "--- gateway log: swap v1->v2, v2 request+meter, then the v1 meter line AFTER them ---"
+  gw_since "$M"
+  echo
+} >>"$OUT"
+rm -f "$STREAM_A"
+stop_mock
+
+# --- (8) NACK: invalid config rejected, old snapshot keeps serving --------
+start_mock "$FIXTURES/openai.sse" openai
+M=$(mark)
+{
+  echo "=== (8) NACK: invalid config -> REJECTED loudly; cfg=v2 keeps serving ==="
+  echo "    (demo/gateway.invalid.yaml: unknown provider ref + placeholder typo)"
+} >>"$OUT"
+cp demo/gateway.invalid.yaml "$CFG"
+kill -HUP "$GW_PID"
+sleep 0.5
+{
+  echo "--- request AFTER the rejected reload: still served, still cfg=v2 ---"
+  curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/openai/v1/chat/completions" \
+    -H 'x-attr-team: ml-research' \
+    -H 'content-type: application/json' -d '{}'
+} >>"$OUT"
+sleep 2.5 # the poll watcher sees the same bad file: one more NACK, same path
+{
+  echo "--- gateway log: precise errors + still-active version, from BOTH triggers ---"
+  gw_since "$M"
+  echo
+} >>"$OUT"
+stop_mock
+
+# --- (9) no-op: identical content is hash-detected ------------------------
+M=$(mark)
+cp demo/gateway.v2.yaml "$CFG" # restore the bytes cfg=v2 was rendered from
+kill -HUP "$GW_PID"
+sleep 0.5
+{
+  echo "=== (9) no-op reload: content identical to the active snapshot ==="
+  echo "--- gateway log: hash check short-circuits at debug level, no new version ---"
   gw_since "$M"
 } >>"$OUT"
 

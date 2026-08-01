@@ -717,6 +717,7 @@ dependencies = [
  "log",
  "pingora",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

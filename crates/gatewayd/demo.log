@@ -1,32 +1,35 @@
-# Captured 2026-08-01T12:25:31Z by scripts/demo.sh
-# gatewayd on 127.0.0.1:6188, config demo/gateway.yaml,
-# mock upstream on 127.0.0.1:6190 streaming spike fixtures
-# (one frame per 80ms) and echoing received x-attr-* headers back
-# as x-echo-attr-* response headers.
+# Captured 2026-08-01T12:46:21Z by scripts/demo.sh
+# gatewayd on 127.0.0.1:6188, serving a mutable copy of
+# demo/gateway.yaml (hot-swapped live in scenarios 7-9; SIGHUP +
+# a 2s poll watcher). Mock upstream on 127.0.0.1:6190 streams
+# spike fixtures (one frame per 80ms unless noted) and echoes
+# received x-attr-* headers back as x-echo-attr-* response headers.
+# Every [req]/[attr]/[meter] line carries cfg=vN.
 
 === (0) startup: config loaded, validated, routes bound ===
-[2026-08-01T12:25:30Z INFO  gatewayd] gatewayd listening on 127.0.0.1:6188 (demo/gateway.yaml config)
-[2026-08-01T12:25:30Z INFO  gatewayd] [route] /openai -> openai-demo (openai) upstream 127.0.0.1:6190 tls=false | required=["team"] pinned=["env"] from_claims=[]
-[2026-08-01T12:25:30Z INFO  gatewayd] [route] /anthropic -> anthropic-demo (anthropic) upstream 127.0.0.1:6190 tls=false | required=["team"] pinned=[] from_claims=[]
-[2026-08-01T12:25:30Z INFO  gatewayd] [route] /bedrock -> bedrock-demo (bedrock) upstream 127.0.0.1:6190 tls=false | required=["team"] pinned=[] from_claims=[]
-[2026-08-01T12:25:30Z INFO  gatewayd] [route] /claims -> openai-demo (openai) upstream 127.0.0.1:6190 tls=false | required=["team", "user"] pinned=[] from_claims=["user"]
-[2026-08-01T12:25:30Z INFO  pingora_core::server::bootstrap_services] Bootstrap starting
-[2026-08-01T12:25:30Z INFO  pingora_core::server::bootstrap_services] Bootstrap done
-[2026-08-01T12:25:30Z INFO  pingora_core::server] Server starting
-[2026-08-01T12:25:30Z INFO  pingora_core::server] Starting services in dependency order: ["Pingora HTTP Proxy Service"]
-[2026-08-01T12:25:30Z INFO  pingora_core::server] Starting service: Pingora HTTP Proxy Service
+[2026-08-01T12:46:20Z INFO  gatewayd] gatewayd listening on 127.0.0.1:6188 (/tmp/tmp.S3mxvilBfS/gateway.yaml config, cfg=v1 hash=4ead58264521)
+[2026-08-01T12:46:20Z INFO  gatewayd] [route] /openai -> openai-demo (openai) upstream 127.0.0.1:6190 tls=false | required=["team"] pinned=["env"] from_claims=[]
+[2026-08-01T12:46:20Z INFO  gatewayd] [route] /anthropic -> anthropic-demo (anthropic) upstream 127.0.0.1:6190 tls=false | required=["team"] pinned=[] from_claims=[]
+[2026-08-01T12:46:20Z INFO  gatewayd] [route] /bedrock -> bedrock-demo (bedrock) upstream 127.0.0.1:6190 tls=false | required=["team"] pinned=[] from_claims=[]
+[2026-08-01T12:46:20Z INFO  gatewayd] [route] /claims -> openai-demo (openai) upstream 127.0.0.1:6190 tls=false | required=["team", "user"] pinned=[] from_claims=["user"]
+[2026-08-01T12:46:20Z INFO  gatewayd] [reload] watching /tmp/tmp.S3mxvilBfS/gateway.yaml every 2s (SIGHUP reloads immediately)
+[2026-08-01T12:46:20Z INFO  pingora_core::server::bootstrap_services] Bootstrap starting
+[2026-08-01T12:46:20Z INFO  pingora_core::server::bootstrap_services] Bootstrap done
+[2026-08-01T12:46:20Z INFO  pingora_core::server] Server starting
+[2026-08-01T12:46:20Z INFO  pingora_core::server] Starting services in dependency order: ["Pingora HTTP Proxy Service"]
+[2026-08-01T12:46:20Z INFO  pingora_core::server] Starting service: Pingora HTTP Proxy Service
 
 === (1) GB-1: no x-attr-team on /openai -> operator's 428, not a bare 4xx ===
 --- curl -is (no attribution headers) ---
 HTTP/1.1 428 Precondition Required
 content-type: application/json
 content-length: 110
-Date: Sat, 01 Aug 2026 12:25:31 GMT
+Date: Sat, 01 Aug 2026 12:46:21 GMT
 Connection: close
 
 {"error":"attribution_required","missing":"team","route":"/openai","hint":"send x-attr-<key> request headers"}
 --- gateway log ---
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai (rejecting: missing_attribution: team)
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai (rejecting: missing_attribution: team) cfg=v1
 
 === (2) GB-3: caller sends x-attr-env: shadow-prod, but env is pinned to prod ===
     (x-echo-attr-* headers show what the UPSTREAM actually received)
@@ -37,100 +40,100 @@ Transfer-Encoding: chunked
 Connection: keep-alive
 x-echo-attr-env: prod
 x-echo-attr-team: ml-research
-Date: Sat, 01 Aug 2026 12:25:31 GMT
+Date: Sat, 01 Aug 2026 12:46:21 GMT
 
 --- gateway log ---
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai)
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [attr /openai] env=prod(assigned),team=ml-research(caller)
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
-[2026-08-01T12:25:31Z INFO  gatewayd::proxy] [meter /openai] provider=openai-demo(openai) attribution{env=prod(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai) cfg=v1
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [attr /openai] env=prod(assigned),team=ml-research(caller) cfg=v1
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:21Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [meter /openai] cfg=v1 provider=openai-demo(openai) attribution{env=prod(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
 
 === (3) happy path [openai]: tagged request streams through, 1:1 chunk cadence ===
 --- client: timestamped incremental reads through the gateway ---
 [client + 0.000s] read 1:  183B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
-[client + 0.073s] read 2:  175B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.074s] read 2:  175B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
 [client + 0.154s] read 3:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
-[client + 0.235s] read 4:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.234s] read 4:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
 [client + 0.314s] read 5:  154B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
 [client + 0.394s] read 6:  165B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
-[client + 0.475s] read 7:   14B  b'data: [DONE]\n\n'
+[client + 0.474s] read 7:   14B  b'data: [DONE]\n\n'
 [client] total=1047B in 7 reads (incremental: arrival spread over 0.55s)
 --- gateway log: canonical events + the attribution->spend join line ---
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai)
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [attr /openai] env=prod(assigned),team=ml-research(caller)
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
-[2026-08-01T12:25:32Z INFO  gatewayd::proxy] [meter /openai] provider=openai-demo(openai) attribution{env=prod(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai) cfg=v1
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [attr /openai] env=prod(assigned),team=ml-research(caller) cfg=v1
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T12:46:22Z INFO  gatewayd::proxy] [meter /openai] cfg=v1 provider=openai-demo(openai) attribution{env=prod(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
 
 === (3) happy path [anthropic]: tagged request streams through, 1:1 chunk cadence ===
 --- client: timestamped incremental reads through the gateway ---
 [client + 0.000s] read 1:  204B  b'event: message_start\ndata: {"type":"message_start","messag'
-[client + 0.073s] read 2:   35B  b'event: ping\ndata: {"type":"ping"}\n\n'
-[client + 0.154s] read 3:  117B  b'event: content_block_start\ndata: {"type":"content_block_st'
-[client + 0.234s] read 4:  126B  b'event: content_block_delta\ndata: {"type":"content_block_de'
-[client + 0.314s] read 5:  129B  b'event: content_block_delta\ndata: {"type":"content_block_de'
-[client + 0.394s] read 6:  129B  b'event: content_block_delta\ndata: {"type":"content_block_de'
-[client + 0.474s] read 7:   73B  b'event: content_block_stop\ndata: {"type":"content_block_sto'
+[client + 0.075s] read 2:   35B  b'event: ping\ndata: {"type":"ping"}\n\n'
+[client + 0.155s] read 3:  117B  b'event: content_block_start\ndata: {"type":"content_block_st'
+[client + 0.235s] read 4:  126B  b'event: content_block_delta\ndata: {"type":"content_block_de'
+[client + 0.315s] read 5:  129B  b'event: content_block_delta\ndata: {"type":"content_block_de'
+[client + 0.395s] read 6:  129B  b'event: content_block_delta\ndata: {"type":"content_block_de'
+[client + 0.475s] read 7:   73B  b'event: content_block_stop\ndata: {"type":"content_block_sto'
 [client + 0.555s] read 8:  137B  b'event: message_delta\ndata: {"type":"message_delta","delta"'
-[client + 0.635s] read 9:   51B  b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+[client + 0.636s] read 9:   51B  b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
 [client] total=1001B in 9 reads (incremental: arrival spread over 0.72s)
 --- gateway log: canonical events + the attribution->spend join line ---
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [req] POST /anthropic/v1/messages -> route=/anthropic provider=anthropic-demo(anthropic)
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [attr /anthropic] team=ml-research(caller)
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [tap anthropic] MessageStart { message_id: Some("msg_spike1"), model: Some("claude-sonnet-5") }
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(1) }
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [tap anthropic] ContentDelta { index: 0, text: "The Gateway" }
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [tap anthropic] ContentDelta { index: 0, text: " Project keeps" }
-[2026-08-01T12:25:33Z INFO  gatewayd::proxy] [tap anthropic] ContentDelta { index: 0, text: " truth in Git." }
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [tap anthropic] MessageEnd { stop_reason: Some("end_turn") }
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [meter /anthropic] provider=anthropic-demo(anthropic) attribution{team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=2 MessageEnd=1} chunks=9 bytes=1001 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [req] POST /anthropic/v1/messages -> route=/anthropic provider=anthropic-demo(anthropic) cfg=v1
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [attr /anthropic] team=ml-research(caller) cfg=v1
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [tap anthropic] MessageStart { message_id: Some("msg_spike1"), model: Some("claude-sonnet-5") }
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(1) }
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [tap anthropic] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [tap anthropic] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:23Z INFO  gatewayd::proxy] [tap anthropic] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:24Z INFO  gatewayd::proxy] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:24Z INFO  gatewayd::proxy] [tap anthropic] MessageEnd { stop_reason: Some("end_turn") }
+[2026-08-01T12:46:24Z INFO  gatewayd::proxy] [meter /anthropic] cfg=v1 provider=anthropic-demo(anthropic) attribution{team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=2 MessageEnd=1} chunks=9 bytes=1001 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
 
 === (3) happy path [bedrock]: tagged request streams through, 1:1 chunk cadence ===
 --- client: timestamped incremental reads through the gateway ---
 [client + 0.000s] read 1:   96B  b'\x00\x00\x00v\x00\x00\x00R\x96\xd5\xfa\xde\r:message-type\x07\x00\x05event\x0b:event-type\x07\x00\x0cmessageSt'
 [client + 0.073s] read 2:   96B  b'role":"assistant"}\x1c\xc6\xbe\x18\x00\x00\x00\x9d\x00\x00\x00W\xb9\xbb\xf8\x9f\r:message-type\x07\x00\x05event\x0b:'
-[client + 0.154s] read 3:   96B  b't-type\x07\x00\x10application/json{"contentBlockIndex":0,"delta":{"'
-[client + 0.234s] read 4:   96B  b':message-type\x07\x00\x05event\x0b:event-type\x07\x00\x11contentBlockDelta\r:con'
-[client + 0.314s] read 5:   96B  b'lockIndex":0,"delta":{"text":" Project keeps"}}\xc5\x96\x11K\x00\x00\x00\xa0\x00\x00\x00'
-[client + 0.394s] read 6:   96B  b'e\x07\x00\x11contentBlockDelta\r:content-type\x07\x00\x10application/json{"co'
-[client + 0.475s] read 7:   96B  b'ruth in Git."}}~\t\x81+\x00\x00\x00}\x00\x00\x00V\xe6h\x0f\xd6\r:message-type\x07\x00\x05event\x0b:eve'
-[client + 0.554s] read 8:   96B  b'pe\x07\x00\x10application/json{"contentBlockIndex":0}X~\xaa\xc2\x00\x00\x00z\x00\x00\x00Q\xca,'
-[client + 0.634s] read 9:   96B  b'\x0bmessageStop\r:content-type\x07\x00\x10application/json{"stopReason"'
+[client + 0.153s] read 3:   96B  b't-type\x07\x00\x10application/json{"contentBlockIndex":0,"delta":{"'
+[client + 0.233s] read 4:   96B  b':message-type\x07\x00\x05event\x0b:event-type\x07\x00\x11contentBlockDelta\r:con'
+[client + 0.313s] read 5:   96B  b'lockIndex":0,"delta":{"text":" Project keeps"}}\xc5\x96\x11K\x00\x00\x00\xa0\x00\x00\x00'
+[client + 0.393s] read 6:   96B  b'e\x07\x00\x11contentBlockDelta\r:content-type\x07\x00\x10application/json{"co'
+[client + 0.473s] read 7:   96B  b'ruth in Git."}}~\t\x81+\x00\x00\x00}\x00\x00\x00V\xe6h\x0f\xd6\r:message-type\x07\x00\x05event\x0b:eve'
+[client + 0.553s] read 8:   96B  b'pe\x07\x00\x10application/json{"contentBlockIndex":0}X~\xaa\xc2\x00\x00\x00z\x00\x00\x00Q\xca,'
+[client + 0.633s] read 9:   96B  b'\x0bmessageStop\r:content-type\x07\x00\x10application/json{"stopReason"'
 [client + 0.714s] read 10:   96B  b'type\x07\x00\x05event\x0b:event-type\x07\x00\x08metadata\r:content-type\x07\x00\x10applic'
-[client + 0.795s] read 11:   66B  b',"usage":{"inputTokens":14,"outputTokens":9,"totalTokens":'
-[client] total=1026B in 11 reads (incremental: arrival spread over 0.88s)
+[client + 0.794s] read 11:   66B  b',"usage":{"inputTokens":14,"outputTokens":9,"totalTokens":'
+[client] total=1026B in 11 reads (incremental: arrival spread over 0.87s)
 --- gateway log: canonical events + the attribution->spend join line ---
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [req] POST /bedrock/model/anthropic.claude/converse-stream -> route=/bedrock provider=bedrock-demo(bedrock)
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [attr /bedrock] team=ml-research(caller)
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [tap bedrock] MessageStart { message_id: None, model: None }
-[2026-08-01T12:25:34Z INFO  gatewayd::proxy] [tap bedrock] ContentDelta { index: 0, text: "The Gateway" }
-[2026-08-01T12:25:35Z INFO  gatewayd::proxy] [tap bedrock] ContentDelta { index: 0, text: " Project keeps" }
-[2026-08-01T12:25:35Z INFO  gatewayd::proxy] [tap bedrock] ContentDelta { index: 0, text: " truth in Git." }
-[2026-08-01T12:25:35Z INFO  gatewayd::proxy] [tap bedrock] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
-[2026-08-01T12:25:35Z INFO  gatewayd::proxy] [tap bedrock] MessageEnd { stop_reason: Some("end_turn") }
-[2026-08-01T12:25:35Z INFO  gatewayd::proxy] [meter /bedrock] provider=bedrock-demo(bedrock) attribution{team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=11 bytes=1026 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:24Z INFO  gatewayd::proxy] [req] POST /bedrock/model/anthropic.claude/converse-stream -> route=/bedrock provider=bedrock-demo(bedrock) cfg=v1
+[2026-08-01T12:46:24Z INFO  gatewayd::proxy] [attr /bedrock] team=ml-research(caller) cfg=v1
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [tap bedrock] MessageStart { message_id: None, model: None }
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [tap bedrock] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [tap bedrock] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [tap bedrock] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [tap bedrock] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [tap bedrock] MessageEnd { stop_reason: Some("end_turn") }
+[2026-08-01T12:46:25Z INFO  gatewayd::proxy] [meter /bedrock] cfg=v1 provider=bedrock-demo(bedrock) attribution{team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=11 bytes=1026 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
 
 === (4) GB-4: unmatched path -> operator's unknown_route template ===
 --- curl -is ---
 HTTP/1.1 404 Not Found
 content-type: application/json
 content-length: 115
-Date: Sat, 01 Aug 2026 12:25:35 GMT
+Date: Sat, 01 Aug 2026 12:46:26 GMT
 Connection: keep-alive
 
 {"error":"unknown_route","path":"/v2/definitely-not-a-route","hint":"no configured route prefix matches this path"}
 --- gateway log ---
-[2026-08-01T12:25:35Z INFO  gatewayd::proxy] [req] GET /v2/definitely-not-a-route -> no route (rejecting: unknown_route)
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [req] GET /v2/definitely-not-a-route -> no route (rejecting: unknown_route) cfg=v1
 
 === (5) GB-2: /claims maps user from the JWT sub claim ===
 --- (5a) verified token -> user=alice(proven); forged x-attr-user ignored ---
@@ -140,27 +143,27 @@ Transfer-Encoding: chunked
 Connection: keep-alive
 x-echo-attr-team: ml-research
 x-echo-attr-user: alice
-Date: Sat, 01 Aug 2026 12:25:36 GMT
+Date: Sat, 01 Aug 2026 12:46:26 GMT
 
 --- (5b) no token, forged x-attr-user only -> rejected, never believed ---
 HTTP/1.1 428 Precondition Required
 content-type: application/json
 content-length: 110
-Date: Sat, 01 Aug 2026 12:25:38 GMT
+Date: Sat, 01 Aug 2026 12:46:28 GMT
 Connection: close
 
 {"error":"attribution_required","missing":"user","route":"/claims","hint":"send x-attr-<key> request headers"}
 --- gateway log ---
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims provider=openai-demo(openai)
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [attr /claims] team=ml-research(caller),user=alice(proven)
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
-[2026-08-01T12:25:36Z INFO  gatewayd::proxy] [meter /claims] provider=openai-demo(openai) attribution{team=ml-research(caller),user=alice(proven)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
-[2026-08-01T12:25:38Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user)
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims provider=openai-demo(openai) cfg=v1
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [attr /claims] team=ml-research(caller),user=alice(proven) cfg=v1
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:26Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T12:46:27Z INFO  gatewayd::proxy] [meter /claims] cfg=v1 provider=openai-demo(openai) attribution{team=ml-research(caller),user=alice(proven)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user) cfg=v1
 
 === (6) hardening: /openai/../claims resolves to /claims BEFORE route matching ===
     (the traversal spelling lands on the STRONGER contract: user must be proven)
@@ -168,7 +171,7 @@ Connection: close
 HTTP/1.1 428 Precondition Required
 content-type: application/json
 content-length: 110
-Date: Sat, 01 Aug 2026 12:25:38 GMT
+Date: Sat, 01 Aug 2026 12:46:28 GMT
 Connection: close
 
 {"error":"attribution_required","missing":"user","route":"/claims","hint":"send x-attr-<key> request headers"}
@@ -176,12 +179,90 @@ Connection: close
 HTTP/1.1 428 Precondition Required
 content-type: application/json
 content-length: 110
-Date: Sat, 01 Aug 2026 12:25:38 GMT
+Date: Sat, 01 Aug 2026 12:46:28 GMT
 Connection: close
 
 {"error":"attribution_required","missing":"user","route":"/claims","hint":"send x-attr-<key> request headers"}
 --- gateway log ---
-[2026-08-01T12:25:38Z INFO  gatewayd::proxy] [req] path normalized: /openai/../claims/v1/chat/completions -> /claims/v1/chat/completions
-[2026-08-01T12:25:38Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user)
-[2026-08-01T12:25:38Z INFO  gatewayd::proxy] [req] path normalized: /openai/%2e%2e/claims/v1/chat/completions -> /claims/v1/chat/completions
-[2026-08-01T12:25:38Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user)
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [req] path normalized: /openai/../claims/v1/chat/completions -> /claims/v1/chat/completions cfg=v1
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user) cfg=v1
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [req] path normalized: /openai/%2e%2e/claims/v1/chat/completions -> /claims/v1/chat/completions cfg=v1
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user) cfg=v1
+
+=== (7) hot swap: SIGHUP mid-stream; v1 stream drains while v2 serves new requests ===
+    (demo/gateway.v2.yaml flips the /openai pin env=prod -> env=canary)
+--- concurrent request WHILE the v1 stream is still in flight (binds v2) ---
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Connection: keep-alive
+x-echo-attr-env: canary
+x-echo-attr-team: ml-research
+Date: Sat, 01 Aug 2026 12:46:30 GMT
+
+--- client A: the stream that started under v1, uninterrupted ---
+[client + 0.000s] read 1:  183B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.593s] read 2:  175B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 1.193s] read 3:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 1.793s] read 4:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 2.393s] read 5:  154B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 2.994s] read 6:  165B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 3.594s] read 7:   14B  b'data: [DONE]\n\n'
+[client] total=1047B in 7 reads (incremental: arrival spread over 4.19s)
+--- gateway log: swap v1->v2, v2 request+meter, then the v1 meter line AFTER them ---
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai) cfg=v1
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [attr /openai] env=prod(assigned),team=ml-research(caller) cfg=v1
+[2026-08-01T12:46:28Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T12:46:29Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:29Z INFO  gatewayd::reload] [reload] swapped cfg=v1 -> v2 hash=1aa8e108bbb8 at_unix=1785588389 trigger=sighup; in-flight streams drain on v1
+[2026-08-01T12:46:29Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:30Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai) cfg=v2
+[2026-08-01T12:46:30Z INFO  gatewayd::proxy] [attr /openai] env=canary(assigned),team=ml-research(caller) cfg=v2
+[2026-08-01T12:46:30Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T12:46:30Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:30Z DEBUG gatewayd::reload] [reload] no-op (trigger=poll): content hash 1aa8e108bbb8 unchanged; still cfg=v2
+[2026-08-01T12:46:30Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:31Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:31Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:32Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:32Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T12:46:32Z INFO  gatewayd::proxy] [meter /openai] cfg=v1 provider=openai-demo(openai) attribution{env=prod(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:33Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:33Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T12:46:34Z INFO  gatewayd::proxy] [meter /openai] cfg=v2 provider=openai-demo(openai) attribution{env=canary(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+
+=== (8) NACK: invalid config -> REJECTED loudly; cfg=v2 keeps serving ===
+    (demo/gateway.invalid.yaml: unknown provider ref + placeholder typo)
+--- request AFTER the rejected reload: still served, still cfg=v2 ---
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Connection: keep-alive
+x-echo-attr-env: canary
+x-echo-attr-team: ml-research
+Date: Sat, 01 Aug 2026 12:46:37 GMT
+
+--- gateway log: precise errors + still-active version, from BOTH triggers ---
+[2026-08-01T12:46:37Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=sighup): new config invalid; still serving cfg=v2 hash=1aa8e108bbb8
+    invalid config:
+      - route "/openai": unknown provider "openai-typo" (defined providers: openai-demo)
+      - rejections.missing_attribution.body: unknown placeholder {{keys}} (allowed: {{key}}, {{route}})
+    
+[2026-08-01T12:46:37Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai provider=openai-demo(openai) cfg=v2
+[2026-08-01T12:46:37Z INFO  gatewayd::proxy] [attr /openai] env=canary(assigned),team=ml-research(caller) cfg=v2
+[2026-08-01T12:46:37Z INFO  gatewayd::proxy] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T12:46:37Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T12:46:37Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T12:46:37Z INFO  gatewayd::proxy] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T12:46:38Z INFO  gatewayd::proxy] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T12:46:38Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T12:46:38Z INFO  gatewayd::proxy] [meter /openai] cfg=v2 provider=openai-demo(openai) attribution{env=canary(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
+[2026-08-01T12:46:38Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=poll): new config invalid; still serving cfg=v2 hash=1aa8e108bbb8
+    invalid config:
+      - route "/openai": unknown provider "openai-typo" (defined providers: openai-demo)
+      - rejections.missing_attribution.body: unknown placeholder {{keys}} (allowed: {{key}}, {{route}})
+    
+
+=== (9) no-op reload: content identical to the active snapshot ===
+--- gateway log: hash check short-circuits at debug level, no new version ---
+[2026-08-01T12:46:40Z DEBUG gatewayd::reload] [reload] no-op (trigger=sighup): content hash 1aa8e108bbb8 unchanged; still cfg=v2

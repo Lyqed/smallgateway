@@ -1,0 +1,965 @@
+From 1eef91e9d1710660f9e445f5d5d71bcd87b0e5b1 Mon Sep 17 00:00:00 2001
+From: Lyqed <antondoeswonders@gmail.com>
+Date: Sat, 1 Aug 2026 16:04:34 +0300
+Subject: [PATCH] vertex: support operator-configured billing labels for native
+ Gemini requests
+
+The native Vertex generateContent path (#2023) passes billing labels
+through from the client only. This adds an operator-set `labels` field
+to the Vertex provider config, following the CEL-valued AWS session tag
+pattern from the Bedrock backend auth: each label is either a static
+`value` or a CEL `expression` evaluated against the request.
+
+Operator labels are merged into the outbound generateContent request
+over any client-sent labels, with the operator's value winning on key
+conflicts so callers cannot override the gateway's cost attribution.
+Label keys and static values are validated against Google Cloud's label
+requirements at config load; expressions that fail to produce a valid
+value at request time reject the request (fail closed).
+---
+ crates/agentgateway/src/http/auth/aws.rs      |   2 +-
+ crates/agentgateway/src/llm/mod.rs            | 253 +++++++++++++++++-
+ crates/agentgateway/src/llm/tests.rs          | 170 +++++++++++-
+ crates/agentgateway/src/store/binds.rs        |   7 +
+ crates/agentgateway/src/types/agent_xds.rs    |   2 +-
+ crates/agentgateway/src/types/local.rs        |   2 +-
+ .../local_tests/llm_simple_normalized.snap    |   2 +-
+ crates/llm/src/conversion/vertex_gemini.rs    |  25 +-
+ .../llm/src/conversion/vertex_gemini_tests.rs |  77 +++++-
+ crates/llm/src/golden_tests.rs                |   2 +-
+ crates/llm/src/lib.rs                         |   2 +
+ schema/config.json                            |  40 ++-
+ schema/config.md                              |  32 +++
+ 13 files changed, 599 insertions(+), 17 deletions(-)
+
+diff --git a/crates/agentgateway/src/http/auth/aws.rs b/crates/agentgateway/src/http/auth/aws.rs
+index caf958d6..e873b32e 100644
+--- a/crates/agentgateway/src/http/auth/aws.rs
++++ b/crates/agentgateway/src/http/auth/aws.rs
+@@ -455,7 +455,7 @@ fn validate_session_tag_value(key: &str, value: &str) -> anyhow::Result<()> {
+ /// numbers, and booleans (common JWT claim types) stringify via
+ /// [`cel::Value::as_string`]; anything else (null, lists, maps) is an error so
+ /// misattribution fails closed.
+-fn cel_value_to_string(v: cel::Value) -> anyhow::Result<String> {
++pub(crate) fn cel_value_to_string(v: cel::Value) -> anyhow::Result<String> {
+ 	// Materialize Dynamic so nested lookups (e.g. JWT claims) are concrete values.
+ 	v.always_materialize_owned()
+ 		.as_string()
+diff --git a/crates/agentgateway/src/llm/mod.rs b/crates/agentgateway/src/llm/mod.rs
+index c3b79762..a03d0b2f 100644
+--- a/crates/agentgateway/src/llm/mod.rs
++++ b/crates/agentgateway/src/llm/mod.rs
+@@ -1,5 +1,6 @@
++use std::collections::HashSet;
+ use std::str::FromStr;
+-use std::sync::Arc;
++use std::sync::{Arc, LazyLock};
+ 
+ use ::http::request::Parts;
+ use ::http::uri::{Authority, PathAndQuery};
+@@ -114,7 +115,7 @@ pub struct NamedAIProvider {
+ pub enum AIProvider {
+ 	OpenAI(openai::Provider),
+ 	Gemini(gemini::Provider),
+-	Vertex(vertex::Provider),
++	Vertex(VertexProvider),
+ 	Anthropic(anthropic::Provider),
+ 	Bedrock(BedrockProvider),
+ 	Azure(AzureProvider),
+@@ -211,6 +212,238 @@ impl std::ops::DerefMut for AzureProvider {
+ 	}
+ }
+ 
++#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
++#[cfg_attr(feature = "schema", schemars(rename = "VertexProvider"))]
++pub struct VertexProvider {
++	#[serde(flatten)]
++	pub provider: vertex::Provider,
++	/// Billing labels attached to native Gemini `generateContent` requests for cost
++	/// attribution. Labels sent by the client are preserved unless a key conflicts,
++	/// in which case the operator-configured value wins. A label value is either
++	/// static (`value`) or a CEL expression evaluated against each request
++	/// (`expression`).
++	#[serde(
++		default,
++		skip_serializing_if = "VertexLabels::is_empty",
++		deserialize_with = "de_vertex_labels",
++		serialize_with = "ser_vertex_labels"
++	)]
++	#[cfg_attr(feature = "schema", schemars(with = "Vec<VertexLabel>"))]
++	pub labels: VertexLabels,
++}
++
++impl VertexProvider {
++	pub fn new(provider: vertex::Provider) -> Self {
++		Self {
++			provider,
++			labels: Default::default(),
++		}
++	}
++
++	pub fn cel_expressions(&self) -> impl Iterator<Item = &cel::Expression> {
++		self.labels.expressions()
++	}
++
++	/// Resolves the operator-configured labels against the request. Returns `None`
++	/// when no labels are configured.
++	pub fn resolve_labels(
++		&self,
++		req: Option<&RequestSnapshot>,
++	) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
++		if self.labels.is_empty() {
++			return Ok(None);
++		}
++		let exec = Executor::new_request_snapshot(req);
++		self.labels.resolve(&exec).map(Some)
++	}
++}
++
++impl std::ops::Deref for VertexProvider {
++	type Target = vertex::Provider;
++
++	fn deref(&self) -> &Self::Target {
++		&self.provider
++	}
++}
++
++impl std::ops::DerefMut for VertexProvider {
++	fn deref_mut(&mut self) -> &mut Self::Target {
++		&mut self.provider
++	}
++}
++
++/// A billing label attached to native Vertex Gemini `generateContent` requests for
++/// cost attribution. Exactly one of `value` and `expression` must be set.
++#[apply(schema!)]
++pub struct VertexLabel {
++	/// Label key.
++	pub key: String,
++	/// Static label value.
++	#[serde(default, skip_serializing_if = "Option::is_none")]
++	pub value: Option<String>,
++	/// CEL expression evaluated against each request to produce the label value, for
++	/// example `jwt.sub` or `request.headers["x-team"]`. If the expression does not
++	/// produce a valid label value at request time, the request is rejected.
++	#[serde(default, skip_serializing_if = "Option::is_none")]
++	pub expression: Option<Arc<cel::Expression>>,
++}
++
++// Cloud label limits: https://cloud.google.com/resource-manager/docs/labels-overview#requirements
++const MAX_VERTEX_LABELS: usize = 64;
++const MAX_VERTEX_LABEL_KEY_LEN: usize = 63;
++const MAX_VERTEX_LABEL_VALUE_LEN: usize = 63;
++
++/// The characters Google Cloud accepts in label keys: lowercase letters, numbers,
++/// underscores, and dashes; the first character must be a lowercase letter.
++static VERTEX_LABEL_KEY_CHARSET: LazyLock<regex::Regex> = LazyLock::new(|| {
++	regex::Regex::new(r"^[\p{Ll}\p{Lo}][\p{Ll}\p{Lo}\p{N}_-]*$").expect("static regex compiles")
++});
++
++/// The characters Google Cloud accepts in label values.
++static VERTEX_LABEL_VALUE_CHARSET: LazyLock<regex::Regex> =
++	LazyLock::new(|| regex::Regex::new(r"^[\p{Ll}\p{Lo}\p{N}_-]*$").expect("static regex compiles"));
++
++fn validate_vertex_label_key(key: &str) -> anyhow::Result<()> {
++	let len = key.chars().count();
++	if !(1..=MAX_VERTEX_LABEL_KEY_LEN).contains(&len) {
++		anyhow::bail!("label key must be 1-{MAX_VERTEX_LABEL_KEY_LEN} characters, got {len}");
++	}
++	if !VERTEX_LABEL_KEY_CHARSET.is_match(key) {
++		anyhow::bail!("label key {key:?} contains characters Google Cloud does not accept");
++	}
++	Ok(())
++}
++
++fn validate_vertex_label_value(key: &str, value: &str) -> anyhow::Result<()> {
++	let len = value.chars().count();
++	if len > MAX_VERTEX_LABEL_VALUE_LEN {
++		anyhow::bail!(
++			"label {key:?} value must be at most {MAX_VERTEX_LABEL_VALUE_LEN} characters, got {len}"
++		);
++	}
++	if !VERTEX_LABEL_VALUE_CHARSET.is_match(value) {
++		anyhow::bail!("label {key:?} value {value:?} contains characters Google Cloud does not accept");
++	}
++	Ok(())
++}
++
++/// Operator-configured Vertex billing labels in their runtime form: static values
++/// pre-resolved, dynamic (CEL) values compiled and evaluated per request.
++#[derive(Debug, Clone, Default)]
++pub struct VertexLabels {
++	// (key, value) pairs, sorted by key.
++	static_labels: Arc<[(String, String)]>,
++	// (key, expression) pairs, sorted by key.
++	dynamic_labels: Arc<[(String, Arc<cel::Expression>)]>,
++}
++
++impl VertexLabels {
++	/// Validates and splits configured labels into static and dynamic sets. All
++	/// constraints that can be checked without a request are checked here, so config
++	/// errors surface at load time rather than per request.
++	pub fn try_new(labels: Vec<VertexLabel>) -> anyhow::Result<Self> {
++		if labels.len() > MAX_VERTEX_LABELS {
++			anyhow::bail!(
++				"at most {MAX_VERTEX_LABELS} labels are allowed, got {}",
++				labels.len()
++			);
++		}
++		let mut keys = HashSet::with_capacity(labels.len());
++		let mut static_labels = Vec::new();
++		let mut dynamic_labels = Vec::new();
++		for label in labels {
++			validate_vertex_label_key(&label.key)?;
++			if !keys.insert(label.key.clone()) {
++				anyhow::bail!("duplicate label key {:?}", label.key);
++			}
++			match (label.value, label.expression) {
++				(Some(value), None) => {
++					validate_vertex_label_value(&label.key, &value)?;
++					static_labels.push((label.key, value));
++				},
++				(None, Some(expression)) => dynamic_labels.push((label.key, expression)),
++				_ => anyhow::bail!(
++					"label {:?} must set exactly one of 'value' or 'expression'",
++					label.key
++				),
++			}
++		}
++		static_labels.sort();
++		dynamic_labels.sort_by(|(a, _), (b, _)| a.cmp(b));
++		Ok(Self {
++			static_labels: static_labels.into(),
++			dynamic_labels: dynamic_labels.into(),
++		})
++	}
++
++	pub fn is_empty(&self) -> bool {
++		self.static_labels.is_empty() && self.dynamic_labels.is_empty()
++	}
++
++	pub fn expressions(&self) -> impl Iterator<Item = &cel::Expression> {
++		self.dynamic_labels.iter().map(|(_, e)| e.as_ref())
++	}
++
++	/// Evaluates dynamic labels against the request and merges them with the static
++	/// labels. Fails closed: an expression that cannot produce a valid label value
++	/// is an error.
++	fn resolve(&self, exec: &Executor) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
++		let mut resolved = serde_json::Map::new();
++		for (key, value) in self.static_labels.iter() {
++			resolved.insert(key.clone(), serde_json::Value::String(value.clone()));
++		}
++		for (key, expr) in self.dynamic_labels.iter() {
++			let value = exec
++				.eval(expr)
++				.map_err(anyhow::Error::from)
++				.and_then(crate::http::auth::aws::cel_value_to_string)
++				.and_then(|value| {
++					validate_vertex_label_value(key, &value)?;
++					Ok(value)
++				})
++				.map_err(|e| {
++					anyhow::anyhow!(
++						"label {:?} (expression {:?}): {e}",
++						key,
++						expr.original_expression
++					)
++				})?;
++			resolved.insert(key.clone(), serde_json::Value::String(value));
++		}
++		Ok(resolved)
++	}
++}
++
++fn de_vertex_labels<'de, D>(deserializer: D) -> Result<VertexLabels, D::Error>
++where
++	D: serde::Deserializer<'de>,
++{
++	let labels = Vec::<VertexLabel>::deserialize(deserializer)?;
++	VertexLabels::try_new(labels).map_err(serde::de::Error::custom)
++}
++
++fn ser_vertex_labels<S>(labels: &VertexLabels, serializer: S) -> Result<S::Ok, S::Error>
++where
++	S: serde::Serializer,
++{
++	let static_entries = labels.static_labels.iter().map(|(key, value)| VertexLabel {
++		key: key.clone(),
++		value: Some(value.clone()),
++		expression: None,
++	});
++	let dynamic_entries = labels
++		.dynamic_labels
++		.iter()
++		.map(|(key, expression)| VertexLabel {
++			key: key.clone(),
++			value: None,
++			expression: Some(expression.clone()),
++		});
++	serializer.collect_seq(static_entries.chain(dynamic_entries))
++}
++
+ impl AIProvider {
+ 	pub fn bedrock(provider: bedrock::Provider) -> Self {
+ 		Self::Bedrock(BedrockProvider::new(provider))
+@@ -219,6 +452,10 @@ impl AIProvider {
+ 	pub fn azure(provider: azure::Provider) -> Self {
+ 		Self::Azure(AzureProvider::new(provider))
+ 	}
++
++	pub fn vertex(provider: vertex::Provider) -> Self {
++		Self::Vertex(VertexProvider::new(provider))
++	}
+ }
+ 
+ /// Classify how the upstream reports cached tokens, from the source wire format the
+@@ -275,6 +512,7 @@ struct ChatRequestContext<'a> {
+ 	provider: &'a AIProvider,
+ 	headers: &'a HeaderMap,
+ 	prompt_caching: Option<&'a policy::PromptCachingConfig>,
++	request_snapshot: Option<&'a RequestSnapshot>,
+ }
+ 
+ // Context provider to each response translation
+@@ -367,7 +605,14 @@ fn render_vertex_gemini(
+ 	};
+ 	match req {
+ 		types::ChatRequest::Completions(req) => {
+-			conversion::vertex_gemini::from_completions::translate(req, provider.model.as_deref())
++			let labels = provider
++				.resolve_labels(ctx.request_snapshot)
++				.map_err(|e| AIError::LabelResolution(strng::new(e.to_string())))?;
++			conversion::vertex_gemini::from_completions::translate(
++				req,
++				provider.model.as_deref(),
++				labels.as_ref(),
++			)
+ 		},
+ 		_ => Err(AIError::UnsupportedConversion(strng::literal!(
+ 			"vertex gemini only supports completions input"
+@@ -1768,12 +2013,14 @@ impl AIProvider {
+ 			},
+ 		};
+ 
++		let request_snapshot = log.as_ref().and_then(|l| l.request_snapshot.clone());
+ 		let rendered = chat_translation.render_request(
+ 			chat_request(&req),
+ 			&ChatRequestContext {
+ 				provider: self,
+ 				headers: &parts.headers,
+ 				prompt_caching: policies.and_then(|p| p.prompt_caching.as_ref()),
++				request_snapshot: request_snapshot.as_deref(),
+ 			},
+ 		)?;
+ 		llm_info.provider_state = rendered.provider_state;
+diff --git a/crates/agentgateway/src/llm/tests.rs b/crates/agentgateway/src/llm/tests.rs
+index eaac01d2..e0d3be83 100644
+--- a/crates/agentgateway/src/llm/tests.rs
++++ b/crates/agentgateway/src/llm/tests.rs
+@@ -24,7 +24,7 @@ fn llm_request_with_tokens(input_tokens: Option<u64>) -> LLMRequest {
+ 
+ #[test]
+ fn vertex_gemini_uses_native_completions_and_compat_fallbacks() {
+-	let provider = AIProvider::Vertex(vertex::Provider {
++	let provider = AIProvider::vertex(vertex::Provider {
+ 		project_id: strng::new("test-project"),
+ 		model: None,
+ 		region: None,
+@@ -367,7 +367,7 @@ async fn count_tokens_uses_native_endpoint_after_model_alias() {
+ 	use crate::test_helpers::proxymock::setup_proxy_test;
+ 	use crate::types::agent::BackendTarget;
+ 
+-	let provider = AIProvider::Vertex(vertex::Provider {
++	let provider = AIProvider::vertex(vertex::Provider {
+ 		model: None,
+ 		region: None,
+ 		project_id: strng::new("test-project"),
+@@ -425,7 +425,7 @@ async fn vertex_anthropic_messages_prepares_vertex_body() {
+ 	use crate::test_helpers::proxymock::setup_proxy_test;
+ 	use crate::types::agent::BackendTarget;
+ 
+-	let provider = AIProvider::Vertex(vertex::Provider {
++	let provider = AIProvider::vertex(vertex::Provider {
+ 		model: None,
+ 		region: Some(strng::new("us-central1")),
+ 		project_id: strng::new("test-project"),
+@@ -1287,7 +1287,7 @@ fn setup_request_gemini_applies_path_prefix_with_host_override() {
+ #[test]
+ fn setup_request_vertex_applies_path_prefix_with_host_override() {
+ 	assert_prefixed_host_override_path(
+-		AIProvider::Vertex(vertex::Provider {
++		AIProvider::vertex(vertex::Provider {
+ 			model: None,
+ 			region: Some(strng::new("us-central1")),
+ 			project_id: strng::new("example-project"),
+@@ -1785,7 +1785,7 @@ async fn responses_passthrough_stream_skips_completion_when_disabled() {
+ }
+ 
+ fn vertex_provider(model: &str) -> AIProvider {
+-	AIProvider::Vertex(vertex::Provider {
++	AIProvider::vertex(vertex::Provider {
+ 		model: Some(strng::new(model)),
+ 		region: None,
+ 		project_id: strng::new("test-project"),
+@@ -1945,3 +1945,163 @@ fn fixed_providers_classify_by_family() {
+ 		CacheTokenConvention::InputIncludesCache,
+ 	);
+ }
++
++// ---------- Vertex operator labels ----------
++
++fn vertex_label(key: &str, value: Option<&str>, expression: Option<&str>) -> VertexLabel {
++	VertexLabel {
++		key: key.to_string(),
++		value: value.map(str::to_string),
++		expression: expression
++			.map(|e| Arc::new(crate::cel::Expression::new_strict(e).expect("valid CEL expression"))),
++	}
++}
++
++#[test]
++fn vertex_labels_are_validated_at_config_time() {
++	// A static and a dynamic label together are valid
++	assert!(
++		VertexLabels::try_new(vec![
++			vertex_label("team", Some("ai"), None),
++			vertex_label("tenant", None, Some(r#"request.headers["x-tenant"]"#)),
++		])
++		.is_ok()
++	);
++
++	// Keys must match Google Cloud's label requirements
++	let too_long = "a".repeat(64);
++	for bad_key in ["", "Uppercase", "1starts-with-digit", too_long.as_str()] {
++		assert!(
++			VertexLabels::try_new(vec![vertex_label(bad_key, Some("v"), None)]).is_err(),
++			"key {bad_key:?} must be rejected"
++		);
++	}
++
++	// Static values are validated at config time
++	assert!(VertexLabels::try_new(vec![vertex_label("team", Some("Not Valid"), None)]).is_err());
++
++	// Duplicate keys are rejected
++	assert!(
++		VertexLabels::try_new(vec![
++			vertex_label("team", Some("a"), None),
++			vertex_label("team", Some("b"), None),
++		])
++		.is_err()
++	);
++
++	// Exactly one of value/expression must be set
++	assert!(VertexLabels::try_new(vec![vertex_label("team", Some("a"), Some(r#""b""#))]).is_err());
++	assert!(VertexLabels::try_new(vec![vertex_label("team", None, None)]).is_err());
++}
++
++#[test]
++fn vertex_provider_config_parses_labels() {
++	let yaml = r#"
++projectId: test-project
++labels:
++- key: team
++  value: ai
++- key: tenant
++  expression: request.headers["x-tenant"]
++"#;
++	let p: VertexProvider = serdes::yamlviajson::from_str(yaml).unwrap();
++	assert_eq!(p.project_id.as_str(), "test-project");
++	assert!(!p.labels.is_empty());
++	assert_eq!(p.cel_expressions().count(), 1);
++
++	// Invalid labels are rejected at config load
++	let yaml = r#"
++projectId: test-project
++labels:
++- key: Team
++  value: ai
++"#;
++	assert!(serdes::yamlviajson::from_str::<VertexProvider>(yaml).is_err());
++}
++
++/// Snapshot of an original client request with an x-tenant header.
++fn vertex_label_request_snapshot() -> crate::cel::RequestSnapshot {
++	let mut req = ::http::Request::builder()
++		.method(::http::Method::POST)
++		.uri("http://example.com/v1/chat/completions")
++		.header("x-tenant", "acme")
++		.body(crate::http::Body::empty())
++		.unwrap();
++	crate::cel::snapshot_request(&mut req, false)
++}
++
++#[test]
++fn vertex_operator_labels_merge_into_generate_content_request() {
++	let provider = AIProvider::Vertex(VertexProvider {
++		provider: vertex::Provider {
++			project_id: strng::new("test-project"),
++			model: None,
++			region: None,
++		},
++		labels: VertexLabels::try_new(vec![
++			vertex_label("team", Some("ai"), None),
++			vertex_label("tenant", None, Some(r#"request.headers["x-tenant"]"#)),
++		])
++		.unwrap(),
++	});
++	let snap = vertex_label_request_snapshot();
++
++	let chat_req: types::completions::Request = serde_json::from_value(serde_json::json!({
++		"model": "gemini-2.5-flash",
++		"messages": [{"role": "user", "content": "hi"}],
++		"labels": {"team": "client-spoofed", "env": "client"}
++	}))
++	.unwrap();
++
++	let body = render_vertex_gemini(
++		types::ChatRequest::Completions(&chat_req),
++		&ChatRequestContext {
++			provider: &provider,
++			headers: &HeaderMap::new(),
++			prompt_caching: None,
++			request_snapshot: Some(&snap),
++		},
++	)
++	.unwrap();
++	let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
++	// Operator values win on conflict; other client labels are preserved.
++	assert_eq!(body["labels"]["team"], "ai");
++	assert_eq!(body["labels"]["tenant"], "acme");
++	assert_eq!(body["labels"]["env"], "client");
++}
++
++#[test]
++fn vertex_operator_labels_fail_closed() {
++	let provider = AIProvider::Vertex(VertexProvider {
++		provider: vertex::Provider {
++			project_id: strng::new("test-project"),
++			model: None,
++			region: None,
++		},
++		labels: VertexLabels::try_new(vec![vertex_label(
++			"tenant",
++			None,
++			Some(r#"request.headers["x-missing"]"#),
++		)])
++		.unwrap(),
++	});
++	let snap = vertex_label_request_snapshot();
++
++	let chat_req: types::completions::Request = serde_json::from_value(serde_json::json!({
++		"model": "gemini-2.5-flash",
++		"messages": [{"role": "user", "content": "hi"}]
++	}))
++	.unwrap();
++
++	let err = render_vertex_gemini(
++		types::ChatRequest::Completions(&chat_req),
++		&ChatRequestContext {
++			provider: &provider,
++			headers: &HeaderMap::new(),
++			prompt_caching: None,
++			request_snapshot: Some(&snap),
++		},
++	)
++	.expect_err("an expression that cannot be resolved must reject the request");
++	assert!(matches!(err, AIError::LabelResolution(_)), "got {err}");
++}
+diff --git a/crates/agentgateway/src/store/binds.rs b/crates/agentgateway/src/store/binds.rs
+index e7d50d3e..5c479fa1 100644
+--- a/crates/agentgateway/src/store/binds.rs
++++ b/crates/agentgateway/src/store/binds.rs
+@@ -345,6 +345,13 @@ impl BackendPolicies {
+ 				ctx.register_expression(expr);
+ 			}
+ 		}
++		if let Some(provider) = self.llm_provider.as_ref()
++			&& let llm::AIProvider::Vertex(vertex) = &provider.provider
++		{
++			for expr in vertex.cel_expressions() {
++				ctx.register_expression(expr);
++			}
++		}
+ 		if let Some(health) = self.health.as_ref() {
+ 			health.register_expressions(ctx);
+ 		}
+diff --git a/crates/agentgateway/src/types/agent_xds.rs b/crates/agentgateway/src/types/agent_xds.rs
+index 9bde14c1..59454b6f 100644
+--- a/crates/agentgateway/src/types/agent_xds.rs
++++ b/crates/agentgateway/src/types/agent_xds.rs
+@@ -1758,7 +1758,7 @@ pub(crate) fn backend_with_policies_from_proto(
+ 						Some(provider::Provider::Gemini(gemini)) => AIProvider::Gemini(llm::gemini::Provider {
+ 							model: gemini.model.as_deref().map(strng::new),
+ 						}),
+-						Some(provider::Provider::Vertex(vertex)) => AIProvider::Vertex(llm::vertex::Provider {
++						Some(provider::Provider::Vertex(vertex)) => AIProvider::vertex(llm::vertex::Provider {
+ 							model: vertex.model.as_deref().map(strng::new),
+ 							region: (!vertex.region.is_empty()).then(|| strng::new(&vertex.region)),
+ 							project_id: strng::new(&vertex.project_id),
+diff --git a/crates/agentgateway/src/types/local.rs b/crates/agentgateway/src/types/local.rs
+index a4f4f966..a3274ad8 100644
+--- a/crates/agentgateway/src/types/local.rs
++++ b/crates/agentgateway/src/types/local.rs
+@@ -4132,7 +4132,7 @@ async fn convert_llm_config(
+ 			},
+ 			LocalModelAIProvider::Preset(preset) => AIProvider::Custom(preset.provider(model.clone())),
+ 			LocalModelAIProvider::Builtin(LocalBuiltinModelAIProvider::Vertex) => {
+-				AIProvider::Vertex(crate::llm::vertex::Provider {
++				AIProvider::vertex(crate::llm::vertex::Provider {
+ 					model,
+ 					region: p.vertex_region,
+ 					project_id: p.vertex_project.context("vertex requires vertex_project")?,
+diff --git a/crates/agentgateway/src/types/local_tests/llm_simple_normalized.snap b/crates/agentgateway/src/types/local_tests/llm_simple_normalized.snap
+index 3196d78d..a194f7ff 100644
+--- a/crates/agentgateway/src/types/local_tests/llm_simple_normalized.snap
++++ b/crates/agentgateway/src/types/local_tests/llm_simple_normalized.snap
+@@ -366,8 +366,8 @@ backends:
+                     provider:
+                       vertex:
+                         model: claude-haiku-4-5-20251001
+-                        region: global
+                         projectId: my-vertex-project
++                        region: global
+                     hostOverride: ~
+                     pathOverride: ~
+                     pathPrefix: ~
+diff --git a/crates/llm/src/conversion/vertex_gemini.rs b/crates/llm/src/conversion/vertex_gemini.rs
+index 3698ab47..7c0d418c 100644
+--- a/crates/llm/src/conversion/vertex_gemini.rs
++++ b/crates/llm/src/conversion/vertex_gemini.rs
+@@ -83,14 +83,32 @@ pub mod from_completions {
+ 	pub fn translate(
+ 		req: &types::completions::Request,
+ 		configured_model: Option<&str>,
++		operator_labels: Option<&serde_json::Map<String, Value>>,
+ 	) -> Result<Vec<u8>, AIError> {
+-		let out = build_request(req, configured_model)?;
++		let out = build_request(req, configured_model, operator_labels)?;
+ 		serde_json::to_vec(&out).map_err(AIError::RequestMarshal)
+ 	}
+ 
++	/// Merge operator-configured labels over client-sent labels. On a key conflict the
++	/// operator's value wins, so a caller cannot override the gateway's billing attribution.
++	fn merge_labels(
++		client_labels: Option<serde_json::Map<String, Value>>,
++		operator_labels: Option<&serde_json::Map<String, Value>>,
++	) -> Option<serde_json::Map<String, Value>> {
++		let Some(operator_labels) = operator_labels.filter(|l| !l.is_empty()) else {
++			return client_labels;
++		};
++		let mut merged = client_labels.unwrap_or_default();
++		for (key, value) in operator_labels {
++			merged.insert(key.clone(), value.clone());
++		}
++		Some(merged)
++	}
++
+ 	pub(super) fn build_request(
+ 		req: &types::completions::Request,
+ 		configured_model: Option<&str>,
++		operator_labels: Option<&serde_json::Map<String, Value>>,
+ 	) -> Result<vg::GenerateContentRequest, AIError> {
+ 		let model = configured_model
+ 			.or(req.model.as_deref())
+@@ -139,7 +157,10 @@ pub mod from_completions {
+ 			None => Vec::new(),
+ 		};
+ 
+-		let labels = req.rest.get("labels").and_then(|v| v.as_object().cloned());
++		let labels = merge_labels(
++			req.rest.get("labels").and_then(|v| v.as_object().cloned()),
++			operator_labels,
++		);
+ 
+ 		let (system_instruction, tools, tool_config) = if cached_content.is_some() {
+ 			let dropped: Vec<&str> = [
+diff --git a/crates/llm/src/conversion/vertex_gemini_tests.rs b/crates/llm/src/conversion/vertex_gemini_tests.rs
+index e961c147..e3cfbc42 100644
+--- a/crates/llm/src/conversion/vertex_gemini_tests.rs
++++ b/crates/llm/src/conversion/vertex_gemini_tests.rs
+@@ -7,7 +7,7 @@ fn req(v: Value) -> types::completions::Request {
+ }
+ 
+ fn to_gemini(v: Value) -> Value {
+-	let bytes = from_completions::translate(&req(v), None).expect("translate ok");
++	let bytes = from_completions::translate(&req(v), None, None).expect("translate ok");
+ 	serde_json::from_slice(&bytes).expect("valid json")
+ }
+ 
+@@ -71,6 +71,7 @@ fn gs_url_without_extension_or_hint_is_rejected() {
+ 			]}]
+ 		})),
+ 		None,
++		None,
+ 	);
+ 	assert!(
+ 		err.is_err(),
+@@ -114,6 +115,7 @@ fn http_image_url_is_rejected() {
+ 			]}]
+ 		})),
+ 		None,
++		None,
+ 	);
+ 	assert!(err.is_err(), "http(s) image_url must be rejected");
+ }
+@@ -1070,6 +1072,79 @@ fn labels_pass_through_at_top_level() {
+ 	assert_eq!(g["labels"]["team"], "ai");
+ }
+ 
++/// Translate with operator labels and return the outbound JSON.
++fn to_gemini_with_operator_labels(v: Value, operator_labels: Value) -> Value {
++	let labels = operator_labels
++		.as_object()
++		.expect("operator labels are an object")
++		.clone();
++	let bytes = from_completions::translate(&req(v), None, Some(&labels)).expect("translate ok");
++	serde_json::from_slice(&bytes).expect("valid json")
++}
++
++#[test]
++fn operator_labels_are_added_without_client_labels() {
++	let g = to_gemini_with_operator_labels(
++		json!({
++			"model": "gemini-2.5-flash",
++			"messages": [{ "role": "user", "content": "x" }]
++		}),
++		json!({ "cost-center": "platform" }),
++	);
++	assert_eq!(g["labels"]["cost-center"], "platform");
++}
++
++#[test]
++fn operator_labels_merge_with_client_labels() {
++	let g = to_gemini_with_operator_labels(
++		json!({
++			"model": "gemini-2.5-flash",
++			"messages": [{ "role": "user", "content": "x" }],
++			"labels": { "team": "ai" }
++		}),
++		json!({ "cost-center": "platform" }),
++	);
++	assert_eq!(g["labels"]["team"], "ai");
++	assert_eq!(g["labels"]["cost-center"], "platform");
++}
++
++#[test]
++fn operator_labels_win_over_client_labels() {
++	let g = to_gemini_with_operator_labels(
++		json!({
++			"model": "gemini-2.5-flash",
++			"messages": [{ "role": "user", "content": "x" }],
++			"labels": { "team": "spoofed", "env": "client" }
++		}),
++		json!({ "team": "ai" }),
++	);
++	// The operator's value wins on conflict; other client labels are preserved.
++	assert_eq!(g["labels"]["team"], "ai");
++	assert_eq!(g["labels"]["env"], "client");
++}
++
++#[test]
++fn empty_operator_labels_leave_client_labels_untouched() {
++	let g = to_gemini_with_operator_labels(
++		json!({
++			"model": "gemini-2.5-flash",
++			"messages": [{ "role": "user", "content": "x" }],
++			"labels": { "team": "ai" }
++		}),
++		json!({}),
++	);
++	assert_eq!(g["labels"]["team"], "ai");
++
++	let g = to_gemini_with_operator_labels(
++		json!({
++			"model": "gemini-2.5-flash",
++			"messages": [{ "role": "user", "content": "x" }]
++		}),
++		json!({}),
++	);
++	assert!(g.get("labels").is_none() || g["labels"].is_null());
++}
++
+ // ---------- Response: content / reasoning / tool calls ----------
+ 
+ #[test]
+diff --git a/crates/llm/src/golden_tests.rs b/crates/llm/src/golden_tests.rs
+index e5c61e00..24ebd7df 100644
+--- a/crates/llm/src/golden_tests.rs
++++ b/crates/llm/src/golden_tests.rs
+@@ -192,7 +192,7 @@ mod requests {
+ 							.map(|r| r.body)
+ 					}),
+ 					VERTEX_GEMINI => test_request(VERTEX_GEMINI, &path, |i| {
+-						conversion::vertex_gemini::from_completions::translate(i, Some("gemini-2.5-pro"))
++						conversion::vertex_gemini::from_completions::translate(i, Some("gemini-2.5-pro"), None)
+ 					}),
+ 					other => panic!("unsupported provider in COMPLETION_REQUESTS: {other}"),
+ 				}
+diff --git a/crates/llm/src/lib.rs b/crates/llm/src/lib.rs
+index 6093f3ec..609927c3 100644
+--- a/crates/llm/src/lib.rs
++++ b/crates/llm/src/lib.rs
+@@ -375,6 +375,8 @@ pub enum AIError {
+ 	ResponseMarshal(serde_json::Error),
+ 	#[error("unsupported content encoding: {0}")]
+ 	UnsupportedEncoding(Strng),
++	#[error("failed to resolve labels: {0}")]
++	LabelResolution(Strng),
+ 	#[error("failed to encode response: {0}")]
+ 	Encoding(axum_core::Error),
+ 	#[error("error computing tokens")]
+diff --git a/schema/config.json b/schema/config.json
+index 8a58c567..15f30809 100644
+--- a/schema/config.json
++++ b/schema/config.json
+@@ -8072,13 +8072,51 @@
+         "projectId": {
+           "description": "Google Cloud project ID for Vertex AI.",
+           "type": "string"
++        },
++        "labels": {
++          "description": "Billing labels attached to native Gemini `generateContent` requests for cost\nattribution. Labels sent by the client are preserved unless a key conflicts,\nin which case the operator-configured value wins. A label value is either\nstatic (`value`) or a CEL expression evaluated against each request\n(`expression`).",
++          "type": "array",
++          "items": {
++            "$ref": "#/$defs/VertexLabel"
++          }
+         }
+       },
+-      "additionalProperties": false,
+       "required": [
+         "projectId"
+       ]
+     },
++    "VertexLabel": {
++      "description": "A billing label attached to native Vertex Gemini `generateContent` requests for\ncost attribution. Exactly one of `value` and `expression` must be set.",
++      "type": "object",
++      "properties": {
++        "key": {
++          "description": "Label key.",
++          "type": "string"
++        },
++        "value": {
++          "description": "Static label value.",
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "expression": {
++          "description": "CEL expression evaluated against each request to produce the label value, for\nexample `jwt.sub` or `request.headers[\"x-team\"]`. If the expression does not\nproduce a valid label value at request time, the request is rejected.",
++          "anyOf": [
++            {
++              "$ref": "#/$defs/Expression"
++            },
++            {
++              "type": "null"
++            }
++          ]
++        }
++      },
++      "additionalProperties": false,
++      "required": [
++        "key"
++      ]
++    },
+     "AnthropicProvider": {
+       "type": "object",
+       "properties": {
+diff --git a/schema/config.md b/schema/config.md
+index 48e61140..3b316cf2 100644
+--- a/schema/config.md
++++ b/schema/config.md
+@@ -5020,6 +5020,10 @@
+ |`binds[].listeners[].routes[].backends[].ai.provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`binds[].listeners[].routes[].backends[].ai.provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`binds[].listeners[].routes[].backends[].ai.provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`binds[].listeners[].routes[].backends[].ai.provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`binds[].listeners[].routes[].backends[].ai.provider.vertex.labels[].key`|string|Label key.|
++|`binds[].listeners[].routes[].backends[].ai.provider.vertex.labels[].value`|string|Static label value.|
++|`binds[].listeners[].routes[].backends[].ai.provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`binds[].listeners[].routes[].backends[].ai.provider.anthropic`|object||
+ |`binds[].listeners[].routes[].backends[].ai.provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`binds[].listeners[].routes[].backends[].ai.provider.bedrock`|object||
+@@ -8041,6 +8045,10 @@
+ |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].key`|string|Label key.|
++|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].value`|string|Static label value.|
++|`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.anthropic`|object||
+ |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`binds[].listeners[].routes[].backends[].ai.groups[].providers[].provider.bedrock`|object||
+@@ -21141,6 +21149,10 @@
+ |`backends[].ai.provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`backends[].ai.provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`backends[].ai.provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`backends[].ai.provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`backends[].ai.provider.vertex.labels[].key`|string|Label key.|
++|`backends[].ai.provider.vertex.labels[].value`|string|Static label value.|
++|`backends[].ai.provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`backends[].ai.provider.anthropic`|object||
+ |`backends[].ai.provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`backends[].ai.provider.bedrock`|object||
+@@ -24162,6 +24174,10 @@
+ |`backends[].ai.groups[].providers[].provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`backends[].ai.groups[].providers[].provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`backends[].ai.groups[].providers[].provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`backends[].ai.groups[].providers[].provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`backends[].ai.groups[].providers[].provider.vertex.labels[].key`|string|Label key.|
++|`backends[].ai.groups[].providers[].provider.vertex.labels[].value`|string|Static label value.|
++|`backends[].ai.groups[].providers[].provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`backends[].ai.groups[].providers[].provider.anthropic`|object||
+ |`backends[].ai.groups[].providers[].provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`backends[].ai.groups[].providers[].provider.bedrock`|object||
+@@ -35062,6 +35078,10 @@
+ |`routeGroups[].routes[].backends[].ai.provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`routeGroups[].routes[].backends[].ai.provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`routeGroups[].routes[].backends[].ai.provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`routeGroups[].routes[].backends[].ai.provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`routeGroups[].routes[].backends[].ai.provider.vertex.labels[].key`|string|Label key.|
++|`routeGroups[].routes[].backends[].ai.provider.vertex.labels[].value`|string|Static label value.|
++|`routeGroups[].routes[].backends[].ai.provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`routeGroups[].routes[].backends[].ai.provider.anthropic`|object||
+ |`routeGroups[].routes[].backends[].ai.provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`routeGroups[].routes[].backends[].ai.provider.bedrock`|object||
+@@ -38083,6 +38103,10 @@
+ |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].key`|string|Label key.|
++|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].value`|string|Static label value.|
++|`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.anthropic`|object||
+ |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`routeGroups[].routes[].backends[].ai.groups[].providers[].provider.bedrock`|object||
+@@ -51547,6 +51571,10 @@
+ |`routes[].backends[].ai.provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`routes[].backends[].ai.provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`routes[].backends[].ai.provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`routes[].backends[].ai.provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`routes[].backends[].ai.provider.vertex.labels[].key`|string|Label key.|
++|`routes[].backends[].ai.provider.vertex.labels[].value`|string|Static label value.|
++|`routes[].backends[].ai.provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`routes[].backends[].ai.provider.anthropic`|object||
+ |`routes[].backends[].ai.provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`routes[].backends[].ai.provider.bedrock`|object||
+@@ -54568,6 +54596,10 @@
+ |`routes[].backends[].ai.groups[].providers[].provider.vertex.model`|string|Model ID to send to Vertex AI, overriding the model in the client request.|
+ |`routes[].backends[].ai.groups[].providers[].provider.vertex.region`|string|Vertex AI region. Special values: `global` uses the global endpoint, while `us` and `eu`<br>use restricted multi-region endpoints. Other values are treated as regional locations.|
+ |`routes[].backends[].ai.groups[].providers[].provider.vertex.projectId`|string|Google Cloud project ID for Vertex AI.|
++|`routes[].backends[].ai.groups[].providers[].provider.vertex.labels`|[]object|Billing labels attached to native Gemini `generateContent` requests for cost<br>attribution. Labels sent by the client are preserved unless a key conflicts,<br>in which case the operator-configured value wins. A label value is either<br>static (`value`) or a CEL expression evaluated against each request<br>(`expression`).|
++|`routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].key`|string|Label key.|
++|`routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].value`|string|Static label value.|
++|`routes[].backends[].ai.groups[].providers[].provider.vertex.labels[].expression`|string|CEL expression evaluated against each request to produce the label value, for<br>example `jwt.sub` or `request.headers["x-team"]`. If the expression does not<br>produce a valid label value at request time, the request is rejected.|
+ |`routes[].backends[].ai.groups[].providers[].provider.anthropic`|object||
+ |`routes[].backends[].ai.groups[].providers[].provider.anthropic.model`|string|Model ID to send to Anthropic, overriding the model in the client request.|
+ |`routes[].backends[].ai.groups[].providers[].provider.bedrock`|object||
+-- 
+2.47.0
+

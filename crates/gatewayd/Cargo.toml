@@ -25,3 +25,7 @@ async-trait = "0.1"
 bytes = "1"
 log = "0.4"
 env_logger = "0.11"
+# Already in the tree via pingora; used directly for the SIGHUP reload
+# trigger (a dedicated current-thread runtime — pingora itself listens for
+# SIGINT/SIGTERM/SIGQUIT, never SIGHUP).
+tokio = { version = "1", features = ["rt", "signal"] }
