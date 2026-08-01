@@ -1,0 +1,5 @@
+# pingora 0.8.1 (latest at spike time) has rust-version 1.84 and pulls
+# edition-2024 dependencies; the repo's default toolchain is a stale
+# stable (1.83). 1.97 is already installed on this machine.
+[toolchain]
+channel = "1.97"

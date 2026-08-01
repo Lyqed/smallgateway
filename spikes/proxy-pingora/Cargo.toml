@@ -1,0 +1,13 @@
+[package]
+name = "spike-proxy-pingora"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[dependencies]
+spike-event-model = { path = "../event-model" }
+pingora = { version = "0.8", features = ["proxy"] }
+async-trait = "0.1"
+bytes = "1"
+log = "0.4"
+env_logger = "0.11"

@@ -1,0 +1,10 @@
+{"event":"messageStart","payload":{"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0","role":"assistant"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":""},"p":"abcdefghi"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":0,"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"reasoningContent":{"text":"The user just says \"Hi\". We need to respond appropriately, friendly greeting. No special instructions. Should be short."}},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":1,"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":2,"delta":{"text":"Hello! How can I help"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":2,"delta":{"text":" you today?"},"p":"abcdefghijklmnopqrstuvw"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":2,"p":"abcdefghij"}}
+{"event":"messageStop","payload":{"p":"ab","stopReason":"end_turn"}}
+{"event":"metadata","payload":{"metrics":{"latencyMs":753},"p":"abcdefghijklmn","usage":{"inputTokens":70,"outputTokens":43,"serverToolUsage":{},"totalTokens":113}}}

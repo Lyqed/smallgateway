@@ -95,6 +95,15 @@ impl Adapter for BedrockAdapter {
                             arguments_delta: args.to_string(),
                         });
                     }
+                    // Reasoning models (e.g. gpt-oss on Bedrock) stream
+                    // reasoning text as its own content block; those tokens
+                    // are billed output, so the meter must see them.
+                    if let Some(text) = delta["reasoningContent"]["text"].as_str() {
+                        out.push(Event::ContentDelta {
+                            index,
+                            text: text.to_string(),
+                        });
+                    }
                 }
                 "messageStop" => {
                     self.stop_reason = payload["stopReason"].as_str().map(String::from);

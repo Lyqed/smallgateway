@@ -1,0 +1,103 @@
+{"event":"messageStart","payload":{"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP","role":"assistant"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"#"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Service"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n\nA service is a software"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" component that provides specific"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" functionality to other"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGH"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" software components or"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" end users"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":". Services"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" are designe"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d to be:\n\n1"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":". **"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Independent**: They"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHI"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" operate as"},"p":"abcdefghijklmnopqrstuvwxyzABCDEF"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" standalone units"},"p":"abcd"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n2. **"},"p":"abcdefghi"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Reusable**: They"},"p":"abcdefghijklm"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" can be used by"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" multiple clients"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" or applications\n3."},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHI"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" **Stat"},"p":"abcdefghijklmnop"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"eless"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"**:"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Ide"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFG"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"ally, they don"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"'t maintain"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" client"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFG"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" state between requests"},"p":"abcdefghij"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n4. **"},"p":"abcdefghijklmnopqrstuvwxyzABCDE"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Discov"},"p":"abcdefg"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"erable**: Other"},"p":"abcdefghijklmnopqrs"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" components"},"p":"abcdefghijklmnopq"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" can fin"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d and use them"},"p":"abc"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n\n##"},"p":"abcdefghijklmnopqrstuvwxyzAB"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Types"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" of Services\n\n-"},"p":"abcdefghijklmnopqrstuvwxyzABCDE"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" **Web"},"p":"abcdefghijklmnopqrstuvwxyzAB"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Services**: Accessible"},"p":"abcdefghijklmnopqrstu"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" over"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" HTTP"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"/"},"p":"abcdefghijklmnopqr"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"HTTPS ("},"p":"abcdefghijklmn"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"REST"},"p":"abcdefghijklmnopqrstuvwxyzA"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":", SOAP,"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Graph"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"QL)"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n- **"},"p":"abcdefghi"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Micro"},"p":"abcdefghijklmn"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"services**: Small"},"p":"abcdef"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":", focuse"},"p":"abcdefghijklmnopqrstuvw"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d services that work"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" together\n- **"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Backgroun"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d Services**: Perform"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" tasks without"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" direct"},"p":"abcdefghijklmnopqrstuvwxyzA"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" user interaction\n-"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" **System"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Services**: Provide"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRST"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" core functionality to"},"p":"abcdefghijk"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" operating"},"p":"abcdefghijklmno"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" systems"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n\n## Service Architecture"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Benefits"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n\n-"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Promotes"},"p":"abcdefghijklmnopqrstuvwxyzA"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" mo"},"p":"abcdefghijklmnopqrstuvwxyzABC"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"dular design"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n- Enables"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" scal"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"ability"},"p":"ab"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" ("},"p":"abcdefghijk"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"services"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" can be scale"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d independently"},"p":"abcde"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":")\n-"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Supports"},"p":"abcdefghijklmnopqrst"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" distribute"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d development"},"p":"abcdefghijklmnopq"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" teams"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n- Facilit"},"p":"abcd"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"ates technology"},"p":"abcdefghijkl"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" diversity"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" (different"},"p":"abcdefghijklmnopqrstuvwxyzABCDE"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" services can use"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" different technologies)"},"p":"abcdefghijklmnopqrs"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n- Impro"},"p":"abcdefghijklmnopqrst"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"ves fault"},"p":"abcdefghijkl"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" isolation"},"p":"abcdefghijklmnopqrstuvwxy"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\n\nServices"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" are fundamental"},"p":"abcdefgh"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" building"},"p":"abcdefghijklmn"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" blocks in"},"p":"abcdefghi"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" modern software architecture"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":","},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGH"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" especially"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" in distributed systems an"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d clou"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJK"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d computing environments."},"p":"abcd"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":0,"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"}}
+{"event":"messageStop","payload":{"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0","stopReason":"end_turn"}}
+{"event":"metadata","payload":{"metrics":{"latencyMs":7211},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0","usage":{"cacheReadInputTokenCount":0,"cacheReadInputTokens":0,"cacheWriteInputTokenCount":1028,"cacheWriteInputTokens":1028,"inputTokens":11,"outputTokens":236,"totalTokens":1275}}}

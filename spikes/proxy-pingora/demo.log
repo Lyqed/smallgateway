@@ -1,0 +1,106 @@
+# Captured 2026-08-01T11:31:26Z by scripts/demo.sh
+# proxy: spike-proxy-pingora on 127.0.0.1:6188 -> mock upstream 127.0.0.1:6190
+# mock streams one fixture frame per 80ms over chunked transfer; the
+# client timestamps prove bytes arrive incrementally, the proxy log
+# proves the tap parsed canonical events and metered the stream.
+
+=== provider: openai  (fixture: ../event-model/fixtures/openai.sse) ===
+--- client: incremental arrival through the proxy ---
+[client + 0.000s] chunk 1:  183B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.080s] chunk 2:  175B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.160s] chunk 3:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.240s] chunk 4:  178B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.321s] chunk 5:  154B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.401s] chunk 6:  165B  b'data: {"id":"chatcmpl-spike1","object":"chat.completion.ch'
+[client + 0.481s] chunk 7:   14B  b'data: [DONE]\n\n'
+[client] status=200 total=1047B in 7 reads (incremental: arrival spread over 0.56s)
+--- proxy: canonical event tap + metering report ---
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [req] POST /v1/chat/completions -> provider=openai
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] MessageStart { message_id: Some("chatcmpl-spike1"), model: Some("gpt-4.1") }
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] MessageEnd { stop_reason: Some("stop") }
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] end-of-stream: 1047 body bytes in 7 chunks; events: MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] --- metering report ---
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] estimated output tokens (chars/4): 10
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] authoritative input tokens:  14
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] authoritative output tokens: 9
+[2026-08-01T11:31:27Z INFO  spike_proxy_pingora] [tap openai] estimate error vs terminal frame: +11.1%
+
+=== provider: anthropic  (fixture: ../event-model/fixtures/anthropic.sse) ===
+--- client: incremental arrival through the proxy ---
+[client + 0.000s] chunk 1:  204B  b'event: message_start\ndata: {"type":"message_start","messag'
+[client + 0.080s] chunk 2:   35B  b'event: ping\ndata: {"type":"ping"}\n\n'
+[client + 0.160s] chunk 3:  117B  b'event: content_block_start\ndata: {"type":"content_block_st'
+[client + 0.240s] chunk 4:  126B  b'event: content_block_delta\ndata: {"type":"content_block_de'
+[client + 0.320s] chunk 5:  129B  b'event: content_block_delta\ndata: {"type":"content_block_de'
+[client + 0.401s] chunk 6:  129B  b'event: content_block_delta\ndata: {"type":"content_block_de'
+[client + 0.481s] chunk 7:   73B  b'event: content_block_stop\ndata: {"type":"content_block_sto'
+[client + 0.561s] chunk 8:  137B  b'event: message_delta\ndata: {"type":"message_delta","delta"'
+[client + 0.641s] chunk 9:   51B  b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+[client] status=200 total=1001B in 9 reads (incremental: arrival spread over 0.72s)
+--- proxy: canonical event tap + metering report ---
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [req] POST /v1/messages -> provider=anthropic
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [tap anthropic] MessageStart { message_id: Some("msg_spike1"), model: Some("claude-sonnet-5") }
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(1) }
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [tap anthropic] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [tap anthropic] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [tap anthropic] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T11:31:28Z INFO  spike_proxy_pingora] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] MessageEnd { stop_reason: Some("end_turn") }
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] end-of-stream: 1001 body bytes in 9 chunks; events: MessageStart=1 ContentDelta=3 UsageDelta=2 MessageEnd=1
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] --- metering report ---
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] estimated output tokens (chars/4): 10
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] authoritative input tokens:  14
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] authoritative output tokens: 9
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap anthropic] estimate error vs terminal frame: +11.1%
+
+=== provider: bedrock  (fixture: ../event-model/fixtures/bedrock.jsonl) ===
+--- client: incremental arrival through the proxy ---
+[client + 0.000s] chunk 1:   96B  b'\x00\x00\x00v\x00\x00\x00R\x96\xd5\xfa\xde\r:message-type\x07\x00\x05event\x0b:event-type\x07\x00\x0cmessageSt'
+[client + 0.080s] chunk 2:   96B  b'role":"assistant"}\x1c\xc6\xbe\x18\x00\x00\x00\x9d\x00\x00\x00W\xb9\xbb\xf8\x9f\r:message-type\x07\x00\x05event\x0b:'
+[client + 0.160s] chunk 3:   96B  b't-type\x07\x00\x10application/json{"contentBlockIndex":0,"delta":{"'
+[client + 0.240s] chunk 4:   96B  b':message-type\x07\x00\x05event\x0b:event-type\x07\x00\x11contentBlockDelta\r:con'
+[client + 0.321s] chunk 5:   96B  b'lockIndex":0,"delta":{"text":" Project keeps"}}\xc5\x96\x11K\x00\x00\x00\xa0\x00\x00\x00'
+[client + 0.401s] chunk 6:   96B  b'e\x07\x00\x11contentBlockDelta\r:content-type\x07\x00\x10application/json{"co'
+[client + 0.481s] chunk 7:   96B  b'ruth in Git."}}~\t\x81+\x00\x00\x00}\x00\x00\x00V\xe6h\x0f\xd6\r:message-type\x07\x00\x05event\x0b:eve'
+[client + 0.561s] chunk 8:   96B  b'pe\x07\x00\x10application/json{"contentBlockIndex":0}X~\xaa\xc2\x00\x00\x00z\x00\x00\x00Q\xca,'
+[client + 0.641s] chunk 9:   96B  b'\x0bmessageStop\r:content-type\x07\x00\x10application/json{"stopReason"'
+[client + 0.721s] chunk 10:   96B  b'type\x07\x00\x05event\x0b:event-type\x07\x00\x08metadata\r:content-type\x07\x00\x10applic'
+[client + 0.802s] chunk 11:   66B  b',"usage":{"inputTokens":14,"outputTokens":9,"totalTokens":'
+[client] status=200 total=1026B in 11 reads (incremental: arrival spread over 0.88s)
+--- proxy: canonical event tap + metering report ---
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [req] POST /model/anthropic.claude/converse-stream -> provider=bedrock
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap bedrock] MessageStart { message_id: None, model: None }
+[2026-08-01T11:31:29Z INFO  spike_proxy_pingora] [tap bedrock] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] MessageEnd { stop_reason: Some("end_turn") }
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] end-of-stream: 1026 body bytes in 11 chunks; events: MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] --- metering report ---
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] estimated output tokens (chars/4): 10
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] authoritative input tokens:  14
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] authoritative output tokens: 9
+[2026-08-01T11:31:30Z INFO  spike_proxy_pingora] [tap bedrock] estimate error vs terminal frame: +11.1%
+
+=== provider via route prefix (no header): /anthropic/v1/messages ===
+--- client ---
+[client] status=200 total=1001B in 9 reads over 0.72s
+--- proxy ---
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [req] POST /anthropic/v1/messages -> provider=anthropic
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] MessageStart { message_id: Some("msg_spike1"), model: Some("claude-sonnet-5") }
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(1) }
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] ContentDelta { index: 0, text: "The Gateway" }
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] ContentDelta { index: 0, text: " Project keeps" }
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] ContentDelta { index: 0, text: " truth in Git." }
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] UsageDelta { input_tokens: Some(14), output_tokens: Some(9) }
+[2026-08-01T11:31:31Z INFO  spike_proxy_pingora] [tap anthropic] MessageEnd { stop_reason: Some("end_turn") }
+[2026-08-01T11:31:32Z INFO  spike_proxy_pingora] [tap anthropic] end-of-stream: 1001 body bytes in 9 chunks; events: MessageStart=1 ContentDelta=3 UsageDelta=2 MessageEnd=1
+[2026-08-01T11:31:32Z INFO  spike_proxy_pingora] [tap anthropic] --- metering report ---
+[2026-08-01T11:31:32Z INFO  spike_proxy_pingora] [tap anthropic] estimated output tokens (chars/4): 10
+[2026-08-01T11:31:32Z INFO  spike_proxy_pingora] [tap anthropic] authoritative input tokens:  14
+[2026-08-01T11:31:32Z INFO  spike_proxy_pingora] [tap anthropic] authoritative output tokens: 9
+[2026-08-01T11:31:32Z INFO  spike_proxy_pingora] [tap anthropic] estimate error vs terminal frame: +11.1%

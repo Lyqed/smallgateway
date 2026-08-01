@@ -1,0 +1,32 @@
+{"event":"messageStart","payload":{"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS","role":"assistant"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Okay"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":","},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" let"},"p":"abcdefghij"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" me"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" use"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" the"},"p":"abcdefghijklmnopqrstuvwxyzABCDEF"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" tool"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" to"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" fetch"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" an"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" expert"},"p":"abcdefghijklmnopqrstuvw"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" explanation"},"p":"abcdefghijklmnopqrs"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" for"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" the"},"p":"ab"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" concept"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" of"},"p":"abcde"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" distribute"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGH"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"d tr"},"p":"abcdefghijklmnopqrstuvwxyzABCD"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"acing"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"."},"p":"abcdefghi"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":0,"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"}}
+{"event":"contentBlockStart","payload":{"contentBlockIndex":1,"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY","start":{"toolUse":{"name":"fetch_concept","toolUseId":"tooluse_HA9wsJ32RhOvn8XgIUDpGA"}}}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"toolUse":{"input":""}},"p":"abcdefghijklmnopqrstuvwxyzABCDEF"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"concept\": "}},"p":"abcde"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"\"distri"}},"p":"abcdefghijklmnop"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"buted tr"}},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRST"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"acing"}},"p":"abcdefghijklmno"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"\"}"}},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":1,"p":"abcdefghijklmnopqrstuvwxyzABCDEFG"}}
+{"event":"messageStop","payload":{"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678","stopReason":"tool_use"}}
+{"event":"metadata","payload":{"metrics":{"latencyMs":1841},"p":"abcdefghijklmnopqrst","usage":{"inputTokens":259,"outputTokens":64,"totalTokens":323}}}

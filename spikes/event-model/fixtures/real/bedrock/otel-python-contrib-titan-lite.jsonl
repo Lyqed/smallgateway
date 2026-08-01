@@ -1,0 +1,5 @@
+{"event":"messageStart","payload":{"p":"abcdefghijklmnopqrs","role":"assistant"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"I am here and ready to assist"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJK"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":0,"p":"abcdefghijkl"}}
+{"event":"messageStop","payload":{"p":"abcdefghijk","stopReason":"max_tokens"}}
+{"event":"metadata","payload":{"metrics":{"latencyMs":605},"p":"abcdefghijklm","usage":{"inputTokens":8,"outputTokens":10,"totalTokens":18}}}

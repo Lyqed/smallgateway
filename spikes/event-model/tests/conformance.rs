@@ -114,6 +114,79 @@ fn chunking_never_changes_the_event_stream() {
     }
 }
 
+/// Every recorded real transcript under fixtures/real/ must replay to a
+/// stream that honors the canonical contract — authoritative usage frame
+/// present and preceding a terminal MessageEnd — at any chunking.
+#[test]
+fn real_transcripts_replay_with_usage_and_ordering_contract() {
+    let real_dir = format!("{}/fixtures/real", env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0usize;
+    for (provider, make) in [
+        ("openai", (|| Box::new(OpenAiAdapter::new()) as Box<dyn Adapter>)
+            as fn() -> Box<dyn Adapter>),
+        ("anthropic", || Box::new(AnthropicAdapter::new()) as Box<dyn Adapter>),
+        ("bedrock", || Box::new(BedrockAdapter::new()) as Box<dyn Adapter>),
+    ] {
+        let dir = format!("{real_dir}/{provider}");
+        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{dir}: {e}"))
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("sse") | Some("jsonl")
+                )
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            let raw = std::fs::read(&path).unwrap();
+            let wire = if provider == "bedrock" {
+                encode_jsonl_fixture(&String::from_utf8(raw).unwrap()).unwrap()
+            } else {
+                raw
+            };
+            let name = path.display();
+
+            let whole = replay(make(), &wire, wire.len().max(1));
+            for chunk_size in [1, 17] {
+                let chunked = replay(make(), &wire, chunk_size);
+                assert_eq!(
+                    chunked, whole,
+                    "{name}: chunk_size={chunk_size} diverged from whole-buffer replay"
+                );
+            }
+
+            let end = whole
+                .iter()
+                .position(|e| matches!(e, Event::MessageEnd { .. }))
+                .unwrap_or_else(|| panic!("{name}: no MessageEnd"));
+            assert_eq!(end, whole.len() - 1, "{name}: MessageEnd must be terminal");
+            let last_usage = whole
+                .iter()
+                .rposition(|e| matches!(e, Event::UsageDelta { .. }))
+                .unwrap_or_else(|| panic!("{name}: no usage frame"));
+            assert!(
+                last_usage < end,
+                "{name}: terminal usage frame must precede MessageEnd"
+            );
+
+            let mut meter = Meter::new();
+            whole.iter().for_each(|e| meter.observe(e));
+            let report = meter.report();
+            assert!(
+                report.authoritative_output_tokens.is_some(),
+                "{name}: no authoritative output tokens"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 15,
+        "expected the full real-transcript corpus, found {checked}"
+    );
+}
+
 #[test]
 fn tool_calls_normalize_across_providers() {
     let args = r#"{"location":"Tel Aviv"}"#;

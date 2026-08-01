@@ -1,0 +1,33 @@
+{"event":"messageStart","payload":{"p":"abcdefghijklmnopqr","role":"assistant"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"The"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" capital of France is Paris."},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJK"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Paris is not"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" only the capital city but"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" also the most"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" populous city in France"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":", and"},"p":"ab"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" it is"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" a"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" major center"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" for"},"p":"abcdefghijk"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" culture"},"p":"abcdefghijklmnopqrstuvwxyzABCD"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":", commerce, fashion"},"p":"abcdefghijklmn"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":", and international diplomacy"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":". Known"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" for its"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" historical"},"p":"abcdefghijklm"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" landmarks, such"},"p":"abcdef"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" as the Eiffel Tower, the"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" Louvre Museum, and Notre"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"-Dame Cathedral"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":", Paris is often"},"p":"abcdefghijklmnopqrstuvwx"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" referred to as \""},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"The City of Light"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"\""},"p":"abcdefgh"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" or \"The"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" City"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":" of Love"},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"}}
+{"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":".\""},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGH"}}
+{"event":"contentBlockStop","payload":{"contentBlockIndex":0,"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"}}
+{"event":"messageStop","payload":{"p":"abcdefghijklmno","stopReason":"end_turn"}}
+{"event":"metadata","payload":{"metrics":{"latencyMs":522},"p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW","usage":{"inputTokens":13,"outputTokens":82,"serverToolUsage":{},"totalTokens":95}}}
