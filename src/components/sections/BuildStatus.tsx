@@ -34,14 +34,14 @@ const PHASES = [
   {
     id: "1",
     title: "Standalone data plane",
-    note: "Baseline-conformant from a static file; the checks pass as automated conformance tests and earn a tracker row; under way in crates/",
-    state: "in progress" as const,
+    note: "Baseline-conformant from a static file; GB-1 through GB-4, GB-7, and GB-8 pass as automated conformance tests against a real gatewayd; scoped policy chain, CEL, and hot-reload in crates/",
+    state: "done" as const,
   },
   {
     id: "2",
     title: "Control plane MVP",
-    note: "Git sync, rendered snapshots over gRPC, drift detection, join-token bootstrap, admission on config PRs",
-    state: "ahead" as const,
+    note: "Git sync, rendered snapshots over gRPC, drift detection, join-token bootstrap, admission on config PRs; under way in crates/",
+    state: "in progress" as const,
   },
   {
     id: "3",
@@ -66,7 +66,7 @@ const PHASES = [
 const NAMED_RISKS = [
   {
     name: "the name",
-    body: "“The Gateway Project” collides hard with Kubernetes Gateway API mindshare. Renaming is cheap until the repo is public; the deadline is Phase 1's tracker row.",
+    body: "“The Gateway Project” collides hard with Kubernetes Gateway API mindshare. Renaming stays cheap while the repo is private, which it remains; the decision is open and taken before public launch.",
   },
   {
     name: "WASM on the hot path",
@@ -235,7 +235,7 @@ export function BuildStatus() {
               <ul className="voice-mono mt-3 space-y-2 text-xs text-steel-dark">
                 <li className="flex items-center gap-2">
                   <span aria-hidden className="size-2 rounded-full bg-teal" />
-                  done · phase 0, so far
+                  done · phases 0 and 1
                 </li>
                 <li className="flex items-center gap-2">
                   <span aria-hidden className="size-2 rounded-full bg-gold" />
