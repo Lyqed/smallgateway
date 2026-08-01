@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+// The fleet-distribution wire contract (docs/07-control-plane.md, "The
+// snapshot distribution protocol"). One long-lived, xDS-shaped bidirectional
+// gRPC stream per data plane: the control plane is the server, the data plane
+// dials out and holds the stream open (dial-out, not dial-in, is the
+// heterogeneous-fleet requirement — a DMZ box or edge node reaches the control
+// plane without the control plane needing a route back in).
+//
+// This file is a compatibility surface. docs/07 lists the rendered-snapshot
+// wire format and the render-hash canonicalization on the "irreversible once
+// public" list: once nodes compare an incoming render hash to their active
+// one, the canonical serialization and these message shapes are frozen. Field
+// numbers here are therefore append-only from M1 on.
+package gateway.fleet.v1;
+
+// The unit the control plane compiles and delivers: the same object the node
+// renders today, minus the file read (docs/07, "What the control plane
+// compiles"). A validated Config, addressed to one data plane, produced by
+// composing the four scoped chains and stamping the result.
+message RenderedSnapshot {
+  // Which data plane this snapshot is for.
+  string node_id = 1;
+  // The config-repo commit it was rendered from. In M1 (a plain directory, no
+  // libgit2) this is a synthetic content-derived id; the field's meaning — "the
+  // exact repo state this render is reproducible from" — is stable across the
+  // Git integration that lands above it later.
+  string source_commit = 2;
+  // SHA-256 (lowercase hex) of `config` below — the fleet analog of the node's
+  // content_hash. The node hashes the incoming `config` bytes and compares to
+  // its active snapshot's hash before anything else, reusing the existing
+  // no-op short-circuit verbatim. This is the hash of the RENDERED bytes, not
+  // the source bytes (docs/07: "SHA-256 of the *rendered* bytes").
+  string render_hash = 3;
+  // Monotonic per node, assigned at delivery.
+  uint64 fleet_version = 4;
+  // The canonically-serialized flat Config: the same structure
+  // Config::from_yaml already parses and validates. Serialized canonically
+  // (stable key order, no incidental whitespace) so render_hash is reproducible
+  // — the same commit plus the same node selectors always yields the same bytes
+  // and therefore the same hash.
+  bytes config = 5;
+  // Unix seconds, control-plane clock (informational; never an input to the
+  // render, so it never perturbs render_hash).
+  int64 compiled_at = 6;
+}
+
+// Node liveness signal from the control plane; carries nothing more than "I'm
+// still here" (docs/07: `AckOfStatus {}`).
+message AckOfStatus {}
+
+// Control plane -> data plane.
+message ServerMessage {
+  oneof kind {
+    // Deliver a new version.
+    RenderedSnapshot push = 1;
+    // Liveness, nothing more.
+    AckOfStatus ack_of_status = 2;
+  }
+}
+
+// Sent once on connect. `current_fleet_version` lets a reconnecting node skip a
+// redelivery it already has. The join token authenticates the JOIN; every
+// subsequent stream is authenticated by node identity (M1 keeps the token on
+// the node and does not yet issue a separate node cert — noted as deferred).
+message Hello {
+  string node_id = 1;
+  string join_token = 2;
+  // Failure-domain labels (region, env, cloud); the wave grouping and the
+  // GatewaySet selectors read these. Free-form key=value.
+  map<string, string> labels = 3;
+  // The node's last-known fleet_version, or 0 if it has none (fresh join).
+  uint64 current_fleet_version = 4;
+}
+
+// The node accepted and swapped to this version. render_hash echoes back so
+// the control plane can detect a node that acked the wrong bytes (a bug or
+// tampering), not just the wrong number. A no-op is also an Ack: the node
+// confirms it is already at the pushed version.
+message Ack {
+  uint64 fleet_version = 1;
+  string render_hash = 2;
+}
+
+// The node rejected this version; the old one keeps serving. `reason` carries
+// the same precise validation errors the node already logs on a file NACK.
+message Nack {
+  uint64 fleet_version = 1;
+  string render_hash = 2;
+  string reason = 3;
+}
+
+// Periodic heartbeat carrying what the node is ACTUALLY running — the input to
+// drift detection (a later milestone; the field is here so the wire is stable).
+message Status {
+  string observed_render_hash = 1;
+  // Free-form health string ("ok", "degraded: ...").
+  string health = 2;
+  uint64 in_flight_streams = 3;
+}
+
+// Data plane -> control plane.
+message ClientMessage {
+  oneof kind {
+    Hello hello = 1;
+    Ack ack = 2;
+    Nack nack = 3;
+    Status status = 4;
+  }
+}
+
+// One method: the long-lived bidirectional stream. The control plane never
+// pushes imperative mutations (docs/07: "There is no Patch message and there
+// will not be one"). The only way to change a running node is a new rendered
+// snapshot, and the only source of a rendered snapshot is a commit.
+service FleetService {
+  rpc Session(stream ClientMessage) returns (stream ServerMessage);
+}

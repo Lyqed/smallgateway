@@ -1,0 +1,33 @@
+[package]
+name = "gatewayctl"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The control plane: compiles a config repo into per-node RenderedSnapshots and distributes them to the fleet over gRPC"
+
+[features]
+default = ["test-support"]
+# Exposes render::testrepo (temp config-repo builders) to integration tests.
+# Default-on so plain `cargo test` sees it; the builders only construct
+# throwaway temp repos, so carrying them in any build is harmless.
+test-support = []
+
+[lib]
+name = "gatewayctl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gatewayctl"
+path = "src/main.rs"
+
+[dependencies]
+gateway-core = { path = "../gateway-core" }
+gateway-proto = { path = "../gateway-proto" }
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+serde_yaml = "0.9"
+log = "0.4"
+env_logger = "0.11"

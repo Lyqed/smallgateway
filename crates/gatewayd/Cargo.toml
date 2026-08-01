@@ -19,6 +19,8 @@ path = "src/bin/mock_sts.rs"
 
 [dependencies]
 gateway-core = { path = "../gateway-core" }
+# Phase 2 M1: the fleet wire contract, for control-plane client mode.
+gateway-proto = { path = "../gateway-proto" }
 serde_json = "1"
 # Same foundation stack as spikes/proxy-pingora (Phase 0 decision: Pingora).
 pingora = { version = "0.8", features = ["proxy"] }
@@ -29,8 +31,13 @@ async-trait = "0.1"
 bytes = "1"
 log = "0.4"
 env_logger = "0.11"
+# gRPC client stack for control-plane mode (dial gatewayctl, hold the stream).
+tonic = "0.14"
+tonic-prost = "0.14"
+tokio-stream = "0.1"
 # Already in the tree via pingora; used directly for the SIGHUP reload
 # trigger (a dedicated current-thread runtime — pingora itself listens for
 # SIGINT/SIGTERM/SIGQUIT, never SIGHUP), and — milestone 3 — for the GB-7
 # STS credential exchange (net/io-util/time: a minimal HTTP/1.1 client).
-tokio = { version = "1", features = ["rt", "signal", "net", "io-util", "time"] }
+# rt-multi-thread + macros drive the control-plane client's stream runtime.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "signal", "net", "io-util", "time", "sync"] }

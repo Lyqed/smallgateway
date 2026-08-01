@@ -1,0 +1,5 @@
+# fleet-wide provider refs (docs/07 repo layout: providers available fleet-wide).
+# The demo points at a local mock_upstream on 6190.
+openai-demo:
+  kind: openai
+  upstream: { host: 127.0.0.1, port: 6190 }

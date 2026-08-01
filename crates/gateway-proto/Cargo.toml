@@ -1,0 +1,20 @@
+[package]
+name = "gateway-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The fleet-distribution gRPC wire contract (tonic + prost): RenderedSnapshot, Hello/Ack/Nack/Status/Push"
+
+[dependencies]
+# gRPC runtime + prost message runtime. tonic 0.14 split prost support into
+# tonic-prost; both are needed for the generated client/server + codec.
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+# A hermetic protoc: no system protoc dependency, reproducible across machines
+# (docs/07 freezes the wire format — the toolchain that produces it should not
+# vary by host). Ships a prebuilt binary the build.rs points prost-build at.
+protoc-bin-vendored = "3"

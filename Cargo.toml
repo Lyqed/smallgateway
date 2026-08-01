@@ -4,7 +4,12 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/gateway-core", "crates/gatewayd"]
+members = [
+    "crates/gateway-core",
+    "crates/gateway-proto",
+    "crates/gatewayctl",
+    "crates/gatewayd",
+]
 exclude = ["spikes/event-model", "spikes/proxy-pingora"]
 
 [workspace.package]

@@ -61,29 +61,50 @@ pub enum ReloadOutcome {
     Rejected { active: u64 },
 }
 
-/// Owns the config path, the version-stamping renderer, and the shared
-/// snapshot cell. Every trigger — SIGHUP, poll watcher, future control
-/// plane — calls the same `reload`.
+/// Owns the config source, the version-stamping renderer, and the shared
+/// snapshot cell. Every trigger — SIGHUP, poll watcher, control plane — calls
+/// the same reload logic (`reload` reads the file; `reload_from_text` binds
+/// bytes handed in over the wire), so the doc-03 semantics (no-op on identical
+/// hash, NACK-keeps-old, atomic swap, drain-on-old) are identical whether the
+/// new config came from disk or from a control-plane `Push`.
 pub struct Reloader {
     shared: SharedSnapshot,
     renderer: Renderer,
-    path: PathBuf,
-    /// Serializes concurrent triggers (SIGHUP racing the watcher): without
-    /// it two renders could stamp v2 and v3 and store them in the wrong
-    /// order — a version regression the lock makes impossible.
+    /// The file source, when in file mode. `None` in control-plane mode: there
+    /// is no local file, only pushed snapshots.
+    path: Option<PathBuf>,
+    /// Serializes concurrent triggers (SIGHUP racing the watcher, or a push
+    /// racing either): without it two renders could stamp v2 and v3 and store
+    /// them in the wrong order — a version regression the lock makes
+    /// impossible.
     reload_lock: Mutex<()>,
 }
 
 impl Reloader {
-    /// Initial render at startup: fail-fast, exactly like milestone 1 —
-    /// a bad file never serves a request.
+    /// Initial render at startup from a file: fail-fast, exactly like
+    /// milestone 1 — a bad file never serves a request.
     pub fn bootstrap(path: PathBuf) -> Result<Reloader, ConfigError> {
         let renderer = Renderer::new();
         let initial = renderer.render_file(&path)?;
         Ok(Reloader {
             shared: SharedSnapshot::new(initial),
             renderer,
-            path,
+            path: Some(path),
+            reload_lock: Mutex::new(()),
+        })
+    }
+
+    /// Initial render at startup from bytes handed in (control-plane mode: the
+    /// first `RenderedSnapshot` a joining node receives). Same fail-fast gate —
+    /// a first push that does not validate never serves a request, and the node
+    /// NACKs it upstream.
+    pub fn bootstrap_from_text(text: &str, source: &Path) -> Result<Reloader, ConfigError> {
+        let renderer = Renderer::new();
+        let initial = renderer.render_text(text, source)?;
+        Ok(Reloader {
+            shared: SharedSnapshot::new(initial),
+            renderer,
+            path: None,
             reload_lock: Mutex::new(()),
         })
     }
@@ -92,32 +113,60 @@ impl Reloader {
         self.shared.clone()
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The file path in file mode; `None` in control-plane mode.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
-    /// The single reload path. Reads the file once, no-ops on an identical
-    /// hash, NACKs (keeping the old snapshot) on any failure, and swaps
-    /// atomically on success.
+    /// The single file-mode reload path. Reads the file once and delegates to
+    /// [`Reloader::reload_from_text`] — file mode only differs in WHERE the
+    /// bytes come from; the no-op / NACK / swap / drain semantics are shared.
     pub fn reload(&self, trigger: &str) -> ReloadOutcome {
+        let Some(path) = self.path.clone() else {
+            // A file reload was triggered on a control-plane-mode node: there is
+            // no file. Treat as a loud no-op rather than a panic.
+            error!("[reload] file reload triggered but this node has no config file (control-plane mode)");
+            return ReloadOutcome::NoOp {
+                active: self.shared.load().version,
+            };
+        };
         let _serialized = self.reload_lock.lock().expect("reload lock");
-        let active = self.shared.load();
-
-        let text = match std::fs::read_to_string(&self.path) {
+        let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) => {
+                let active = self.shared.load();
                 error!(
                     "[reload] REJECTED (NACK, trigger={trigger}): cannot read {}: {e}; \
                      still serving cfg=v{} hash={}",
-                    self.path.display(),
+                    path.display(),
                     active.version,
                     active.short_hash(),
                 );
                 return ReloadOutcome::Rejected { active: active.version };
             }
         };
+        self.reload_from_text_locked(&text, &path, trigger)
+    }
 
-        if content_hash(&text) == active.content_hash {
+    /// Bind config bytes handed in over the wire (a control-plane `Push`) or
+    /// from any other in-memory source. Same no-op / NACK-keeps-old / atomic-
+    /// swap / drain-on-old semantics as the file path — the control plane is
+    /// just one more trigger funneling into the identical logic
+    /// (docs/03-hot-swap.md; docs/07: "the node already knows how to accept,
+    /// reject, and drain a version").
+    ///
+    /// The returned [`ReloadOutcome`] maps straight onto the wire Ack/Nack the
+    /// client sends back (docs/07, "ACK/NACK semantics, extended").
+    pub fn reload_from_text(&self, text: &str, source: &Path, trigger: &str) -> ReloadOutcome {
+        let _serialized = self.reload_lock.lock().expect("reload lock");
+        self.reload_from_text_locked(text, source, trigger)
+    }
+
+    /// The shared body, run under the already-held reload lock.
+    fn reload_from_text_locked(&self, text: &str, source: &Path, trigger: &str) -> ReloadOutcome {
+        let active = self.shared.load();
+
+        if content_hash(text) == active.content_hash {
             debug!(
                 "[reload] no-op (trigger={trigger}): content hash {} unchanged; \
                  still cfg=v{}",
@@ -127,7 +176,7 @@ impl Reloader {
             return ReloadOutcome::NoOp { active: active.version };
         }
 
-        match self.renderer.render_text(&text, &self.path) {
+        match self.renderer.render_text(text, source) {
             Ok(next) => {
                 let (old, new) = (active.version, next.version);
                 info!(
@@ -191,13 +240,17 @@ pub fn spawn_sighup_listener(reloader: Arc<Reloader>) {
 /// advances even when the reload NACKs, so a bad file is rejected loudly
 /// once per change, not once per tick.
 pub fn spawn_poll_watcher(reloader: Arc<Reloader>, interval: Duration) {
+    let Some(path) = reloader.path().map(Path::to_path_buf) else {
+        // No file to watch in control-plane mode; the stream is the trigger.
+        return;
+    };
     thread::Builder::new()
         .name("cfg-watch".to_string())
         .spawn(move || {
-            let mut last_mtime = mtime_of(reloader.path());
+            let mut last_mtime = mtime_of(&path);
             loop {
                 thread::sleep(interval);
-                let mtime = mtime_of(reloader.path());
+                let mtime = mtime_of(&path);
                 if mtime != last_mtime {
                     last_mtime = mtime;
                     reloader.reload("poll");
@@ -364,5 +417,74 @@ mod tests {
         // And a real change afterwards still gets the next version, v2.
         std::fs::write(&path, valid_yaml("canary")).unwrap();
         assert_eq!(reloader.reload("test"), ReloadOutcome::Swapped { old: 1, new: 2 });
+    }
+
+    // ---- control-plane-mode paths (bytes pushed over the wire) -------------
+
+    #[test]
+    fn bootstrap_from_text_binds_v1_and_fails_fast_on_invalid() {
+        let src = Path::new("<control-plane>");
+        let reloader = Reloader::bootstrap_from_text(&valid_yaml("prod"), src).unwrap();
+        assert_eq!(reloader.shared().load().version, 1);
+        assert!(reloader.path().is_none(), "no file in control-plane mode");
+
+        assert!(matches!(
+            Reloader::bootstrap_from_text(&invalid_yaml(), src),
+            Err(ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn pushed_bytes_swap_noop_and_nack_exactly_like_the_file_path() {
+        let src = Path::new("<control-plane>");
+        let reloader = Reloader::bootstrap_from_text(&valid_yaml("prod"), src).unwrap();
+
+        // A new valid push swaps to v2.
+        assert_eq!(
+            reloader.reload_from_text(&valid_yaml("canary"), src, "push"),
+            ReloadOutcome::Swapped { old: 1, new: 2 }
+        );
+        assert_eq!(reloader.shared().load().version, 2);
+
+        // Re-pushing identical bytes is a hash no-op — no new version.
+        assert_eq!(
+            reloader.reload_from_text(&valid_yaml("canary"), src, "push"),
+            ReloadOutcome::NoOp { active: 2 }
+        );
+
+        // An invalid push is NACKed and v2 keeps serving (never silent).
+        assert_eq!(
+            reloader.reload_from_text(&invalid_yaml(), src, "push"),
+            ReloadOutcome::Rejected { active: 2 }
+        );
+        assert_eq!(reloader.shared().load().version, 2, "old snapshot still active");
+
+        // A later good push resumes at v3 (the NACK consumed no version).
+        assert_eq!(
+            reloader.reload_from_text(&valid_yaml("prod"), src, "push"),
+            ReloadOutcome::Swapped { old: 2, new: 3 }
+        );
+    }
+
+    #[test]
+    fn pushed_swap_drains_the_old_version_on_its_last_holder() {
+        let src = Path::new("<control-plane>");
+        let reloader = Reloader::bootstrap_from_text(&valid_yaml("prod"), src).unwrap();
+
+        // An in-flight request bound v1; a push swaps to v2 mid-stream.
+        let bound = reloader.shared().load();
+        let old_alive = Arc::downgrade(&bound);
+        assert_eq!(
+            reloader.reload_from_text(&valid_yaml("canary"), src, "push"),
+            ReloadOutcome::Swapped { old: 1, new: 2 }
+        );
+
+        // The in-flight stream still sees v1 while v2 serves new binds — the
+        // drain semantics carry over UNCHANGED from the file path.
+        assert_eq!(bound.version, 1);
+        assert_eq!(reloader.shared().load().version, 2);
+        assert!(old_alive.upgrade().is_some(), "old snapshot pinned by the stream");
+        drop(bound);
+        assert!(old_alive.upgrade().is_none(), "old snapshot freed on last drop");
     }
 }

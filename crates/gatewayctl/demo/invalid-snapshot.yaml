@@ -1,0 +1,23 @@
+# A deliberately-invalid flat snapshot injected via `gatewayctl --push-raw` on
+# SIGUSR1, BYPASSING the control plane's render gate. The route references a
+# provider that does not exist, so every node's local Config::from_yaml
+# validation REJECTS it — each node NACKs, the wave halts, the fleet's committed
+# version does not advance, and every node keeps serving its prior good version.
+# This proves the node's INDEPENDENT validation authority (docs/07: "A snapshot
+# that fails local validation is Nacked and the old one keeps serving").
+providers:
+  openai-demo:
+    kind: openai
+    upstream: { host: 127.0.0.1, port: 6190 }
+routes:
+  - prefix: /openai
+    provider: this-provider-does-not-exist
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{"error":"attribution_required"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route"}'
