@@ -28,27 +28,27 @@ export function Ownership() {
               id="ownership-heading"
               className="voice-display max-w-4xl text-3xl leading-[1.05] sm:text-5xl"
             >
-              If something breaks because of a change you made six months ago —{" "}
+              If something breaks because of a change you made six months ago,{" "}
               <span className="relative inline-block whitespace-nowrap pt-[0.12em]">
                 you are responsible.
                 <HandCircle className="pointer-events-none absolute -left-[5%] top-[0.06em] h-[112%] w-[112%]" />
               </span>
             </h2>
             <p aria-hidden className="voice-hand mt-5 rotate-[-2deg] text-xl">
-              not blamed — responsible
+              not blamed. responsible
             </p>
           </Reveal>
 
           <div className="mt-10 grid gap-8 lg:grid-cols-2">
             <p className="leading-relaxed text-steel-dark">
-              You show up, you diagnose, you fix or revert — and the postmortem
+              You show up, you diagnose, you fix or revert, and the postmortem
               names the mechanism, not the person. This is the community&rsquo;s
               contract, and it shapes the technical design directly: Git as
               truth is what makes the six-month rule survivable.
             </p>
             <p className="leading-relaxed text-steel-dark">
-              What that buys a community: nothing is impossible anymore — the
-              tooling closes the skill gap — so the differentiator is knowing
+              What that buys a community: the tooling closes the skill gap, so
+              the differentiator is knowing
               how to build, collaborate, and stand behind changes for their
               whole lifetime. A gateway owned end to end, by the people who run
               it.

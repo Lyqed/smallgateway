@@ -5,7 +5,7 @@ import { SITE_CONFIG } from "@/lib/site-config";
 
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
-export const alt = `${SITE_CONFIG.name} — ${SITE_CONFIG.tagline}`;
+export const alt = `${SITE_CONFIG.name}: ${SITE_CONFIG.tagline}`;
 
 /** Fonts are vendored (Satori needs TTF; fetching Google Fonts at build
  * time is flaky on deploy platforms). Same two voices as the page. */
@@ -115,7 +115,7 @@ export default async function Image() {
             lineHeight: 1.35,
           }}
         >
-          A gateway platform teams build, own, and answer for — measured by
+          A gateway platform teams build, own, and answer for, measured by
           the Gateway Baseline.
         </div>
         <div

@@ -17,7 +17,7 @@ export function SiteFooter() {
               Measured by the Baseline.
             </p>
             <p className="voice-mono mt-4 text-xs leading-relaxed text-[oklch(66%_0.012_255)]">
-              &ldquo;{SITE_CONFIG.workingName}&rdquo; is the working name — the
+              &ldquo;{SITE_CONFIG.workingName}&rdquo; is the working name. The
               final name is an open decision, carried openly.
             </p>
           </div>
@@ -26,7 +26,7 @@ export function SiteFooter() {
             <ul className="voice-mono flex flex-col gap-2.5 text-sm md:items-end">
               <li>
                 <a href={SITE_CONFIG.sisterUrl} className="link-floor">
-                  {SITE_CONFIG.sisterName} — the yardstick ↗
+                  {SITE_CONFIG.sisterName} · the yardstick ↗
                 </a>
               </li>
               <li>

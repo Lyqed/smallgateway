@@ -12,12 +12,12 @@ const STARTING_POINTS = [
   {
     step: "02",
     title: "Run the spikes",
-    body: "Spike A replays three providers' wire formats through the canonical event stream — cargo test, then replay the fixtures through the CLI. Spike B was the foundation bake-off that chose Pingora.",
+    body: "Spike A replays three providers' wire formats through the canonical event stream: cargo test, then replay the fixtures through the CLI. Spike B was the foundation bake-off that chose Pingora.",
   },
   {
     step: "03",
     title: "Adapters as first contributions",
-    body: "Each provider's wire format meets the canonical stream in one adapter — a bounded, testable surface, shaped for a first PR.",
+    body: "Each provider's wire format meets the canonical stream in one adapter: a bounded, testable surface, shaped for a first PR.",
   },
 ] as const;
 
@@ -81,7 +81,7 @@ export function Contribute() {
 
             <p className="voice-mono mt-8 max-w-2xl border-t border-violet/20 pt-5 text-xs leading-relaxed text-steel-dark">
               license: Apache-2.0 is the working assumption, chosen before the
-              repo goes public — deferred, deliberately, like everything else
+              repo goes public. Deferred, deliberately, like everything else
               that can be.
             </p>
           </div>

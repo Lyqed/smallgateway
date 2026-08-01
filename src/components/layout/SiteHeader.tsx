@@ -7,7 +7,7 @@ import { NAV_ITEMS, SITE_CONFIG } from "@/lib/site-config";
  */
 export function SiteHeader() {
   return (
-    <header className="sticky top-0 z-50 border-b border-steel/60 bg-atrium/90 backdrop-blur-md">
+    <header className="sticky top-0 z-50 border-b border-steel/60 bg-atrium">
       <div className="mx-auto flex min-h-14 w-full max-w-[80rem] flex-wrap items-center justify-between gap-x-6 gap-y-1 px-5 py-2 sm:px-8">
         <a
           href="#main"

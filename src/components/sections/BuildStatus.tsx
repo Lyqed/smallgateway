@@ -28,13 +28,13 @@ const PHASES = [
   {
     id: "0",
     title: "The spikes",
-    note: "throwaway code, non-throwaway conclusions — both spikes reported; closed 1 August 2026",
+    note: "throwaway code, non-throwaway conclusions; both spikes reported; closed 1 August 2026",
     state: "done" as const,
   },
   {
     id: "1",
     title: "Standalone data plane",
-    note: "Baseline-conformant from a static file; the checks pass as automated conformance tests and earn a tracker row — under way in crates/",
+    note: "Baseline-conformant from a static file; the checks pass as automated conformance tests and earn a tracker row; under way in crates/",
     state: "in progress" as const,
   },
   {
@@ -74,7 +74,7 @@ const NAMED_RISKS = [
   },
   {
     name: "“good enough”",
-    body: "The strongest competitor is not any gateway — it is “agentgateway CRDs + ArgoCD is good enough.” The win is the domain-aware reconciler and the non-k8s fleet story; a phase that advances neither is scope creep.",
+    body: "The strongest competitor is not any gateway. It is “agentgateway CRDs + ArgoCD is good enough.” The win is the domain-aware reconciler and the non-k8s fleet story; a phase that advances neither is scope creep.",
   },
 ] as const;
 
@@ -117,8 +117,8 @@ export function BuildStatus() {
         <Reveal className="mt-12">
           <div className="border border-steel border-l-4 border-l-teal bg-teal-wash p-7 sm:p-9">
             <div className="flex flex-wrap items-center gap-3">
-              <h3 className="voice-display text-2xl">Phase 0 — the spikes</h3>
-              <StatusChip tone="teal" label="closed — 1 August 2026" />
+              <h3 className="voice-display text-2xl">Phase 0 · the spikes</h3>
+              <StatusChip tone="teal" label="closed · 1 August 2026" />
             </div>
 
             <div className="mt-7 grid gap-7 lg:grid-cols-2">
@@ -133,31 +133,31 @@ export function BuildStatus() {
                   <StatusChip tone="teal" label="error bound measured" />
                 </div>
                 <p className="mt-4 text-sm leading-relaxed text-steel-dark">
-                  OpenAI SSE, Anthropic events, and Bedrock event-stream — with
-                  its real binary framing — normalize into the canonical
+                  OpenAI SSE, Anthropic events, and Bedrock event-stream, with
+                  its real binary framing, normalize into the canonical
                   stream, for text and for streamed tool calls. Replaying any
                   fixture at chunk sizes 1, 7, 64, or whole-buffer produces
                   byte-identical event streams. And the metering error bound is
                   measured and published, from 17 machine-recorded transcripts
                   rather than authored fixtures: the chars/4 estimate lands
                   within ~±50% on all but one real stream, and its worst misses
-                  are structural — tool-call scaffolding and tiny responses.
+                  are structural: tool-call scaffolding and tiny responses.
                 </p>
               </article>
 
               <article className="border border-steel bg-[oklch(99%_0.002_95)] p-6">
                 <p className="voice-mono text-xs text-steel-dark">spike B</p>
                 <h4 className="mt-1.5 text-lg font-medium tracking-tight">
-                  The foundation bake-off — Pingora vs agentgateway
+                  The foundation bake-off: Pingora vs agentgateway
                 </h4>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <StatusChip tone="teal" label="decided — Pingora" />
+                  <StatusChip tone="teal" label="decided · Pingora" />
                 </div>
                 <p className="mt-4 text-sm leading-relaxed text-steel-dark">
                   The same minimal streaming proxy, built two ways: once on
                   Pingora, Cloudflare&rsquo;s Rust proxy library, and once
                   embedding/extending agentgateway (Apache-2.0). The Pingora
-                  arm reported positive — the response body tapped without
+                  arm reported positive: the response body tapped without
                   buffering, every chunk fed through the Spike A adapters
                   while identical bytes stream on to the client. The
                   agentgateway arm found the core unpublished and, decisively,
@@ -219,7 +219,7 @@ export function BuildStatus() {
                           ? "● done"
                           : phase.state === "in progress"
                             ? "● in progress"
-                            : "— ahead"}
+                            : "· ahead"}
                       </span>
                     </p>
                     <p className="mt-1 max-w-xl text-sm text-steel-dark">
@@ -235,7 +235,7 @@ export function BuildStatus() {
               <ul className="voice-mono mt-3 space-y-2 text-xs text-steel-dark">
                 <li className="flex items-center gap-2">
                   <span aria-hidden className="size-2 rounded-full bg-teal" />
-                  done — phase 0, so far
+                  done · phase 0, so far
                 </li>
                 <li className="flex items-center gap-2">
                   <span aria-hidden className="size-2 rounded-full bg-gold" />
@@ -246,7 +246,7 @@ export function BuildStatus() {
                     aria-hidden
                     className="h-px w-2 bg-steel-dark"
                   />
-                  ahead — steel, not promises
+                  ahead · steel, not promises
                 </li>
               </ul>
 

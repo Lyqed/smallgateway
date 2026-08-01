@@ -38,7 +38,7 @@ export function Principles() {
               </h3>
               <p className="mt-4 leading-relaxed text-steel-dark">
                 Taken straight from the ArgoCD-vs-Spinnaker lesson: ArgoCD won
-                on operational weight. Adopted here as a hard budget — one data
+                on operational weight. Adopted here as a hard budget: one data
                 plane, a single binary a team can run on a VM, in a container,
                 or in a cluster, configured from a static file with no control
                 plane at all; and one control plane, a single binary with
@@ -66,8 +66,8 @@ export function Principles() {
                 The vendors are selling urgency; the Baseline is a list of
                 eight-going-on-nine verifiable behaviors, and most of them are
                 weeks of work, not platforms. So: no vendor gateway, no SaaS
-                control plane, no paid observability tier until the matrix —
-                verified cells, not vendor claims — shows a gap this community
+                control plane, no paid observability tier until the matrix
+                (verified cells, not vendor claims) shows a gap this community
                 cannot close in reasonable time. Every dependency is a
                 governance relationship. Reversible decisions get made fast and
                 cheap; irreversible ones get made late and once.
@@ -75,7 +75,7 @@ export function Principles() {
               <div aria-hidden className="mt-6 flex items-end gap-3">
                 <HandArrow className="h-10 w-12 -scale-x-100" />
                 <p className="voice-hand rotate-[2deg] pb-1 text-2xl">
-                  you don&rsquo;t need to buy anything — yet
+                  you don&rsquo;t need to buy anything, yet
                 </p>
               </div>
             </article>
@@ -96,7 +96,7 @@ export function Principles() {
                 names it, <span className="voice-mono text-sm">git revert</span>{" "}
                 undoes it, and the rendered-snapshot history shows what every
                 data plane was running at the moment of the incident.
-                Break-glass exists, with a TTL — visible, temporary,
+                Break-glass exists, with a TTL: visible, temporary,
                 auto-reverting. And stated invariants over magic: staleness
                 bounds, overlap semantics, bounded-overspend windows, published
                 as part of the spec.

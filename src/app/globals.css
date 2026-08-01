@@ -38,19 +38,28 @@
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Derived shades — same semantic roles, AA-safe where the raw mural
- * tones fall short of 4.5:1 for small text on the atrium ground.
- * (Roles are never swapped: skylight-deep is still "links", gold-deep
- * is still "in progress".) */
+/* ------------------------------------------------------------------ *
+ * Derived extension — shared verbatim across both sites. The mural
+ * tokens above are reserved for non-text (dots, fills, strokes) where
+ * they fall short of 4.5:1 on the atrium ground; text set in a mural
+ * color uses the darker `-deep` member of the same family (brief
+ * section 6: "verify every mural-color-on-white pairing >= 4.5:1 for
+ * text, or reserve for non-text"). Roles are never swapped. `-wash`
+ * members are the faint section grounds. This block is kept byte-
+ * identical across both sites.
+ * ------------------------------------------------------------------ */
 :root {
   --skylight-deep: oklch(46% 0.14 250);      /* link text at body sizes */
+  --monarch-deep: oklch(50% 0.155 55);       /* leader/emphasis text */
   --violet-deep: oklch(47% 0.19 300);        /* human-layer small text on washes */
-  --gold-deep: oklch(55% 0.12 85);           /* in-progress label text */
-  --teal-deep: oklch(46% 0.1 195);           /* verified label text */
+  --teal-deep: oklch(44% 0.095 195);         /* verified label text */
+  --gold-deep: oklch(48% 0.105 90);          /* in-progress label text */
+  --blossom-deep: oklch(47% 0.185 25);       /* missing/error label text */
   --violet-wash: oklch(95.5% 0.02 300);      /* community panel ground */
   --gold-wash: oklch(96% 0.03 95);           /* in-progress panel ground */
   --teal-wash: oklch(96% 0.02 195);          /* done/verified panel ground */
   --floor-soft: oklch(30% 0.014 270);        /* floor hairlines */
+  --focus-ring: oklch(53% 0.16 55);          /* darker monarch, AA-safe on atrium */
 }
 
 @theme inline {
@@ -62,6 +71,7 @@
   --color-floor-soft: var(--floor-soft);
   --color-ink: var(--ink);
   --color-monarch: var(--monarch);
+  --color-monarch-deep: var(--monarch-deep);
   --color-violet: var(--violet);
   --color-violet-deep: var(--violet-deep);
   --color-violet-wash: var(--violet-wash);
@@ -74,6 +84,7 @@
   --color-skylight: var(--skylight);
   --color-skylight-deep: var(--skylight-deep);
   --color-blossom: var(--blossom);
+  --color-blossom-deep: var(--blossom-deep);
 
   --font-sans: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex), ui-monospace, "SF Mono", Menlo, monospace;
@@ -100,9 +111,11 @@ body {
   background: oklch(from var(--monarch) l c h / 0.35);
 }
 
-/* Keyboard-visible focus: 2px monarch outline, offset 2px (brief §6). */
+/* Keyboard-visible focus: 2px darker-monarch outline, offset 2px
+ * (brief §6). The AA-safe --focus-ring keeps >=3:1 against the atrium
+ * ground; identical treatment on the sister site. */
 :focus-visible {
-  outline: 2px solid var(--monarch);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 2px;
 }

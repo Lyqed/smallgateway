@@ -7,7 +7,7 @@ import { Reveal } from "@/components/reveal/Reveal";
 const INSTRUMENT_ROW = [
   "two binaries + git",
   "GB-1..GB-9 as acceptance tests",
-  "apache-2.0 — working assumption",
+  "apache-2.0 (working assumption)",
 ] as const;
 
 /**
@@ -50,8 +50,8 @@ export function Hero() {
             <span className="relative inline-block whitespace-nowrap">
               answer for
               <HandCircle className="pointer-events-none absolute -left-[12%] -top-[38%] h-[176%] w-[124%]" />
-            </span>{" "}
-            — measured by the{" "}
+            </span>
+            , measured by the{" "}
             <a href={SITE_CONFIG.sisterUrl} className="link-skylight">
               Gateway Baseline
             </a>
@@ -61,7 +61,7 @@ export function Hero() {
             aria-hidden
             className="voice-hand ml-8 mt-3 -rotate-2 text-lg sm:ml-40"
           >
-            answer for it — the six-month rule
+            answer for it: the six-month rule
           </p>
         </Reveal>
 
