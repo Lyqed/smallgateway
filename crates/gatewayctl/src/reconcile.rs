@@ -4,9 +4,12 @@
 //! The reconciler is the control plane's loop. Every tick it compares exactly
 //! three hashes per connected node, all of which already exist as concepts:
 //!
-//! - **Desired**: the `render_hash` the control plane computes for that node
-//!   from the current applied commit. (Selectors are a Phase 5 stub, so in this
-//!   milestone every node's desired hash is the fleet's single applied render.)
+//! - **Desired**: the `render_hash` the control plane computes for THAT node
+//!   from the current applied commit — the node's OWN per-node render, i.e. the
+//!   GatewaySet-stamped render for a node whose labels match a GatewaySet, else
+//!   the fleet-wide render (`Fleet::desired_for`). A node matching no GatewaySet
+//!   has the fleet-wide hash as before, so the single-node and no-GatewaySet
+//!   cases are unchanged.
 //! - **Delivered**: the `render_hash` the control plane last PUSHED to the node
 //!   (`Fleet::delivered_hash`).
 //! - **Observed**: the `render_hash` the node reports in `Status` — what it is
@@ -136,6 +139,11 @@ pub struct TickReport {
     /// are mid-rollout, not drifted, so the reconciler did not fight them
     /// (docs/07). Counted, never healed, this tick.
     pub mid_rollout_deferred: usize,
+    /// Nodes PENDING in a not-yet-applied or halt-frozen LATER wave: no wave is
+    /// in flight, but a partial application exists and this node's wave has not
+    /// reached the target commit. On its prior version legitimately (pending,
+    /// not drifted); left to the wave rollout, never healed forward (docs/07).
+    pub pending_later_wave: usize,
 }
 
 /// The reconciler: owns the tick interval and drives [`classify`] + the
@@ -154,7 +162,6 @@ impl Reconciler {
     /// convergence action. Returns a report of what happened. This is the loop
     /// body — [`Reconciler::run`] just calls it on a timer.
     pub async fn tick(&self) -> TickReport {
-        let desired = self.cp.fleet.applied().render_hash;
         let now = now_unix();
         let mut report = TickReport::default();
 
@@ -162,6 +169,13 @@ impl Reconciler {
             let Some(mut node) = self.cp.store.get(&node_id) else {
                 continue;
             };
+            // Desired is the NODE'S OWN per-node render (GatewaySet-stamped when
+            // its labels match one, else the fleet-wide render). Classifying
+            // against the fleet-wide hash would see a stamped node as forever
+            // drifted and heal it toward the wrong (unstamped) bytes every tick;
+            // its own desired hash is the one it will actually ack.
+            let desired = self.cp.fleet.desired_for(&node.labels).render_hash;
+
             // Fold the AUTHORITATIVE delivered hash (from the Fleet's per-node
             // push record) into the node view before classifying, so a lost push
             // that was never acked is still seen as delivery-stale.
@@ -185,6 +199,25 @@ impl Reconciler {
                     "[reconcile] node {node_id:?} is mid-rollout (a wave is in flight); \
                      deferring to the wave, NOT healing (docs/07: do not fight a \
                      legitimately mid-rollout node)"
+                );
+                continue;
+            }
+
+            // Do not heal a node PENDING in a not-yet-applied or halt-frozen
+            // LATER wave (docs/07). No wave is in flight now, but a partial
+            // application exists: some wave reached the target commit while this
+            // node's (later) wave has not. Such a node is on its prior version
+            // ON PURPOSE — pending, not drifted — and its convergence belongs to
+            // the wave rollout (or a resumed rollout after the halt is fixed),
+            // never to a heal that would drag it forward past its wave's turn.
+            if case.heals_by_repush()
+                && self.cp.fleet.node_pending_in_unapplied_wave(&node.labels)
+            {
+                report.pending_later_wave += 1;
+                info!(
+                    "[reconcile] node {node_id:?} is PENDING in a not-yet-applied/frozen later \
+                     wave; it is on its prior version legitimately, NOT drifted — leaving it to \
+                     the wave rollout (docs/07)"
                 );
                 continue;
             }
@@ -281,16 +314,18 @@ impl Reconciler {
                 || report.persistently_divergent > 0
                 || report.break_glass_tolerated > 0
                 || report.mid_rollout_deferred > 0
+                || report.pending_later_wave > 0
             {
                 info!(
                     "[reconcile] tick: in_sync={} healed={} break_glass={} divergent={} \
-                     unknown={} mid_rollout={}",
+                     unknown={} mid_rollout={} pending_later_wave={}",
                     report.in_sync,
                     report.healed,
                     report.break_glass_tolerated,
                     report.persistently_divergent,
                     report.observed_unknown,
                     report.mid_rollout_deferred,
+                    report.pending_later_wave,
                 );
             }
         }

@@ -174,15 +174,78 @@ impl AdmissionPolicy {
     }
 
     /// Admit a candidate config **source** (a directory or a Git ref/commit):
-    /// resolve + render it, then apply the rules. This is the pre-rollout gate
-    /// and the `admit` subcommand's core.
+    /// resolve + render it, then apply the rules — INCLUDING the GatewaySet-
+    /// stamped variants (a GatewaySet is admission-checked like any config,
+    /// docs/02). This is the pre-rollout gate and the `admit` subcommand's core.
     pub fn admit_source(&self, source: &dyn ConfigSource) -> Result<Verdict, AdmitError> {
         let resolved = source.resolve()?;
-        let rendered = crate::render::render_resolved(&resolved)?;
+        self.admit_resolved(&resolved)
+    }
+
+    /// Admit an already-resolved repo: the fleet-wide render FIRST, then every
+    /// GatewaySet's stamped effect. A GatewaySet overlay changes what a matching
+    /// node serves, so an overlay that breaks a Baseline guarantee (drops the
+    /// attribution keys, smuggles in a forbidden construct, raises a pinned cap
+    /// past the override factor) must be caught here, at admission, regardless of
+    /// which node it lands on — never discovered only when a node NACKs it. Each
+    /// GatewaySet is admitted by stamping it onto the base with a REPRESENTATIVE
+    /// label set that satisfies its own selector, so the check is a pure function
+    /// of the repo (no live node labels needed) and deterministic in CI.
+    pub fn admit_resolved(
+        &self,
+        resolved: &crate::source::ResolvedRepo,
+    ) -> Result<Verdict, AdmitError> {
+        // Fleet-wide render: the base every non-matching node serves.
+        let rendered = crate::render::render_resolved(resolved)?;
         let flat = String::from_utf8(rendered.config_bytes)
             .map_err(|e| AdmitError::Unrenderable(format!("rendered config not utf-8: {e}")))?;
-        self.admit_yaml(&flat)
+        let mut failures = match self.admit_yaml(&flat)? {
+            Verdict::Admit => Vec::new(),
+            Verdict::Block(f) => f,
+        };
+
+        // Each GatewaySet's stamped variant, under a representative matching
+        // label set. A failure is attributed to the GatewaySet by name.
+        let gatewaysets = crate::render::read_gatewaysets(resolved)
+            .map_err(|e| AdmitError::Unrenderable(e.to_string()))?;
+        for set in &gatewaysets.sets {
+            let labels = representative_labels(&set.selector);
+            let stamped = crate::render::render_resolved_for_node(resolved, &gatewaysets, &labels)?;
+            let stamped_flat = String::from_utf8(stamped.config_bytes).map_err(|e| {
+                AdmitError::Unrenderable(format!("gatewayset {:?} render not utf-8: {e}", set.name))
+            })?;
+            if let Verdict::Block(fs) = self.admit_yaml(&stamped_flat)? {
+                for mut f in fs {
+                    f.detail = format!("via GatewaySet {:?}: {}", set.name, f.detail);
+                    failures.push(f);
+                }
+            }
+        }
+
+        Ok(if failures.is_empty() {
+            Verdict::Admit
+        } else {
+            Verdict::Block(failures)
+        })
     }
+}
+
+/// A representative label map that satisfies `selector`: for each term, the
+/// first accepted value. An empty selector (matches everything) yields empty
+/// labels, which every render treats as the fleet-wide base plus the empty-
+/// selector GatewaySet. This lets admission render a GatewaySet's stamped effect
+/// without any live node — the overlay's effect on the Baseline is the same for
+/// every node the selector matches.
+fn representative_labels(
+    selector: &crate::waves::Selector,
+) -> std::collections::BTreeMap<String, String> {
+    let mut labels = std::collections::BTreeMap::new();
+    for term in &selector.terms {
+        if let Some(first) = term.in_values.first() {
+            labels.insert(term.label.clone(), first.clone());
+        }
+    }
+    labels
 }
 
 /// The built-in admission gates — the Baseline guarantees the gateway must
@@ -608,5 +671,64 @@ rejections:
         let rules: Vec<&str> = verdict.failures().iter().map(|f| f.rule.as_str()).collect();
         assert!(rules.contains(&"GB-1"), "{rules:?}");
         assert!(rules.contains(&"GB-4"), "{rules:?}");
+    }
+
+    // --- GatewaySet admission (docs/02: a GatewaySet is admitted like config) ---
+
+    /// Write a base repo (env=prod, valid) plus a `gatewaysets.yaml` with `body`.
+    fn repo_with_gatewaysets(gatewaysets_yaml: &str) -> crate::source::ResolvedRepo {
+        use crate::source::{ConfigSource, DirectorySource};
+        let root = crate::render::testrepo::write("prod");
+        std::fs::write(root.join("gatewaysets.yaml"), gatewaysets_yaml).unwrap();
+        DirectorySource::new(&root).resolve().unwrap()
+    }
+
+    #[test]
+    fn a_benign_gatewayset_is_admitted() {
+        // A GatewaySet that only stamps a harmless extra pin admits — it does not
+        // break any Baseline guarantee.
+        let resolved = repo_with_gatewaysets(
+            "\
+gatewaysets:
+  - name: eu-tier
+    selector: { region: eu }
+    overlay:
+      fleet:
+        attribution:
+          pinned: { tier: gold }
+",
+        );
+        let verdict = AdmissionPolicy::new().admit_resolved(&resolved).unwrap();
+        assert_eq!(verdict, Verdict::Admit, "{:?}", verdict.failures());
+    }
+
+    #[test]
+    fn a_gatewayset_that_smuggles_a_forbidden_construct_is_blocked() {
+        // The fleet-wide render is clean, but a GatewaySet overlay introduces a
+        // banned in-gateway-templating construct. Admission must catch it on the
+        // stamped variant (docs/07 bans the construct precisely so the reviewed
+        // diff is the served diff), attributed to the GatewaySet by name — never
+        // discovered only when a matching node NACKs.
+        let resolved = repo_with_gatewaysets(
+            "\
+gatewaysets:
+  - name: sneaky-eu
+    selector: { region: eu }
+    overlay:
+      fleet:
+        attribution:
+          pinned: { greeting: \"{{ request.headers.x }}\" }
+",
+        );
+        let verdict = AdmissionPolicy::new().admit_resolved(&resolved).unwrap();
+        assert!(!verdict.is_admitted(), "the forbidden construct must block");
+        assert!(
+            verdict
+                .failures()
+                .iter()
+                .any(|f| f.detail.contains("GatewaySet \"sneaky-eu\"")),
+            "the failure names the offending GatewaySet: {:?}",
+            verdict.failures()
+        );
     }
 }

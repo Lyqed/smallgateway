@@ -1,0 +1,9 @@
+# GB-4: the operator owns every rejection body (mandatory fleet-scope block).
+missing_attribution:
+  status: 428
+  content_type: application/json
+  body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
+unknown_route:
+  status: 404
+  content_type: application/json
+  body: '{"error":"unknown_route","path":"{{route}}"}'

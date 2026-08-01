@@ -937,6 +937,7 @@ dependencies = [
  "gix",
  "log",
  "prost",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tokio",

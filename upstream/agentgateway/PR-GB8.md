@@ -135,9 +135,3 @@ Stated plainly so they are not hidden:
   serializes the provider through a map, which alphabetizes the provider's
   field order in the normalized-config dump. Cosmetic only; the wire format
   (JSON/YAML object) is order-insensitive.
-
----
-
-Context: this change came out of gateway-baseline conformance checks for
-operator-assigned (rather than caller-asserted) cost attribution
-(https://thegatewaybaseline.com).

@@ -28,6 +28,10 @@ tonic-prost = "0.14"
 prost = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+# serde derive for the small waves.yaml / gatewaysets.yaml deserialize shapes.
+# Already in the workspace tree via gateway-core — not a new dependency family;
+# the wave walking and selector matching themselves are plain Rust.
+serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 log = "0.4"
 env_logger = "0.11"

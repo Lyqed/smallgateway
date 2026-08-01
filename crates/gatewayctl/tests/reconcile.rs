@@ -64,6 +64,61 @@ impl Harness {
         Harness { addr: endpoint, cp }
     }
 
+    /// Boot a control plane whose fleet has an eu -> us TWO-wave plan, applied at
+    /// `env`, minting a region token per wave. Used to prove the reconciler does
+    /// not fight a node PENDING in a not-yet-applied later wave.
+    async fn start_multiwave(env: &str) -> Harness {
+        use gatewayctl::render::{read_gatewaysets, render_resolved};
+        use gatewayctl::source::{ConfigSource, DirectorySource};
+        use gatewayctl::waves::{Selector, SelectorTerm, UnmatchedPolicy, Wave, WavePlan};
+
+        let root = testrepo::write(env);
+        let resolved = DirectorySource::new(&root).resolve().unwrap();
+        let applied = render_resolved(&resolved).unwrap();
+        let gatewaysets = read_gatewaysets(&resolved).unwrap();
+        let plan = WavePlan::new(
+            vec![
+                Wave {
+                    name: "eu".to_string(),
+                    selector: Selector::of(vec![SelectorTerm::eq("region", "eu")]),
+                },
+                Wave {
+                    name: "us".to_string(),
+                    selector: Selector::of(vec![SelectorTerm::eq("region", "us")]),
+                },
+            ],
+            UnmatchedPolicy::ImplicitFinalWave,
+        );
+        let fleet = Arc::new(Fleet::from_source(applied, resolved, gatewaysets, plan));
+        let store = Arc::new(RuntimeStore::new());
+        let tokens = Arc::new(JoinTokens::new(300));
+        let eu = BTreeMap::from([("region".to_string(), "eu".to_string())]);
+        let us = BTreeMap::from([("region".to_string(), "us".to_string())]);
+        tokens.mint("tok-eu", eu);
+        tokens.mint("tok-us", us);
+        let cp = ControlPlane::new(fleet, store, tokens);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        let svc = FleetSvc::new(cp.clone());
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(FleetServiceServer::new(svc))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        let endpoint = format!("http://{addr}");
+        for _ in 0..50 {
+            if FleetServiceClient::connect(endpoint.clone()).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Harness { addr: endpoint, cp }
+    }
+
     fn reconciler(&self) -> Reconciler {
         // A long interval — the tests drive `tick()` directly, deterministically.
         Reconciler::new(self.cp.clone(), Duration::from_secs(3600))
@@ -256,6 +311,90 @@ async fn service_push(node: &mut Node) -> String {
     let true_hash = Node::true_hash(&bytes);
     node.ack(v, &true_hash).await;
     true_hash
+}
+
+/// Whether the node received a push within `window` (non-panicking, for the
+/// negative assertion "this node was NOT pushed").
+async fn pushed_within(node: &mut Node, window: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(window, node.inbound.next()).await,
+        Ok(Some(Ok(m))) if matches!(m.kind, Some(server_message::Kind::Push(_)))
+    )
+}
+
+/// The reconciler must NOT fight a node PENDING in a not-yet-applied later wave
+/// (docs/07). Setup: an eu -> us two-wave fleet. Both nodes are in sync on the
+/// OLD commit. A NEW commit is published and the EU wave is recorded committed on
+/// it (a partial application: eu advanced, us has not). One reconcile tick then:
+///   - HEALS the eu node (its wave reached target; it is genuinely behind), and
+///   - LEAVES the us node alone — its wave has not been reached, so it is on its
+///     prior version legitimately (pending, not drifted) and is never pushed.
+#[tokio::test]
+async fn the_reconciler_does_not_fight_a_node_pending_in_a_later_wave() {
+    use gatewayctl::render::{read_gatewaysets, render_resolved};
+    use gatewayctl::source::{ConfigSource, DirectorySource};
+    use gatewayctl::waves::{Selector, SelectorTerm, UnmatchedPolicy, Wave, WavePlan};
+
+    let h = Harness::start_multiwave("prod").await;
+    let mut eu = Node::join(&h.addr, "node-eu", "tok-eu").await;
+    let mut us = Node::join(&h.addr, "node-us", "tok-us").await;
+    let old_desired = bring_in_sync(&mut eu).await;
+    bring_in_sync(&mut us).await;
+
+    // Publish a NEW applied render (canary) with the same two-wave plan, exactly
+    // as reload_and_roll does before walking the waves.
+    let root = testrepo::write("canary");
+    let resolved = DirectorySource::new(&root).resolve().unwrap();
+    let new_applied = render_resolved(&resolved).unwrap();
+    let new_desired = new_applied.render_hash.clone();
+    let new_commit = new_applied.source_commit.clone();
+    let gatewaysets = read_gatewaysets(&resolved).unwrap();
+    let plan = WavePlan::new(
+        vec![
+            Wave {
+                name: "eu".to_string(),
+                selector: Selector::of(vec![SelectorTerm::eq("region", "eu")]),
+            },
+            Wave {
+                name: "us".to_string(),
+                selector: Selector::of(vec![SelectorTerm::eq("region", "us")]),
+            },
+        ],
+        UnmatchedPolicy::ImplicitFinalWave,
+    );
+    assert_ne!(new_desired, old_desired, "canary is a real change");
+    h.cp
+        .fleet
+        .set_applied_from_source(new_applied, resolved, gatewaysets, plan);
+    // The EU wave advanced to the new commit; the US wave has NOT (partial apply).
+    h.cp.fleet.set_wave_commit("eu", &new_commit);
+
+    // Sanity on the pure guard: us is pending, eu is not.
+    let us_labels = BTreeMap::from([("region".to_string(), "us".to_string())]);
+    let eu_labels = BTreeMap::from([("region".to_string(), "eu".to_string())]);
+    assert!(h.cp.fleet.node_pending_in_unapplied_wave(&us_labels));
+    assert!(!h.cp.fleet.node_pending_in_unapplied_wave(&eu_labels));
+
+    // One reconcile tick, concurrently with the eu node servicing its heal push.
+    let cp = h.cp.clone();
+    let tick = tokio::spawn(async move {
+        Reconciler::new(cp, Duration::from_secs(3600)).tick().await
+    });
+    let eu_healed = service_push(&mut eu).await;
+    assert_eq!(eu_healed, new_desired, "eu is healed toward the NEW desired");
+
+    // The us node must NOT have been pushed — it is pending in its later wave.
+    assert!(
+        !pushed_within(&mut us, Duration::from_millis(600)).await,
+        "the us node (pending in a not-yet-applied later wave) must NOT be healed/pushed"
+    );
+
+    let report = tick.await.unwrap();
+    assert_eq!(report.healed, 1, "only the eu node healed: {report:?}");
+    assert_eq!(
+        report.pending_later_wave, 1,
+        "the us node was left as pending in a later wave: {report:?}"
+    );
 }
 
 /// REGRESSION (the HIGH defect): a reconcile tick that lands WHILE a wave is

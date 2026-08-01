@@ -1,0 +1,15 @@
+# GatewaySets: ApplicationSets + generators for the fleet (docs/02). A GatewaySet
+# is a label selector plus a config overlay stamped onto every node whose labels
+# match — the operator writes ONE GatewaySet instead of per-node files, and a
+# node added/removed with matching labels picks up / drops the stamp on the next
+# render with no per-node edit. The overlay deep-merges as the outermost layer at
+# RENDER time (no live templating in the data plane), so the render stays a pure
+# function of (repo bytes, node labels): same repo + same labels => same
+# render_hash, forever. Admission checks the stamped variant like any config.
+gatewaysets:
+  - name: eu-gold-tier
+    selector: { region: eu }
+    overlay:
+      fleet:
+        attribution:
+          pinned: { tier: gold }

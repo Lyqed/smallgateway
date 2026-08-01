@@ -1,11 +1,13 @@
 //! The fleet's applied state + the all-or-nothing wave rollout (docs/07,
 //! "Partial application: all-or-nothing waves, chosen").
 //!
-//! This module owns the desired render (the current applied repo render) and
-//! the per-node monotonic version counters, and it drives one rollout wave. M1
-//! implements a SINGLE wave over all connected nodes; the multi-wave, grouped-
-//! by-failure-domain sequencing is deferred (noted in the README). The wave
-//! policy that IS implemented is the load-bearing half:
+//! This module owns the desired render (the current applied repo render), the
+//! per-node monotonic version counters, the per-wave committed state, and the
+//! adjudication of ONE wave's collected results. The ordered MULTI-wave walk
+//! that sequences waves grouped by failure domain lives in [`crate::rollout`];
+//! the wave PLAN (selectors, node-to-wave assignment) lives in [`crate::waves`].
+//! A single wave is the degenerate one-wave case of that plan and still runs the
+//! identical policy here:
 //!
 //! - Push the new render to every node in the wave.
 //! - Wait for every node to `Ack` the exact `render_hash`, within a timeout.
@@ -14,6 +16,11 @@
 //!   version does NOT advance, and the divergence is logged loudly and left
 //!   surfaced — never silent (docs/07: "on any Nack in the wave, log the
 //!   divergence loudly and do not advance the fleet's committed version").
+//!
+//! Across a multi-wave rollout, [`Fleet::set_wave_commit`] / [`Fleet::wave_commits`]
+//! record which commit each wave is on, and [`Fleet::node_pending_in_unapplied_wave`]
+//! tells the reconciler a node is legitimately on its prior commit because its
+//! (later) wave has not been reached — pending, not drifted.
 //!
 //! Per-node version: docs/07 says a node's version is monotonic per node,
 //! assigned at delivery. The counter here hands each node the next integer each
@@ -24,7 +31,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use crate::render::Rendered;
+use crate::gatewayset::GatewaySets;
+use crate::render::{render_resolved_for_node, Rendered};
+use crate::source::ResolvedRepo;
+use crate::waves::WavePlan;
 
 /// The outcome of one wave rollout, for logging and the demo/tests.
 #[derive(Debug, PartialEq, Eq)]
@@ -100,8 +110,9 @@ impl Drop for WaveGuard<'_> {
 }
 
 struct FleetInner {
-    /// The current applied render (the desired config for the whole fleet in
-    /// M1, since selectors are a Phase 5 stub).
+    /// The current applied render (the fleet-wide render). With GatewaySets this
+    /// is the base a non-matching node also gets; a node with matching labels
+    /// gets a per-node stamped render via [`Fleet::desired_for`].
     applied: Rendered,
     /// The fleet-wide committed version: the highest version every node in the
     /// last successful wave reached. Advances only on a fully-acked wave.
@@ -109,6 +120,32 @@ struct FleetInner {
     /// Per-node monotonic version counter and the last render_hash each node
     /// was pushed. `(next_version, last_pushed_hash)`.
     per_node: BTreeMap<String, NodeVersioning>,
+    /// The desired-state derivation inputs. Present when the fleet was built from
+    /// a resolved config repo (the serve path); absent in the degenerate
+    /// [`Fleet::new`] path used by unit tests, where every node's desired IS the
+    /// single applied render. All three are re-derived from the repo on every
+    /// apply — desired state, never stored truth (docs/07).
+    desired: Option<DesiredInputs>,
+    /// Per-wave committed source_commit: which commit each wave is currently on.
+    /// A halt freezes the halting wave and all LATER waves on their prior commit
+    /// while earlier waves stay advanced, so this is the *named, queryable* mixed
+    /// state docs/07 requires ("waves 1 and 2 on abc123, waves 3.. on def456"),
+    /// never "some on new some on old, shrug". Keyed by wave name.
+    wave_commit: BTreeMap<String, String>,
+    /// A small memo of per-node renders keyed by the node's canonical label
+    /// string, so a reconcile tick does not re-render for every node every tick
+    /// (docs/07: "no config re-render unless the commit changed"). Cleared on
+    /// every apply.
+    render_cache: BTreeMap<String, Rendered>,
+}
+
+/// The inputs desired-state is derived from: the resolved config repo, the
+/// GatewaySets stamped per node, and the ordered wave plan. Held so a node's
+/// desired render can be computed from its labels on demand.
+struct DesiredInputs {
+    resolved: ResolvedRepo,
+    gatewaysets: GatewaySets,
+    plan: WavePlan,
 }
 
 #[derive(Clone)]
@@ -118,12 +155,45 @@ struct NodeVersioning {
 }
 
 impl Fleet {
+    /// The degenerate constructor: a fleet with ONE implicit wave over all nodes,
+    /// no GatewaySets, and every node's desired equal to the single applied
+    /// render. This is the milestone-1/2 behavior — the single-wave case is the
+    /// degenerate one-wave case, and its tests keep passing unchanged.
     pub fn new(applied: Rendered) -> Fleet {
         Fleet {
             inner: Mutex::new(FleetInner {
                 applied,
                 committed_version: 0,
                 per_node: BTreeMap::new(),
+                desired: None,
+                wave_commit: BTreeMap::new(),
+                render_cache: BTreeMap::new(),
+            }),
+            waves_in_flight: AtomicUsize::new(0),
+        }
+    }
+
+    /// The full constructor (the serve path): a fleet whose desired state is
+    /// derived from a resolved config repo, its GatewaySets, and its wave plan.
+    /// Per-node renders (GatewaySet stamping) and multi-wave rollout are enabled.
+    pub fn from_source(
+        applied: Rendered,
+        resolved: ResolvedRepo,
+        gatewaysets: GatewaySets,
+        plan: WavePlan,
+    ) -> Fleet {
+        Fleet {
+            inner: Mutex::new(FleetInner {
+                applied,
+                committed_version: 0,
+                per_node: BTreeMap::new(),
+                desired: Some(DesiredInputs {
+                    resolved,
+                    gatewaysets,
+                    plan,
+                }),
+                wave_commit: BTreeMap::new(),
+                render_cache: BTreeMap::new(),
             }),
             waves_in_flight: AtomicUsize::new(0),
         }
@@ -159,14 +229,149 @@ impl Fleet {
 
     /// Replace the applied render (a local reload changed the repo). Returns
     /// true if the render actually changed (different hash) — an identical
-    /// re-render is a no-op, mirroring the node's own hash short-circuit.
+    /// re-render is a no-op, mirroring the node's own hash short-circuit. Clears
+    /// the per-node render cache so per-node desired is recomputed against the
+    /// new commit.
     pub fn set_applied(&self, next: Rendered) -> bool {
         let mut inner = self.lock();
         if inner.applied.render_hash == next.render_hash {
             return false;
         }
         inner.applied = next;
+        inner.render_cache.clear();
         true
+    }
+
+    /// Replace the applied render AND its desired-derivation inputs (a reload
+    /// re-resolved the repo). Used by the serve path so a config change also
+    /// refreshes the GatewaySets and wave plan. Returns true if the RESOLVED
+    /// config changed, so the caller runs the ordered multi-wave rollout.
+    ///
+    /// The change signal is `source_commit` (a content id over ALL repo files),
+    /// NOT the fleet-wide `render_hash`. The fleet-wide render_hash is the hash of
+    /// the UNSTAMPED base render, so a change confined to a GatewaySet overlay (or
+    /// to `waves.yaml`) perturbs some node's per-node stamped render — and the
+    /// wave plan — without moving the base hash. Gating on render_hash alone would
+    /// silently skip the ordered rollout for a GatewaySet-only edit and leave
+    /// propagation to the unordered per-node reconciler, bypassing the ordered-
+    /// wave substrate. Gating on `source_commit` rolls the wave plan for ANY
+    /// resolved-config change (base fragment, overlay, or wave plan) while still
+    /// treating a byte-identical re-resolve (same content id) as a no-op, mirroring
+    /// the node's own hash short-circuit.
+    pub fn set_applied_from_source(
+        &self,
+        next: Rendered,
+        resolved: ResolvedRepo,
+        gatewaysets: GatewaySets,
+        plan: WavePlan,
+    ) -> bool {
+        let mut inner = self.lock();
+        let changed = inner.applied.source_commit != next.source_commit;
+        inner.applied = next;
+        inner.desired = Some(DesiredInputs {
+            resolved,
+            gatewaysets,
+            plan,
+        });
+        inner.render_cache.clear();
+        changed
+    }
+
+    /// The wave plan currently in force (cloned). The degenerate single plan
+    /// when the fleet was built without a source.
+    pub fn wave_plan(&self) -> WavePlan {
+        self.lock()
+            .desired
+            .as_ref()
+            .map(|d| d.plan.clone())
+            .unwrap_or_else(WavePlan::single)
+    }
+
+    /// The desired render FOR ONE NODE, given its labels: the per-node GatewaySet-
+    /// stamped render when the fleet has a source, else the single applied render.
+    /// Memoized by the node's canonical label string so a reconcile tick does not
+    /// re-render per node every tick. This is desired state derived from the
+    /// repo, never stored truth (docs/07). Falls back to the applied render if a
+    /// per-node render fails (it validated fleet-wide at apply, so this is
+    /// defensive; the fleet-wide render is a safe floor).
+    pub fn desired_for(&self, labels: &BTreeMap<String, String>) -> Rendered {
+        let key = canonical_labels(labels);
+        let mut inner = self.lock();
+        if let Some(hit) = inner.render_cache.get(&key) {
+            return hit.clone();
+        }
+        let rendered = match &inner.desired {
+            None => inner.applied.clone(),
+            Some(d) => render_resolved_for_node(&d.resolved, &d.gatewaysets, labels)
+                .unwrap_or_else(|_| inner.applied.clone()),
+        };
+        inner.render_cache.insert(key, rendered.clone());
+        rendered
+    }
+
+    /// Record that `wave_name` is now committed on `source_commit` (a fully-acked
+    /// wave advanced). Surfaced as the per-wave committed state.
+    pub fn set_wave_commit(&self, wave_name: &str, source_commit: &str) {
+        self.lock()
+            .wave_commit
+            .insert(wave_name.to_string(), source_commit.to_string());
+    }
+
+    /// The per-wave committed source_commit map, sorted by wave name — the
+    /// queryable, alertable mixed-state view (docs/07: "waves 1 and 2 on abc123,
+    /// waves 3.. on def456", never "shrug").
+    pub fn wave_commits(&self) -> BTreeMap<String, String> {
+        self.lock().wave_commit.clone()
+    }
+
+    /// Whether a node with `labels` is legitimately PENDING in a wave that has
+    /// NOT yet advanced to the current target commit — a not-yet-started later
+    /// wave, or a wave frozen behind a halt. Such a node is on its prior version
+    /// on purpose (docs/07: "a node in a not-yet-applied wave's desired hash is
+    /// its prior commit's hash, not the newest"), so the reconciler must NOT heal
+    /// it toward the new render — it is pending, not drifted. The wave rollout
+    /// (or a resumed rollout after the halt is fixed) is what advances it.
+    ///
+    /// Only meaningful when a MULTI-wave plan is in force AND a genuine partial-
+    /// application state exists (some wave has reached the target commit while
+    /// the node's wave has not). It returns true then — the node is pending in a
+    /// not-yet-advanced or halt-frozen later wave, and the reconciler must leave
+    /// it. It returns FALSE for:
+    ///   - a no-source / degenerate fleet (unit tests): never pending;
+    ///   - a single everything-wave plan (the default serve path, no waves.yaml):
+    ///     there are no later waves, so the reconciler heals normally, exactly as
+    ///     milestone-2 — no behavior change for the 1-wave case;
+    ///   - the startup state before any wave has committed (no wave is on target
+    ///     yet, so this is NOT a partial application): the reconciler converges
+    ///     nodes normally via heal, as before.
+    ///
+    /// The wave-in-flight guard (checked separately) covers the DURING-rollout
+    /// window; this method covers the AFTER-a-halt steady state where later waves
+    /// stay legitimately frozen on the prior commit.
+    pub fn node_pending_in_unapplied_wave(&self, labels: &BTreeMap<String, String>) -> bool {
+        let inner = self.lock();
+        let Some(d) = &inner.desired else {
+            return false;
+        };
+        // A single everything-wave has no "later wave" to be pending in.
+        if d.plan.waves.len() <= 1 {
+            return false;
+        }
+        let target_commit = &inner.applied.source_commit;
+        // A partial application exists only if SOME wave already reached target.
+        let any_on_target = inner.wave_commit.values().any(|c| c == target_commit);
+        if !any_on_target {
+            return false; // no wave is on target yet => not a partial application
+        }
+        let idx = d.plan.wave_index_for(labels);
+        let wave_name = d
+            .plan
+            .waves
+            .get(idx)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| crate::waves::IMPLICIT_FINAL_WAVE.to_string());
+        // Pending iff THIS node's wave has not reached target while others have.
+        inner.wave_commit.get(&wave_name).map(|c| c.as_str()) != Some(target_commit.as_str())
     }
 
     /// The `render_hash` the control plane last PUSHED to `node_id` — the
@@ -201,8 +406,11 @@ impl Fleet {
         entry.last_version
     }
 
-    /// Adjudicate one wave's collected results into a `WaveOutcome` and, on a
-    /// clean sweep, advance the committed version to `version`.
+    /// Adjudicate one wave's collected results against a SINGLE expected hash
+    /// (every node in the wave was pushed the same render) into a `WaveOutcome`,
+    /// advancing the committed version on a clean sweep. The degenerate single-
+    /// wave and the raw/tampered paths use this; it delegates to the per-node
+    /// adjudicator with the one hash expected of every node.
     ///
     /// `results` is `(node_id, AckResult)` for every node the wave pushed to.
     pub fn conclude_wave(
@@ -211,21 +419,49 @@ impl Fleet {
         version: u64,
         results: &[(String, AckResult)],
     ) -> WaveOutcome {
+        let expected: Vec<(String, String)> = results
+            .iter()
+            .map(|(id, _)| (id.clone(), render_hash.to_string()))
+            .collect();
+        self.conclude_wave_multi(render_hash, &expected, version, results)
+    }
+
+    /// Adjudicate a wave where each node has its OWN expected render hash (the
+    /// GatewaySet-per-node case). A node acks correctly when its ack hash equals
+    /// ITS expected hash; a wrong hash, NACK, or silence is a divergence and the
+    /// wave halts. On a clean sweep the committed version advances to `version`.
+    /// `outcome_hash` labels the outcome (a representative hash for the wave —
+    /// the wave's fleet-wide render_hash, or the first node's when per-node).
+    pub fn conclude_wave_multi(
+        &self,
+        outcome_hash: &str,
+        expected: &[(String, String)],
+        version: u64,
+        results: &[(String, AckResult)],
+    ) -> WaveOutcome {
         if results.is_empty() {
             return WaveOutcome::NoNodes {
-                render_hash: render_hash.to_string(),
+                render_hash: outcome_hash.to_string(),
             };
         }
+        let expected_of = |node_id: &str| -> &str {
+            expected
+                .iter()
+                .find(|(id, _)| id == node_id)
+                .map(|(_, h)| h.as_str())
+                .unwrap_or(outcome_hash)
+        };
 
         let mut divergences = Vec::new();
         for (node_id, result) in results {
+            let want = expected_of(node_id);
             match result {
-                AckResult::Acked { hash } if hash == render_hash => {}
+                AckResult::Acked { hash } if hash == want => {}
                 AckResult::Acked { hash } => divergences.push(Divergence {
                     node_id: node_id.clone(),
                     kind: DivergenceKind::WrongHash {
                         version,
-                        expected: render_hash.to_string(),
+                        expected: want.to_string(),
                         got: hash.clone(),
                     },
                 }),
@@ -246,12 +482,12 @@ impl Fleet {
         if divergences.is_empty() {
             self.lock().committed_version = version;
             WaveOutcome::Committed {
-                render_hash: render_hash.to_string(),
+                render_hash: outcome_hash.to_string(),
                 node_count: results.len(),
             }
         } else {
             WaveOutcome::Halted {
-                render_hash: render_hash.to_string(),
+                render_hash: outcome_hash.to_string(),
                 divergences,
             }
         }
@@ -262,6 +498,20 @@ impl Fleet {
     }
 }
 
+/// A canonical string for a node's labels — sorted `k=v;` pairs — used as the
+/// per-node render-cache key. `BTreeMap` iteration is already sorted, so this is
+/// deterministic and cache-stable for identical label sets.
+fn canonical_labels(labels: &BTreeMap<String, String>) -> String {
+    let mut s = String::new();
+    for (k, v) in labels {
+        s.push_str(k);
+        s.push('=');
+        s.push_str(v);
+        s.push(';');
+    }
+    s
+}
+
 /// One node's response to a wave push, as collected by the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AckResult {
@@ -270,6 +520,12 @@ pub enum AckResult {
     /// No answer within the wave timeout.
     Silent,
 }
+
+// The per-wave rollout OUTCOME types (`WaveStep`, `WaveStepState`,
+// `MultiWaveOutcome`) live in [`crate::rollout`] alongside the walk that
+// produces them — they are rollout products, not fleet state. `Fleet` here owns
+// the applied render, per-node versions, and the per-wave COMMITTED map that the
+// walk records into.
 
 #[cfg(test)]
 mod tests {
@@ -410,5 +666,74 @@ mod tests {
             WaveOutcome::NoNodes { render_hash: hash }
         );
         assert_eq!(fleet.committed_version(), 0);
+    }
+
+    // --- The reconciler's pending-later-wave guard ---------------------------
+
+    fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// A `from_source` fleet with an eu -> us two-wave plan, applied at `env`.
+    fn multiwave_fleet(env: &str) -> Fleet {
+        use crate::source::{ConfigSource, DirectorySource};
+        use crate::waves::{Selector, SelectorTerm, UnmatchedPolicy, Wave, WavePlan};
+        let root = testrepo::write(env);
+        let resolved = DirectorySource::new(&root).resolve().unwrap();
+        let applied = render_repo(&root).unwrap();
+        let plan = WavePlan::new(
+            vec![
+                Wave {
+                    name: "eu".to_string(),
+                    selector: Selector::of(vec![SelectorTerm::eq("region", "eu")]),
+                },
+                Wave {
+                    name: "us".to_string(),
+                    selector: Selector::of(vec![SelectorTerm::eq("region", "us")]),
+                },
+            ],
+            UnmatchedPolicy::ImplicitFinalWave,
+        );
+        Fleet::from_source(applied, resolved, GatewaySets::default(), plan)
+    }
+
+    #[test]
+    fn a_node_in_a_frozen_later_wave_is_pending_not_drifted() {
+        // Partial application: the eu wave advanced to the applied commit; the us
+        // wave has NOT. A us node is then legitimately on its prior version and
+        // must read as PENDING (the reconciler leaves it), while an eu node —
+        // whose wave already reached target — is NOT pending.
+        let fleet = multiwave_fleet("prod");
+        let target = fleet.applied().source_commit;
+        fleet.set_wave_commit("eu", &target); // eu reached target; us did not.
+
+        assert!(
+            fleet.node_pending_in_unapplied_wave(&labels(&[("region", "us")])),
+            "the us node's wave has not reached target -> pending"
+        );
+        assert!(
+            !fleet.node_pending_in_unapplied_wave(&labels(&[("region", "eu")])),
+            "the eu node's wave reached target -> not pending"
+        );
+    }
+
+    #[test]
+    fn no_node_is_pending_before_any_wave_reaches_target() {
+        // Startup / pre-rollout: no wave is on target yet, so this is NOT a
+        // partial application and every node converges normally via heal.
+        let fleet = multiwave_fleet("prod");
+        assert!(!fleet.node_pending_in_unapplied_wave(&labels(&[("region", "us")])));
+        assert!(!fleet.node_pending_in_unapplied_wave(&labels(&[("region", "eu")])));
+    }
+
+    #[test]
+    fn a_degenerate_single_wave_fleet_never_reports_pending() {
+        // The no-source / 1-wave case: there are no later waves, so the
+        // reconciler heals normally exactly as milestone-2 — no behavior change.
+        let fleet = Fleet::new(rendered("prod"));
+        assert!(!fleet.node_pending_in_unapplied_wave(&labels(&[("region", "us")])));
     }
 }

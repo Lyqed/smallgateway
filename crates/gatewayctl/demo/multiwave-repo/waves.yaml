@@ -1,0 +1,14 @@
+# Ordered wave plan grouped by failure domain (docs/07 "Partial application").
+# A commit rolls out canary -> eu -> us: every node in a wave must ACK the exact
+# render_hash before the next wave is pushed. A NACK/timeout HALTS the wave and
+# FREEZES all later waves on their prior commit while earlier waves stay
+# advanced. A node belongs to the FIRST wave its region label matches; a node
+# matching none is its own implicit final wave. Selectors are simple label
+# equality / set-membership, not an expression language.
+waves:
+  - name: canary
+    selector: { region: canary }
+  - name: eu
+    selector: { region: eu }
+  - name: us
+    selector: { region: us }

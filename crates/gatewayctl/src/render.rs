@@ -48,6 +48,7 @@ use gateway_core::config::Config;
 use gateway_core::snapshot::content_hash;
 use gateway_proto::RenderedSnapshot;
 
+use crate::gatewayset::GatewaySets;
 use crate::source::{ConfigSource, DirectorySource, ResolvedRepo, SourceError};
 
 /// A validation or IO failure while rendering the repo. The `reason` string is
@@ -119,10 +120,72 @@ pub fn render_source(source: &dyn ConfigSource) -> Result<Rendered, RenderError>
     render_resolved(&resolved)
 }
 
-/// Render an already-resolved repo. Compilation is a pure function of the
-/// resolved bytes and the recorded `source_commit`.
+/// Render an already-resolved repo (the fleet-wide render, no GatewaySet stamp).
+/// Compilation is a pure function of the resolved bytes and the recorded
+/// `source_commit`. A repo without GatewaySets renders identically to before;
+/// with GatewaySets, this is the base every node's per-node render layers on top
+/// of (and it must itself validate — a GatewaySet only ADDS to matching nodes).
 pub fn render_resolved(resolved: &ResolvedRepo) -> Result<Rendered, RenderError> {
-    let flat = assemble_flat_yaml(resolved)?;
+    let doc = assemble_flat_doc(resolved)?;
+    finalize(doc, resolved)
+}
+
+/// Render a resolved repo FOR ONE NODE: assemble the four scoped chains, then
+/// stamp every GatewaySet whose selector matches the node's labels as the
+/// outermost overlay, then validate and hash (docs/02 GatewaySets; docs/07
+/// rendered-manifest). The result is still a pure function of `(repo bytes, node
+/// labels)`: the same repo + same labels yields the same `render_hash`, forever.
+/// A node matching no GatewaySet renders identically to [`render_resolved`], so
+/// the fleet-wide and per-node paths agree when nothing is stamped.
+pub fn render_resolved_for_node(
+    resolved: &ResolvedRepo,
+    gatewaysets: &GatewaySets,
+    labels: &std::collections::BTreeMap<String, String>,
+) -> Result<Rendered, RenderError> {
+    let mut doc = assemble_flat_doc(resolved)?;
+    // Stamp matching GatewaySet overlays as the outermost layer (deep merge),
+    // BEFORE validation, so the node validates exactly what it will serve.
+    gatewaysets.stamp(&mut doc, labels);
+    finalize(doc, resolved)
+}
+
+/// Read the GatewaySets defined in the resolved repo (`gatewaysets.yaml`), if
+/// any. Absent → empty. Parsed once per render pass and reused for every node.
+pub fn read_gatewaysets(resolved: &ResolvedRepo) -> Result<GatewaySets, RenderError> {
+    match resolved.get("gatewaysets.yaml") {
+        None => Ok(GatewaySets::default()),
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| RenderError::Io(format!("gatewaysets.yaml: not utf-8: {e}")))?;
+            crate::gatewayset::parse_gatewaysets(text)
+                .map_err(|e| RenderError::Invalid(e.to_string()))
+        }
+    }
+}
+
+/// Read the wave rollout plan defined in the resolved repo (`waves.yaml`), if
+/// any. Absent or empty → the degenerate single plan, so a repo without a
+/// rollout config keeps the single-wave behavior.
+pub fn read_wave_plan(resolved: &ResolvedRepo) -> Result<crate::waves::WavePlan, RenderError> {
+    match resolved.get("waves.yaml") {
+        None => Ok(crate::waves::WavePlan::single()),
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| RenderError::Io(format!("waves.yaml: not utf-8: {e}")))?;
+            crate::waves::parse_wave_plan(text)
+                .map_err(|e| RenderError::Invalid(e.to_string()))
+        }
+    }
+}
+
+/// Canonicalize, validate, and hash an assembled+possibly-stamped doc into a
+/// `Rendered`. The final `sorted_value_any` over the whole mapping restores
+/// canonical (sorted-key) order after any overlay deep-merge, so stamping never
+/// perturbs determinism.
+fn finalize(doc: serde_yaml::Mapping, resolved: &ResolvedRepo) -> Result<Rendered, RenderError> {
+    let canonical = sorted_value_any(serde_yaml::Value::Mapping(doc));
+    let flat = serde_yaml::to_string(&canonical)
+        .map_err(|e| RenderError::Io(format!("serializing flat config: {e}")))?;
 
     // Render-time validation gate: the exact gateway-core composition +
     // validation the node will re-run. If it fails here, the operator's repo is
@@ -144,13 +207,15 @@ pub fn render_repo(root: &Path) -> Result<Rendered, RenderError> {
     render_source(&DirectorySource::new(root))
 }
 
-/// Read the resolved fragments and assemble them into one canonical flat
-/// `Config` YAML string. Pure over the resolved bytes: fixed read order (the
-/// ResolvedRepo is pre-sorted), sorted keys.
-fn assemble_flat_yaml(repo: &ResolvedRepo) -> Result<String, RenderError> {
-    // A serde_yaml::Value tree, built deterministically, then serialized. Using
-    // Value (not string concatenation) keeps the output canonical regardless of
-    // fragment formatting — we insert in a fixed order and recursively sort keys.
+/// Read the resolved fragments and assemble them into one flat `Config` document
+/// mapping. Pure over the resolved bytes: fixed read order (the ResolvedRepo is
+/// pre-sorted). Key canonicalization is deferred to [`finalize`] so a per-node
+/// GatewaySet overlay can be deep-merged before the final sort — keeping the
+/// stamped render canonical too.
+fn assemble_flat_doc(repo: &ResolvedRepo) -> Result<serde_yaml::Mapping, RenderError> {
+    // A serde_yaml::Value tree, built deterministically. Using Value (not string
+    // concatenation) keeps the output canonical regardless of fragment
+    // formatting — we insert in a fixed order; finalize recursively sorts keys.
     let mut doc = serde_yaml::Mapping::new();
 
     // providers: (required)
@@ -197,8 +262,7 @@ fn assemble_flat_yaml(repo: &ResolvedRepo) -> Result<String, RenderError> {
         doc.insert("auth".into(), sorted_value(auth));
     }
 
-    serde_yaml::to_string(&serde_yaml::Value::Mapping(doc))
-        .map_err(|e| RenderError::Io(format!("serializing flat config: {e}")))
+    Ok(doc)
 }
 
 /// One project directory -> its scope Value. Each `projects/<name>/`
@@ -382,6 +446,27 @@ pub mod testrepo {
         .unwrap();
         root
     }
+
+    /// Write a minimal valid repo (env=prod) PLUS a `gatewaysets.yaml` that
+    /// stamps `tier: gold` onto every node whose `region` label is `eu`. Used to
+    /// prove selector match + stamp + per-node render determinism.
+    pub fn write_with_gatewayset() -> PathBuf {
+        let root = write_named("gatewayctl-repo-gwset", "prod");
+        std::fs::write(
+            root.join("gatewaysets.yaml"),
+            concat!(
+                "gatewaysets:\n",
+                "  - name: eu-gold-tier\n",
+                "    selector: { region: eu }\n",
+                "    overlay:\n",
+                "      fleet:\n",
+                "        attribution:\n",
+                "          pinned: { tier: gold }\n",
+            ),
+        )
+        .unwrap();
+        root
+    }
 }
 
 #[cfg(test)]
@@ -412,6 +497,96 @@ mod tests {
         let cfg = parse_rendered(&r.config_bytes).unwrap();
         assert_eq!(cfg.routes[0].policy().pinned["env"], "prod");
         assert_eq!(cfg.routes[0].policy().required_keys, vec!["team"]);
+    }
+
+    // --- GatewaySet stamping + per-node render determinism -------------------
+
+    fn labels(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_gatewayset_stamps_config_onto_a_matching_node_only() {
+        let root = testrepo::write_with_gatewayset();
+        let resolved = DirectorySource::new(&root).resolve().unwrap();
+        let sets = read_gatewaysets(&resolved).unwrap();
+        assert_eq!(sets.sets.len(), 1);
+
+        // A node in region=eu picks up the stamped tier: gold.
+        let eu = render_resolved_for_node(&resolved, &sets, &labels(&[("region", "eu")])).unwrap();
+        let eu_cfg = parse_rendered(&eu.config_bytes).unwrap();
+        assert_eq!(
+            eu_cfg.routes[0].policy().pinned.get("tier"),
+            Some(&"gold".to_string()),
+            "the eu node picked up the GatewaySet-stamped tier"
+        );
+        // The base env pin is untouched (deep merge, not replace).
+        assert_eq!(eu_cfg.routes[0].policy().pinned["env"], "prod");
+
+        // A node in region=us matches no GatewaySet — no tier stamped.
+        let us = render_resolved_for_node(&resolved, &sets, &labels(&[("region", "us")])).unwrap();
+        let us_cfg = parse_rendered(&us.config_bytes).unwrap();
+        assert!(
+            !us_cfg.routes[0].policy().pinned.contains_key("tier"),
+            "the us node did NOT get the eu-only stamp"
+        );
+        // The two nodes therefore render DIFFERENT hashes.
+        assert_ne!(eu.render_hash, us.render_hash);
+    }
+
+    #[test]
+    fn a_non_matching_node_renders_identically_to_the_fleet_wide_render() {
+        // With a GatewaySet present but not matching, the per-node render equals
+        // the plain fleet-wide render — the paths agree when nothing is stamped.
+        let root = testrepo::write_with_gatewayset();
+        let resolved = DirectorySource::new(&root).resolve().unwrap();
+        let sets = read_gatewaysets(&resolved).unwrap();
+        let base = render_resolved(&resolved).unwrap();
+        let us = render_resolved_for_node(&resolved, &sets, &labels(&[("region", "us")])).unwrap();
+        assert_eq!(base.render_hash, us.render_hash);
+        assert_eq!(base.config_bytes, us.config_bytes);
+    }
+
+    #[test]
+    fn per_node_render_is_deterministic_for_the_same_labels() {
+        // Same repo + same node labels -> same render_hash, forever (the
+        // six-month rule, extended to per-node GatewaySet renders).
+        let root = testrepo::write_with_gatewayset();
+        let resolved = DirectorySource::new(&root).resolve().unwrap();
+        let sets = read_gatewaysets(&resolved).unwrap();
+        let l = labels(&[("region", "eu")]);
+        let a = render_resolved_for_node(&resolved, &sets, &l).unwrap();
+        let b = render_resolved_for_node(&resolved, &sets, &l).unwrap();
+        assert_eq!(a.render_hash, b.render_hash);
+        assert_eq!(a.config_bytes, b.config_bytes);
+    }
+
+    #[test]
+    fn a_newly_joined_matching_node_picks_up_the_stamp_without_editing_files() {
+        // The GatewaySet story: a node that joins LATER with matching labels
+        // renders the stamped config with no per-node file authored. Simulated
+        // by rendering two "join events" — the second node's labels match, so it
+        // gets the stamp purely from its labels + the repo.
+        let root = testrepo::write_with_gatewayset();
+        let resolved = DirectorySource::new(&root).resolve().unwrap();
+        let sets = read_gatewaysets(&resolved).unwrap();
+        // First node: us, no stamp.
+        let first = render_resolved_for_node(&resolved, &sets, &labels(&[("region", "us")])).unwrap();
+        // A NEW node joins in eu; it stamps gold with zero file edits.
+        let joined = render_resolved_for_node(&resolved, &sets, &labels(&[("region", "eu")])).unwrap();
+        let joined_cfg = parse_rendered(&joined.config_bytes).unwrap();
+        assert_eq!(joined_cfg.routes[0].policy().pinned["tier"], "gold");
+        assert_ne!(first.render_hash, joined.render_hash);
+    }
+
+    #[test]
+    fn read_wave_plan_defaults_to_single_when_absent() {
+        let resolved = DirectorySource::new(testrepo::write("prod")).resolve().unwrap();
+        let plan = read_wave_plan(&resolved).unwrap();
+        assert_eq!(plan, crate::waves::WavePlan::single());
     }
 
     #[test]

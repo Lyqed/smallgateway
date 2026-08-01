@@ -16,8 +16,16 @@
 //!   made mechanical).
 //! - [`admission`]: config-PR admission — CEL-expressed + built-in rules gating
 //!   a candidate config before it can become desired (docs/07 admission).
-//! - [`fleet`]: the applied render, per-node versions, and the all-or-nothing
-//!   wave rollout (single wave in this milestone).
+//! - [`fleet`]: the applied render, per-node versions, per-wave committed state,
+//!   and the all-or-nothing wave outcome adjudication.
+//! - [`waves`]: the ordered wave plan — label selectors over node labels,
+//!   node-to-wave assignment (first-match, implicit final wave), and the
+//!   `waves.yaml` parser (docs/07, "Partial application").
+//! - [`gatewayset`]: GatewaySets — a label selector plus a config overlay that
+//!   stamps config across every matching node at render time (docs/02
+//!   "ApplicationSets + generators").
+//! - [`rollout`]: the wave rollout orchestration — the single-wave path, the
+//!   ordered MULTI-wave walk grouped by failure domain, and per-node self-heal.
 //! - [`reconcile`]: drift detection + self-heal — the desired/delivered/
 //!   observed truth table, a periodic tick, and break-glass with TTL
 //!   (docs/07, "Drift detection and self-heal").
@@ -25,18 +33,23 @@
 //!   health, break-glass windows) — Postgres replaces it later and is never
 //!   truth.
 //! - [`token`]: single-use, short-TTL join-token bootstrap.
-//! - [`server`]: the tonic `FleetService` — auth, push, fan-out, ack/nack.
+//! - [`server`]: the tonic `FleetService` — auth, push, fan-out, ack/nack, and
+//!   the session/push-ack correlation the rollout builds on.
 //!
 //! **Deferred beyond this milestone** (stated, not implied — docs/07's open
-//! questions): Postgres, multi-wave rollouts grouped by failure domain,
-//! per-node latching, GatewaySets / label-generators, config-repo webhook (poll
-//! is the floor). See crates/gatewayctl/README.md.
+//! questions): config canary ANALYSIS between waves (Phase 5 — multi-wave is the
+//! substrate it sits on, built here; the analysis is not), Postgres, per-node
+//! latching, config-repo webhook (poll is the floor). See
+//! crates/gatewayctl/README.md.
 
 pub mod admission;
 pub mod fleet;
+pub mod gatewayset;
 pub mod reconcile;
 pub mod render;
+pub mod rollout;
 pub mod server;
 pub mod source;
 pub mod store;
 pub mod token;
+pub mod waves;

@@ -6,18 +6,18 @@
 //! 1. authenticates each `Hello` via its join token (bad token -> the stream is
 //!    refused, loudly),
 //! 2. pushes the current rendered snapshot to a freshly-joined node,
-//! 3. on a local reload (SIGHUP or a rendered-config change), runs one
-//!    all-or-nothing wave: pushes the new versioned snapshot to every connected
-//!    node and collects each node's Ack/Nack; on any Nack the divergence is
-//!    logged loudly and the fleet's committed version does not advance,
+//! 3. owns the session table and the push/ack CORRELATION machinery that the
+//!    wave rollout builds on (the rollout walk itself lives in [`crate::rollout`]),
 //! 4. records every Ack/Nack/Status into the in-memory runtime store.
 //!
 //! Concurrency shape: each session owns an outbound `mpsc` sender registered in
 //! a shared [`Sessions`] table by node_id. A push writes a `ServerMessage` to a
 //! session's sender; the session's inbound loop routes the node's Ack/Nack back
-//! to the waiting wave via a per-`(node,version)` oneshot. This keeps the wave
-//! sequencing entirely in the control plane and leaves the node code unchanged
-//! (docs/07: "It reuses the node code unchanged").
+//! to the waiting rollout via a per-push-id oneshot keyed on the awaited
+//! `fleet_version`. This keeps the wave sequencing entirely in the control plane
+//! and leaves the node code unchanged (docs/07: "It reuses the node code
+//! unchanged"). The rollout methods ([`crate::rollout`]) are a second
+//! `impl ControlPlane` block that calls the `pub(crate)` push/await helpers here.
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{error, info, warn};
+use log::{info, warn};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
@@ -35,14 +35,14 @@ use gateway_proto::{
     client_message, Ack, ClientMessage, FleetService, Nack, RenderedSnapshot, ServerMessage,
 };
 
-use crate::fleet::{AckResult, Divergence, DivergenceKind, Fleet, WaveOutcome};
+use crate::fleet::{AckResult, Fleet};
 use crate::store::RuntimeStore;
 use crate::token::{Admission, JoinTokens};
 
 /// How long a wave waits for each node to answer before treating it as silent
 /// (docs/07: the unknown-node timeout; "unknown halts"). A conservative,
 /// short M1 default; a real deployment tunes it per fleet.
-const WAVE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const WAVE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A globally-unique id for one push-and-await, so two concurrent pushes to the
 /// SAME node at the SAME fleet_version (e.g. a wave and a self-heal both pushing
@@ -67,7 +67,7 @@ struct Pending {
 /// A registered push awaiting an ack: its unique push-id (to clear exactly this
 /// slot on timeout) and the receiver its ack resolves. `None` when the node's
 /// stream was already gone at push time (resolves as `Silent`).
-type PendingHandle = Option<(u64, oneshot::Receiver<AckResult>)>;
+pub(crate) type PendingHandle = Option<(u64, oneshot::Receiver<AckResult>)>;
 
 /// One connected node's outbound channel + the pending-ack correlations for the
 /// pushes currently in flight to it. Keyed by a unique push-id (NOT by version)
@@ -124,7 +124,7 @@ impl Sessions {
         }
     }
 
-    async fn connected_ids(&self) -> Vec<String> {
+    pub(crate) async fn connected_ids(&self) -> Vec<String> {
         self.0.lock().await.keys().cloned().collect()
     }
 }
@@ -165,7 +165,7 @@ impl ControlPlane {
     /// Returns `None` if the node's stream is gone (its result becomes
     /// `Silent`). The push-id lets a caller clear exactly its own pending slot
     /// on timeout, without disturbing a concurrent push to the same node.
-    async fn push_and_await(
+    pub(crate) async fn push_and_await(
         &self,
         node_id: &str,
         snapshot: RenderedSnapshot,
@@ -196,197 +196,13 @@ impl ControlPlane {
         Some((push_id, waiter_rx))
     }
 
-    /// Run one all-or-nothing wave for the currently-applied render across every
-    /// connected node. Single wave in M1. Returns the adjudicated outcome and
-    /// logs the loud divergence line on a halt.
-    pub async fn roll_out(&self, trigger: &str) -> WaveOutcome {
-        let rendered = self.fleet.applied();
-        self.run_wave(trigger, &rendered.render_hash, &rendered.source_commit, &rendered.config_bytes)
-            .await
-    }
 
-    /// Self-heal one drifted node: re-push the CURRENT applied render to just
-    /// that node and await its ack (docs/07: "Self-heal is re-push"). Unlike a
-    /// wave, this touches ONE node and never advances the fleet's committed
-    /// version — it converges a node that fell behind desired, it does not roll
-    /// out a new desired. Returns `true` if the node acked the desired
-    /// `render_hash` within the timeout, `false` otherwise (a NACK or silence,
-    /// which the reconciler surfaces and retries next tick).
-    pub async fn heal_node(&self, node_id: &str) -> bool {
-        let rendered = self.fleet.applied();
-        let version = self.fleet.next_version_for(node_id, &rendered.render_hash);
-        let snapshot = rendered.to_snapshot(node_id, version, now_unix());
-        let Some((push_id, waiter)) = self.push_and_await(node_id, snapshot).await else {
-            return false; // stream gone
-        };
-        match tokio::time::timeout(WAVE_ACK_TIMEOUT, waiter).await {
-            Ok(Ok(AckResult::Acked { hash })) => hash == rendered.render_hash,
-            _ => {
-                self.clear_pending(node_id, push_id).await;
-                false
-            }
-        }
-    }
-
-    /// Distribute a HAND-AUTHORED snapshot (raw bytes) to the fleet, bypassing
-    /// the repo render gate. This is the break-glass / testing affordance that
-    /// exercises the node's INDEPENDENT validation authority (docs/07: "A
-    /// snapshot that fails local validation is Nacked and the old one keeps
-    /// serving"). The control plane's render gate is the first defense; the
-    /// node's NACK is the second, and this path lets an operator (or the demo)
-    /// prove the second one is real — a snapshot that does not validate at the
-    /// node is NACKed, the wave halts, and the fleet's committed version does
-    /// not advance.
-    pub async fn roll_out_raw(&self, trigger: &str, bytes: Vec<u8>) -> WaveOutcome {
-        // A synthetic hash/commit for the injected bytes so the node's no-op
-        // short-circuit still works and the record is honest about its origin.
-        let hash = gateway_core::snapshot::content_hash(&String::from_utf8_lossy(&bytes));
-        let commit = format!("raw-{}", &hash[..16.min(hash.len())]);
-        self.run_wave(trigger, &hash, &commit, &bytes).await
-    }
-
-    /// TEST-ONLY: push `bytes` while ADVERTISING `advertised_hash`, which the
-    /// caller deliberately makes inconsistent with the bytes. This simulates a
-    /// control-plane bug (or tampering) that sets `render_hash` to something
-    /// other than the hash of the config it actually ships. An honest node
-    /// recomputes the hash of the bytes it binds and ACKs with THAT (not the
-    /// advertised value), so the wave adjudicates the node's true hash against
-    /// the advertised one and reports a `WrongHash` divergence — the independent
-    /// verification docs/07 line 71 requires. Never compiled into a release
-    /// build; it exists solely to prove the node's ACK carries a locally-derived
-    /// hash, not a parroted one.
-    #[cfg(feature = "test-support")]
-    pub async fn roll_out_tampered(
-        &self,
-        trigger: &str,
-        advertised_hash: &str,
-        bytes: Vec<u8>,
-    ) -> WaveOutcome {
-        let commit = format!("tampered-{}", &advertised_hash[..16.min(advertised_hash.len())]);
-        self.run_wave(trigger, advertised_hash, &commit, &bytes).await
-    }
-
-    /// The shared wave body: push `bytes` (addressed per node with `hash`/
-    /// `commit`) to every connected node, collect Acks/Nacks, adjudicate.
-    async fn run_wave(
-        &self,
-        trigger: &str,
-        hash: &str,
-        commit: &str,
-        bytes: &[u8],
-    ) -> WaveOutcome {
-        // Mark the wave in flight for the whole body (dropped on any return or
-        // panic). While held, the reconciler tolerates a not-yet-rolled node as
-        // mid-rollout instead of racing it with a heal push (docs/07: "the
-        // reconciler does not fight a legitimately mid-rollout node").
-        let _wave_guard = self.fleet.begin_wave();
-        let node_ids = self.sessions.connected_ids().await;
-
-        if node_ids.is_empty() {
-            let outcome = self
-                .fleet
-                .conclude_wave(hash, self.fleet.committed_version(), &[]);
-            info!(
-                "[rollout] trigger={trigger} render_hash={} no connected nodes; \
-                 applied as desired state, no wave ran",
-                short(hash)
-            );
-            return outcome;
-        }
-
-        // Push to every node, each at its own next per-node version. Each
-        // waiter carries the unique push-id its pending slot lives under, so a
-        // timeout clears exactly this wave's slot and never a concurrent push's.
-        let mut waiters: Vec<(String, PendingHandle)> = Vec::new();
-        // The wave's version is the max per-node version assigned this round;
-        // in M1 every node advances in lockstep so they coincide.
-        let mut wave_version = self.fleet.committed_version();
-        for node_id in &node_ids {
-            let version = self.fleet.next_version_for(node_id, hash);
-            wave_version = wave_version.max(version);
-            let snapshot = RenderedSnapshot {
-                node_id: node_id.clone(),
-                source_commit: commit.to_string(),
-                render_hash: hash.to_string(),
-                fleet_version: version,
-                config: bytes.to_vec(),
-                compiled_at: now_unix(),
-            };
-            let waiter = self.push_and_await(node_id, snapshot).await;
-            waiters.push((node_id.clone(), waiter));
-        }
-
-        info!(
-            "[rollout] trigger={trigger} pushing render_hash={} v={wave_version} to {} node(s): {:?}",
-            short(hash),
-            node_ids.len(),
-            node_ids,
-        );
-
-        // Await each node's answer (bounded by the wave timeout).
-        let mut results: Vec<(String, AckResult)> = Vec::new();
-        for (node_id, waiter) in waiters {
-            let result = match waiter {
-                None => AckResult::Silent,
-                Some((push_id, rx)) => match tokio::time::timeout(WAVE_ACK_TIMEOUT, rx).await {
-                    Ok(Ok(r)) => r,
-                    // Sender dropped or timed out: the node did not answer.
-                    Ok(Err(_)) | Err(_) => {
-                        // Clean up this push's dangling pending entry.
-                        self.clear_pending(&node_id, push_id).await;
-                        AckResult::Silent
-                    }
-                },
-            };
-            results.push((node_id, result));
-        }
-
-        let outcome = self.fleet.conclude_wave(hash, wave_version, &results);
-        self.log_outcome(trigger, &outcome);
-        outcome
-    }
-
-    async fn clear_pending(&self, node_id: &str, push_id: u64) {
+    pub(crate) async fn clear_pending(&self, node_id: &str, push_id: u64) {
         if let Some(session) = self.sessions.0.lock().await.get_mut(node_id) {
             session.pending.remove(&push_id);
         }
     }
 
-    fn log_outcome(&self, trigger: &str, outcome: &WaveOutcome) {
-        match outcome {
-            WaveOutcome::Committed {
-                render_hash,
-                node_count,
-            } => info!(
-                "[rollout] COMMITTED trigger={trigger} render_hash={} across {node_count} node(s); \
-                 fleet committed_version=v{}",
-                short(render_hash),
-                self.fleet.committed_version(),
-            ),
-            WaveOutcome::NoNodes { render_hash } => info!(
-                "[rollout] applied render_hash={} (no nodes)",
-                short(render_hash)
-            ),
-            WaveOutcome::Halted {
-                render_hash,
-                divergences,
-            } => {
-                // Loud by design (docs/07): the fleet did NOT advance and every
-                // divergent node is named with its reason.
-                error!(
-                    "[rollout] HALTED trigger={trigger} render_hash={}: the wave did not \
-                     fully ack; fleet committed_version STAYS v{} (not advanced). \
-                     {} divergence(s):",
-                    short(render_hash),
-                    self.fleet.committed_version(),
-                    divergences.len(),
-                );
-                for d in divergences {
-                    error!("[rollout]   divergent node {}", describe(d));
-                }
-            }
-        }
-    }
 }
 
 /// A short label for a node's bootstrap answer, for the join log line.
@@ -398,32 +214,12 @@ fn describe_ack(result: &AckResult) -> String {
     }
 }
 
-fn describe(d: &Divergence) -> String {
-    match &d.kind {
-        DivergenceKind::Nacked { version, reason } => {
-            format!("{} NACKed v{version}: {reason}", d.node_id)
-        }
-        DivergenceKind::Silent { version } => {
-            format!("{} SILENT on v{version} (no ack within timeout)", d.node_id)
-        }
-        DivergenceKind::WrongHash {
-            version,
-            expected,
-            got,
-        } => format!(
-            "{} acked v{version} with WRONG hash (expected {}, got {})",
-            d.node_id,
-            short(expected),
-            short(got)
-        ),
-    }
-}
 
-fn short(hash: &str) -> &str {
+pub(crate) fn short(hash: &str) -> &str {
     &hash[..12.min(hash.len())]
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -490,12 +286,15 @@ impl FleetService for FleetSvc {
 
         // Register the outbound channel.
         let (tx, rx) = mpsc::channel::<Result<ServerMessage, GrpcStatus>>(16);
-        this.store.connect(&node_id, labels);
+        this.store.connect(&node_id, labels.clone());
         this.sessions.insert(&node_id, tx.clone()).await;
 
-        // Push the node its first snapshot immediately (bootstrap), unless it
-        // reconnected already at the current render (skip the redelivery).
-        let rendered = this.fleet.applied();
+        // Push the node its first snapshot immediately (bootstrap). It is the
+        // node's OWN per-node desired render (GatewaySet-stamped when its labels
+        // match one), so a freshly-joined matching node picks up the stamped
+        // config on its very first render — never the unstamped fleet-wide bytes
+        // it would then have to be healed off of (docs/02 GatewaySets).
+        let rendered = this.fleet.desired_for(&labels);
         let cp = self.0.clone();
         let node_for_task = node_id.clone();
         tokio::spawn(async move {

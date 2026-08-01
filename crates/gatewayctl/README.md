@@ -22,7 +22,8 @@ Run it:
 gatewayctl --repo <config-repo-dir> [--listen 127.0.0.1:6187] \
            [--join-token <secret>] [--token-ttl 300] [--poll-interval 3] \
            [--reconcile-interval 5] [--push-raw <snapshot-file>] \
-           [--break-glass-file <file>]
+           [--break-glass-file <file>] \
+           [--label-token <region=eu,...>:<secret>]...  # labeled join tokens
 
 gatewayctl --git-repo <repo-path> --git-ref <HEAD|branch|tag|sha> \
            [--listen 127.0.0.1:6187] [--reconcile-interval 5] …
@@ -46,6 +47,14 @@ Proof lives in two demos:
   desired/delivered/observed three-hash compare printed), **break-glass**
   tolerated for its TTL then healed after it lapses, and an **admission failure
   blocking a bad config** with the failing rule named.
+- [`scripts/multiwave-demo.sh`](scripts/multiwave-demo.sh) →
+  [`multiwave-demo.log`](multiwave-demo.log) (milestone 3): three **region-
+  labeled** nodes and a `waves.yaml` ordering canary → eu → us. An ordered
+  **multi-wave rollout** (each wave fully acked before the next), a **GatewaySet**
+  stamping `tier: gold` onto eu so eu renders a **distinct hash** from one
+  selector, a **newly-joined** eu node picking up the stamp on its first render,
+  and a **silent wave-2 node HALTING wave 2 and FREEZING wave 3** while wave 1
+  stays advanced — the mixed per-wave committed state surfaced, never "shrug".
 
 ## What it does
 
@@ -120,21 +129,102 @@ rollout** (startup, SIGHUP, or poll) — a blocked candidate never becomes desir
 The `FleetService.Session` bidi stream (wire types in
 [`gateway-proto`](../gateway-proto)): the control plane is the server, the data
 plane dials out. It authenticates each `Hello` via a **join token**, pushes the
-current snapshot to a freshly-joined node, and — on a reload — runs one
-**all-or-nothing wave** across every connected node, surfacing each node's
-Ack/Nack. It also **self-heals one drifted node** (`heal_node`) by re-pushing
-desired to just that node. The control plane never pushes imperative mutations;
-there is no `Patch` message and there will not be one (docs/07 at the protocol
-level).
+joining node its **own per-node desired render** immediately (GatewaySet-stamped
+when its labels match — see below), and — on a reload — walks the **ordered wave
+plan** ([`rollout.rs`](src/rollout.rs)), surfacing each node's Ack/Nack. It also
+**self-heals one drifted node** (`heal_node`) by re-pushing desired to just that
+node. The control plane never pushes imperative mutations; there is no `Patch`
+message and there will not be one (docs/07 at the protocol level). The session
+table and push/ack correlation live in [`server.rs`](src/server.rs); the wave
+walk and self-heal live in [`rollout.rs`](src/rollout.rs).
+
+### Multi-wave rollout grouped by failure domain ([`waves.rs`](src/waves.rs) + [`rollout.rs`](src/rollout.rs))
+
+A `waves.yaml` in the config repo defines an **ordered** list of waves, each a
+label selector over node labels (region/cluster/cloud). A node belongs to the
+**first** wave whose selector it matches; a node matching none is its own
+implicit final wave. Selectors are simple label equality / set-membership, not an
+expression language:
+
+```yaml
+# waves.yaml — rollout order canary -> eu -> us
+waves:
+  - name: canary
+    selector: { region: canary }        # equality
+  - name: eu
+    selector: { region: [eu-west, eu-central] }  # set membership
+  - name: us
+    selector: { region: us }
+```
+
+Applying a commit walks the waves **in order** (`roll_out_plan`): push the new
+render to every node in wave _k_, wait for **every** node to Ack the exact
+`render_hash` within the per-wave timeout, and only then proceed to wave _k+1_.
+On any Nack or timeout the wave **halts**: wave _k_ **and all later waves** stay
+on their prior committed version (frozen, never pushed), while earlier waves that
+already acked **stay advanced**. The per-wave committed state is recorded and
+surfaced — "waves [canary, eu] advanced to `abc123`; halted at [us]; later waves
+frozen on prior commit" — never "some on new, some on old, shrug" (docs/07). A
+repo with no `waves.yaml` is the **degenerate one-wave case** (one everything-
+wave over the whole fleet) — byte-for-byte the milestone-1/2 single-wave
+behavior, and its tests still pass unchanged.
+
+The reconciler-vs-wave race fix extends to multi-wave: the wave-in-flight guard
+covers a node in **any** active wave during a rollout, and after a halt a node in
+a not-yet-applied or frozen later wave is **pending, not drifted**
+(`node_pending_in_unapplied_wave`) — the reconciler leaves it on its prior
+version rather than dragging it forward past its wave's turn (proven in
+[`tests/reconcile.rs`](tests/reconcile.rs)).
+
+> Multi-wave is the substrate config **canaries** sit on (docs/04 Phase 5): a
+> canary is "waves with analysis between them". The ordered-wave substrate is
+> built here; the analysis (metrics gate between waves) is Phase 5 and stays
+> deferred.
+
+### GatewaySets ([`gatewayset.rs`](src/gatewayset.rs))
+
+A **GatewaySet** is a label selector plus a config overlay that stamps config
+across every node matching the selector, so an operator writes **one** GatewaySet
+instead of per-node files. It lives in the config repo (`gatewaysets.yaml`) and
+composes as the **outermost** overlay onto the assembled scoped chain at **render
+time**, then validates through the same `Config::from_yaml` gate every render
+passes:
+
+```yaml
+# gatewaysets.yaml — stamp tier: gold onto every eu node
+gatewaysets:
+  - name: eu-gold-tier
+    selector: { region: eu }
+    overlay:
+      fleet:
+        attribution:
+          pinned: { tier: gold }
+```
+
+The overlay **deep-merges** (a GatewaySet wins on the keys it names, leaves
+siblings untouched). The render stays a pure function of `(repo bytes, node
+labels)`: same repo + same labels ⇒ same `render_hash`, forever — **no live
+templating in the data plane** (the reviewed diff is the served diff, docs/07).
+Adding or removing a node with matching labels picks up / drops the stamp on the
+next render with no per-node file edited. A GatewaySet is **admission-checked like
+any config**: `admit_source` renders and admits each GatewaySet's stamped variant
+(under a representative matching label set), so an overlay that breaks a Baseline
+guarantee is caught at admission — attributed to the GatewaySet by name — never
+discovered only when a matching node NACKs.
+
+Nodes carry their labels from the **join token**; mint labeled tokens with
+`--label-token <k=v,...>:<secret>` (repeatable) so a joining node lands in the
+right wave and picks up the right GatewaySets.
 
 ### All-or-nothing waves ([`fleet.rs`](src/fleet.rs))
 
-A single wave over all connected nodes (multi-wave grouping by failure domain is
-deferred). On **any** Nack (or a silent node past the timeout) the wave **halts**,
-the divergence is logged loudly and left surfaced (never silent), and the fleet's
-committed version does **not** advance. A fully-acked wave commits and advances
-it. The fleet also records each node's **delivered** `render_hash` (the last hash
-pushed) — the middle column of the drift truth table.
+`Fleet` owns the applied render, the per-node monotonic versions, the per-wave
+committed map, and the adjudication of **one** wave's results. On **any** Nack (or
+a silent node past the timeout) the wave **halts**, the divergence is logged
+loudly and left surfaced (never silent), and the fleet's committed version does
+**not** advance. A fully-acked wave commits and advances it. The fleet also
+records each node's **delivered** `render_hash` (the last hash pushed) — the
+middle column of the drift truth table.
 
 ### Drift detection and self-heal ([`reconcile.rs`](src/reconcile.rs))
 
@@ -207,15 +297,16 @@ a raw snapshot **bypassing the render gate**. Two uses:
 
 Per docs/07's open questions and the task's milestone scope:
 
+- **Config canary ANALYSIS between waves** (docs/04 Phase 5). Multi-wave IS built
+  — it is the ordered-wave substrate a canary sits on. What is deferred is the
+  metric/analysis gate _between_ waves (advance only if wave _k_'s SLOs hold);
+  today a wave advances on a full ACK, not on an analysis verdict.
 - **Postgres.** The runtime store is in-memory; Postgres replaces it later and,
   per docs/07, is never truth (observed reality only, re-derivable from Git plus
   the stream).
-- **Multi-wave rollouts** grouped by failure domain, and **per-node latching**.
-  This is a single wave; the sequencing substrate is in place.
-- **GatewaySets / label-generators** (docs/07 `selectors/gatewaysets.yaml`, a
-  Phase-5 stub). Selectors are not consulted yet, so every node's desired render
-  is the fleet's single applied render; per-node label-selected renders land with
-  GatewaySets.
+- **Per-node latching** (docs/03 limitation 1's other fork). Waves are the chosen
+  application mode; per-node desired-vs-latched bookkeeping is deferred, not
+  rejected forever — some slow deliberate per-node migrations want it.
 - **Config-repo webhook.** The change trigger is a poll (the floor, docs/07); a
   webhook (fast, needs an inbound path) is the later optimization.
 - **Per-node certificates.** A burned join token bound to its node_id stands in

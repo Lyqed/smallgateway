@@ -1,0 +1,5 @@
+# Scope 1 — fleet: the base policy every node inherits. `env` is pinned here;
+# flipping it (prod -> canary) is the visible "v2" change the demo rolls out.
+attribution:
+  required_keys: [team]
+  pinned: { env: prod }

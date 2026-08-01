@@ -1,0 +1,3 @@
+# Scope 3 — one route per file (sorted by filename for deterministic order).
+prefix: /openai
+provider: openai-demo

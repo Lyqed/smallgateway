@@ -27,6 +27,7 @@
 //! break-glass for its TTL, and the reconciler tolerates its drift until the
 //! window lapses (docs/00 break-glass with TTL).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,11 +40,14 @@ use gateway_proto::FleetServiceServer;
 use gatewayctl::admission::AdmissionPolicy;
 use gatewayctl::fleet::Fleet;
 use gatewayctl::reconcile::Reconciler;
-use gatewayctl::render::render_source;
+use gatewayctl::render::{
+    read_gatewaysets, read_wave_plan, render_resolved, Rendered, RenderError,
+};
 use gatewayctl::server::{ControlPlane, FleetSvc};
-use gatewayctl::source::{ConfigSource, DirectorySource, GitSource};
+use gatewayctl::source::{ConfigSource, DirectorySource, GitSource, ResolvedRepo};
 use gatewayctl::store::RuntimeStore;
 use gatewayctl::token::JoinTokens;
+use gatewayctl::waves::WavePlan;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:6187";
 const DEFAULT_POLL_SECS: u64 = 3;
@@ -67,6 +71,11 @@ struct Cli {
     /// A file listing `node_id [ttl_secs]` per line; on SIGUSR2 each node is
     /// marked break-glass for its TTL (default token_ttl if omitted).
     break_glass_file: Option<PathBuf>,
+    /// Extra join tokens minted WITH labels, so a joining node carries a failure-
+    /// domain label (region/cluster/cloud) the wave plan and GatewaySets select
+    /// on. Each is `(labels, secret)`. Labels flow from the token at join
+    /// (server.rs), so this is how the multi-wave demo gives its nodes regions.
+    label_tokens: Vec<(BTreeMap<String, String>, String)>,
 }
 
 /// A parsed set of raw CLI flags before the source is resolved. Shared by the
@@ -83,6 +92,7 @@ struct Flags {
     reconcile_secs: Option<u64>,
     push_raw: Option<PathBuf>,
     break_glass_file: Option<PathBuf>,
+    label_tokens: Vec<(BTreeMap<String, String>, String)>,
 }
 
 impl Flags {
@@ -99,6 +109,7 @@ impl Flags {
                 "--join-token" => f.join_token = Some(args[i + 1].clone()),
                 "--push-raw" => f.push_raw = Some(PathBuf::from(&args[i + 1])),
                 "--break-glass-file" => f.break_glass_file = Some(PathBuf::from(&args[i + 1])),
+                "--label-token" => f.label_tokens.push(parse_label_token(&args[i + 1])),
                 "--token-ttl" => {
                     f.token_ttl = Some(
                         args[i + 1]
@@ -164,8 +175,30 @@ impl Cli {
             source,
             push_raw: f.push_raw,
             break_glass_file: f.break_glass_file,
+            label_tokens: f.label_tokens,
         }
     }
+}
+
+/// Parse a `--label-token` value: `k=v[,k=v...]:secret`. The last `:` separates
+/// the label list from the token secret, so a secret may itself contain no `:`.
+/// Empty label list (`:secret`) mints an unlabeled token (matches the implicit
+/// final wave), which is a valid, if unusual, request.
+fn parse_label_token(arg: &str) -> (BTreeMap<String, String>, String) {
+    let (labels_str, secret) = arg
+        .rsplit_once(':')
+        .unwrap_or_else(|| usage("--label-token must be <k=v,...>:<secret>"));
+    if secret.trim().is_empty() {
+        usage("--label-token has an empty token secret");
+    }
+    let mut labels = BTreeMap::new();
+    for pair in labels_str.split(',').filter(|p| !p.trim().is_empty()) {
+        let (k, v) = pair
+            .split_once('=')
+            .unwrap_or_else(|| usage("--label-token label must be key=value"));
+        labels.insert(k.trim().to_string(), v.trim().to_string());
+    }
+    (labels, secret.to_string())
 }
 
 fn usage(problem: &str) -> ! {
@@ -175,7 +208,7 @@ fn usage(problem: &str) -> ! {
          gatewayctl --repo <dir> | (--git-repo <path> [--git-ref <ref>]) \
          [--listen {DEFAULT_LISTEN}] [--join-token <secret>] [--token-ttl 300] \
          [--poll-interval 3] [--reconcile-interval 5] [--push-raw <file>] \
-         [--break-glass-file <file>]\n  \
+         [--break-glass-file <file>] [--label-token <k=v,...>:<secret>]...\n  \
          gatewayctl admit --repo <dir> | (--git-repo <path> [--git-ref <ref>])"
     );
     std::process::exit(2);
@@ -251,29 +284,40 @@ fn run_serve(cli: Cli) -> ! {
             std::process::exit(1);
         }
     }
-    let rendered = match render_source(cli.source.as_ref()) {
+    let (rendered, resolved) = match resolve_and_render(cli.source.as_ref()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("gatewayctl: {e}");
             std::process::exit(1);
         }
     };
+    let gatewaysets = read_gatewaysets(&resolved).unwrap_or_default();
+    let plan = read_wave_plan(&resolved).unwrap_or_else(|_| WavePlan::single());
     info!(
-        "gatewayctl compiled source {} -> render_hash={} source_commit={}",
+        "gatewayctl compiled source {} -> render_hash={} source_commit={} ({} gatewayset(s), {} wave(s))",
         cli.source.describe(),
         &rendered.render_hash[..12],
         rendered.source_commit,
+        gatewaysets.sets.len(),
+        plan.waves.len(),
     );
 
-    let fleet = Arc::new(Fleet::new(rendered));
+    let fleet = Arc::new(Fleet::from_source(rendered, resolved, gatewaysets, plan));
     let store = Arc::new(RuntimeStore::new());
     let tokens = Arc::new(JoinTokens::new(cli.token_ttl));
     // Mint the operator-supplied join token(s) so joining nodes can bootstrap.
     tokens.mint(&cli.join_token, Default::default());
     tokens.mint(&format!("{}-2", cli.join_token), Default::default());
     tokens.mint(&format!("{}-3", cli.join_token), Default::default());
+    // Labeled tokens: a node presenting one joins carrying its failure-domain
+    // labels, which the wave plan and GatewaySets select on.
+    for (labels, secret) in &cli.label_tokens {
+        tokens.mint(secret, labels.clone());
+    }
     info!(
-        "gatewayctl minted join token(s) (ttl={}s); nodes present --join-token to bootstrap",
+        "gatewayctl minted {} join token(s) ({} labeled; ttl={}s); nodes present --join-token to bootstrap",
+        3 + cli.label_tokens.len(),
+        cli.label_tokens.len(),
         cli.token_ttl
     );
 
@@ -330,8 +374,24 @@ fn run_serve(cli: Cli) -> ! {
     std::process::exit(0);
 }
 
-/// Re-resolve the source, admit, and — if the render changed and admits — roll
-/// one wave. Shared by both reload triggers (the fleet analog of a reload).
+/// Resolve a source once and render it fleet-wide, returning both the render and
+/// the resolved repo (so GatewaySets and the wave plan are read from the same
+/// resolution — one resolve per render pass, deterministic).
+fn resolve_and_render(
+    source: &dyn ConfigSource,
+) -> Result<(Rendered, ResolvedRepo), RenderError> {
+    let resolved = source.resolve()?;
+    let rendered = render_resolved(&resolved)?;
+    Ok((rendered, resolved))
+}
+
+/// Re-resolve the source, admit, refresh the fleet's desired inputs (render +
+/// GatewaySets + wave plan), and — if the config changed and admits — roll the
+/// MULTI-WAVE plan in order. Shared by both reload triggers (the fleet analog of
+/// a reload). A change confined to a GatewaySet overlay still rolls, because it
+/// perturbs some node's per-node render even when the fleet-wide hash is
+/// unchanged, so the trigger is "the resolved config changed", not just the
+/// fleet-wide hash.
 async fn reload_and_roll(
     cp: &Arc<ControlPlane>,
     source: &Arc<dyn ConfigSource>,
@@ -357,19 +417,28 @@ async fn reload_and_roll(
             return;
         }
     }
-    match render_source(source.as_ref()) {
-        Ok(next) => {
+    match resolve_and_render(source.as_ref()) {
+        Ok((next, resolved)) => {
             let hash = next.render_hash.clone();
             let commit = next.source_commit.clone();
-            if cp.fleet.set_applied(next) {
+            let gatewaysets = read_gatewaysets(&resolved).unwrap_or_default();
+            let plan = read_wave_plan(&resolved).unwrap_or_else(|_| WavePlan::single());
+            let n_sets = gatewaysets.sets.len();
+            let n_waves = plan.waves.len();
+            let changed = cp
+                .fleet
+                .set_applied_from_source(next, resolved, gatewaysets, plan);
+            if changed {
                 info!(
-                    "[reload] trigger={trigger} re-rendered -> render_hash={} source_commit={commit}; rolling out",
+                    "[reload] trigger={trigger} re-rendered -> render_hash={} source_commit={commit} \
+                     ({n_sets} gatewayset(s), {n_waves} wave(s)); rolling out the wave plan",
                     &hash[..12]
                 );
-                cp.roll_out(trigger).await;
+                cp.roll_out_plan(trigger).await;
             } else {
                 info!(
-                    "[reload] trigger={trigger} re-rendered identical (render_hash={} unchanged); no-op",
+                    "[reload] trigger={trigger} re-resolved identical (source_commit={commit} \
+                     unchanged, render_hash={}); no-op",
                     &hash[..12]
                 );
             }
@@ -488,13 +557,17 @@ fn spawn_poll(
     });
 }
 
-/// A cheap change signal for the source: the render_hash if it renders, else a
-/// marker so a transiently-broken source re-triggers once it is fixed. For a Git
-/// source this reflects a commit's content; a real deployment swaps the poll for
-/// a webhook (deferred, poll is the floor — docs/07).
+/// A cheap change signal for the source: `source_commit:render_hash` if it
+/// renders, else a marker so a transiently-broken source re-triggers once it is
+/// fixed. The `source_commit` covers ALL repo files — a change confined to
+/// `gatewaysets.yaml` or `waves.yaml` (which the fleet-wide render_hash does not
+/// reflect) still bumps `source_commit` (a Git commit, or the directory source's
+/// content id over every file), so a GatewaySet-only edit still triggers a
+/// reload. For a Git source this reflects a commit; a real deployment swaps the
+/// poll for a webhook (deferred, poll is the floor — docs/07).
 fn source_fingerprint(source: &Arc<dyn ConfigSource>) -> String {
-    match render_source(source.as_ref()) {
-        Ok(r) => format!("{}:{}", r.source_commit, r.render_hash),
+    match resolve_and_render(source.as_ref()) {
+        Ok((r, _)) => format!("{}:{}", r.source_commit, r.render_hash),
         Err(_) => "<<unrenderable>>".to_string(),
     }
 }
