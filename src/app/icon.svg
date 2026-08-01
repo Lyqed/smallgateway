@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- brush stroke + ring: the mural crossing the machined gallery -->
+  <rect width="32" height="32" rx="7" fill="#f8f7f2" />
+  <path d="M4 24 C 9 19, 15 14, 22 10 C 25 8.4, 27.5 7.2, 29 6.6 C 27.8 8.4, 25.6 10.4, 22.8 12.6 C 17.6 16.6, 11 21, 5.4 24.8 Z" fill="#7d3bc7" />
+  <circle cx="16" cy="16" r="10.5" fill="none" stroke="#23252f" stroke-width="2.4" />
+</svg>
