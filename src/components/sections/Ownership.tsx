@@ -19,22 +19,25 @@ export function Ownership() {
         <div className="relative border-y border-steel py-16 sm:py-20">
           <Monarch className="pointer-events-none absolute -bottom-12 right-2 w-24 rotate-6 sm:-bottom-14 sm:right-10 sm:w-32" />
 
-          <p className="voice-mono text-xs text-steel-dark">
-            the ownership contract
+          <p className="voice-mono text-sm font-medium uppercase tracking-[0.2em] text-monarch sm:text-base">
+            The ownership contract
           </p>
 
-          <Reveal className="mt-6">
-            <h2
-              id="ownership-heading"
-              className="voice-display max-w-4xl text-3xl leading-[1.05] sm:text-5xl"
-            >
-              If something breaks because of a change you made six months ago,{" "}
-              <span className="relative inline-block whitespace-nowrap px-[0.4em] pt-[0.12em]">
+          <Reveal className="mt-8">
+            {/* The hand circle wraps the WHOLE sentence, not one phrase:
+                a large ellipse sized to the heading's bounding box, drawn
+                behind the multi-line text. */}
+            <div className="relative inline-block max-w-4xl px-[3%] py-[6%]">
+              <HandCircle className="pointer-events-none absolute inset-0 h-full w-full" />
+              <h2
+                id="ownership-heading"
+                className="voice-display relative text-3xl leading-[1.12] sm:text-5xl"
+              >
+                If something breaks because of a change you made six months ago,
                 you are responsible.
-                <HandCircle className="pointer-events-none absolute left-1/2 top-1/2 h-[150%] w-[128%] -translate-x-1/2 -translate-y-1/2" />
-              </span>
-            </h2>
-            <p aria-hidden className="voice-hand mt-5 rotate-[-2deg] text-xl">
+              </h2>
+            </div>
+            <p aria-hidden className="voice-hand mt-6 rotate-[-2deg] text-xl">
               not blamed. responsible
             </p>
           </Reveal>

@@ -24,8 +24,9 @@ export function HandCircle({ className }: MarkProps) {
         pathLength={1}
         d="M118 12 C 62 6, 14 22, 12 46 C 10 71, 62 84, 116 82 C 172 80, 210 64, 208 42 C 206 20, 158 8, 104 11 C 88 12, 74 15, 63 19"
         stroke="var(--violet)"
-        strokeWidth="3"
+        strokeWidth="2.5"
         strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
       />
     </svg>
   );
