@@ -52,9 +52,16 @@ it earns a tracker row.
    composition model is day-one.
 3. **GB-1**: required attribution keys as a route field; requests without the
    tag are rejected.
-4. **GB-2/GB-3**: claim mappings from verified JWTs, operator-pinned values
-   for everything else. Two origins for every tag: proven or assigned, never
-   believed.
+4. **GB-3** (and GB-2, deferred): operator-pinned values assigned by the
+   gateway carry the load. GB-2, mapping a tag from a verified JWT claim, is
+   built and tested but sits last in priority and may not ship as a promised
+   capability. The judgment against it is stated in `crates/gatewayd/README.md`:
+   the failure it defends against is largely self-correcting, it costs latency
+   on every request and an owner for a mapping table that drifts, and identity
+   verified at the source may arrive from the platform instead. Two origins
+   for every tag remain the rule where a tag is used: assigned by the operator,
+   or, only if GB-2 is deliberately turned on, proven from a verified login.
+   Never believed from a caller header.
 5. **GB-4**: operator-defined rejection bodies — including the streaming
    terminal event, the thing nothing in the matrix does.
 6. **GB-7/GB-8**: invoice-grade attribution on AWS and Vertex, the

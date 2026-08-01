@@ -107,8 +107,10 @@ magic.
 This product is the reference implementation of the Gateway Baseline:
 
 - **GB-1** required attribution keys as a route field
-- **GB-2** claim mappings from verified logins
-- **GB-3** operator-pinned values for callers that don't log in
+- **GB-2** claim mappings from verified logins (built, but deferred by
+  judgment and lowest priority; see the note in `crates/gatewayd/README.md`.
+  It may never ship as a promised capability)
+- **GB-3** operator-pinned values, the primary attribution mode
 - **GB-4** rejection templates — including streaming terminal events
 - **GB-5** fleet defaults per attribution value, Git-reviewed overrides; the
   100k-token scenario as five lines of YAML

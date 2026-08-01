@@ -1,18 +1,52 @@
 # gatewayd
 
-The standalone data plane: a config-driven Pingora proxy enforcing the
-scoped policy chain (fleet → project → route → app), attribution
-(GB-1/2/3 + CEL-derived values), operator-owned rejections (GB-4), STS
-session-tag credentials for Bedrock (GB-7), Vertex billing labels (GB-8),
-with a streaming tap and meter on every response. Phase 1, milestones 1-3.
-Run it:
+The data plane: a config-driven Pingora proxy enforcing the scoped policy
+chain (fleet → project → route → app), attribution (GB-1/2/3 + CEL-derived
+values), operator-owned rejections (GB-4), STS session-tag credentials for
+Bedrock (GB-7), Vertex billing labels (GB-8), with a streaming tap and meter
+on every response. Phase 1 (milestones 1-3) standalone; Phase 2 M1 adds a
+control-plane client mode.
+
+Run it — one of two config sources:
 
 ```
+# File mode (Phase 1): a local YAML, hot-reloaded on SIGHUP or the poll watcher.
 gatewayd --config gateway.yaml [--listen 127.0.0.1:6188] [--poll-interval 3]
+
+# Control-plane mode (Phase 2 M1): dial gatewayctl, receive rendered snapshots.
+gatewayd --control-plane <host:port> --node-id <id> --join-token <secret> \
+         [--config-source control-plane] [--listen 127.0.0.1:6188]
 ```
 
-Proof lives in `scripts/demo.sh` → `demo.log`, and in the conformance
-suite below.
+Proof lives in `scripts/demo.sh` → `demo.log` (file mode, GB-1..9), in the
+fleet demo `../gatewayctl/scripts/fleet-demo.sh` → `../gatewayctl/fleet-demo.log`
+(control-plane mode across two nodes), and in the conformance suite below.
+
+## Control-plane client mode (Phase 2, milestone 1)
+
+Instead of reading a local file, gatewayd dials a `gatewayctl` endpoint with a
+join token, holds one long-lived bidirectional gRPC stream open, and binds each
+pushed `RenderedSnapshot` through the **existing** `SharedSnapshot` / `Reloader`
+machinery (see `src/client.rs`). The seam is deliberately narrow: the control
+plane is just one more reload trigger, and the doc-03 hot-swap semantics carry
+over **unchanged** —
+
+- **Drain on old.** In-flight streams finish on the version they bound at
+  request start; a swap only affects new binds (`Arc<Snapshot>` refcount).
+- **NACK keeps old.** A pushed snapshot that fails local validation is NACKed
+  over the stream and the old snapshot keeps serving — the node is an
+  *independent* validation authority, never silently wrong.
+- **No-op is an ACK.** A re-push of the active render hashes to the active
+  snapshot and short-circuits; the node ACKs the version it is already at.
+
+Each push maps straight onto the wire: `Swapped`/`NoOp` → `Ack`, `Rejected` →
+`Nack` (with the precise validation reason). The node also heartbeats `Status`
+carrying the render hash it is actually running. Bootstrap blocks until the
+first snapshot is received and bound — a node with no valid config never serves.
+
+File mode is unchanged and fully supported; the two sources are mutually
+exclusive and selected by `--config` vs `--control-plane` (or pinned with
+`--config-source file|control-plane`).
 
 ## Status: Phase 1 checks
 
@@ -24,16 +58,44 @@ and the run writes the machine-readable summary `target/conformance.json`
 | Check | Status | Named tests (tests/conformance.rs) |
 |---|---|---|
 | GB-1 required attribution keys | **Implemented** | `gb1_missing_required_key_rejected_with_operator_template`, `gb1_required_key_present_reaches_the_upstream`, `gb1_app_override_pin_satisfies_a_required_key` |
-| GB-2 claim mappings from verified logins | **Implemented** (HS256; asymmetric algs later) | `gb2_claim_mapped_key_proven_from_verified_jwt`, `gb2_forged_caller_header_never_believed_without_token` |
+| GB-2 claim mappings from verified logins | **Built, deferred by judgment** (HS256 mapping works, but this is the lowest-priority check and may not ship as a promised capability, see the note below) | `gb2_claim_mapped_key_proven_from_verified_jwt`, `gb2_forged_caller_header_never_believed_without_token` |
 | GB-3 operator-pinned values | **Implemented** | `gb3_pinned_key_overwrites_caller_value` |
 | GB-4 rejection templates | **Implemented** (bodies + scoped overrides; the mid-stream terminal event is typed/validated, the cut itself is Phase 3) | `gb4_unknown_route_uses_the_operator_template_verbatim`, `gb4_scoped_rejection_template_overrides_down_the_chain` |
 | GB-5 spend caps | Phase 3 | — |
 | GB-6 native alerts | Phase 3 | — |
 | GB-7 invoice-grade attribution on AWS | **Mechanism implemented** (mock-verified; live AWS is a documented follow-up, below) | `gb7_session_tags_ride_the_credentials_to_bedrock`, `gb7_credentials_cached_per_tag_set_with_expiry`, `gb7_caller_raw_session_tag_rejected_at_config_load` |
 | GB-8 invoice-grade attribution on Vertex | **Implemented** (same semantics as our upstream agentgateway PR, native) | `gb8_operator_labels_merged_into_body_operator_wins`, `gb8_unresolvable_label_fails_closed_with_gb4_template` |
-| GB-9 hot-swappable config | **Implemented** (single node; fleet waves are Phase 2) | reload/proxy unit tests + demo scenarios 7-9 |
+| GB-9 hot-swappable config | **Implemented** (single node; fleet distribution via control-plane client mode is Phase 2 M1 — the same reload path, one more trigger) | reload/proxy unit tests + demo scenarios 7-9; control-plane-mode reload tests; `../gatewayctl/scripts/fleet-demo.sh` |
 | Tier-1 CEL (conditions, derivations, label exprs) | **Implemented** (compile-at-load, depth/cost limits, comprehensions banned, sandboxed) | `cel_route_condition_gates_matching_beyond_prefix`, `cel_derived_attribution_value_from_claim_transform`, `cel_comprehension_label_rejected_at_config_load` |
 | Scoped chain composition | **Implemented** (exhaustive precedence tests in `gateway-core/tests/scope_precedence.rs`) | `scope_chain_composes_fleet_project_route_app` |
+
+## A note on GB-2 (identity from a verified login)
+
+GB-2 is the lowest-priority check, and whether it ships as a promised
+capability is an open decision, not a foregone one. The mechanism (map an
+attribution key from a verified JWT claim instead of a caller header) is
+built and tested, because building it was the cheap part. Deciding it
+deserves to run is the expensive part, and the honest answer so far is
+that it may not.
+
+The failure GB-2 defends against, a caller putting a false tag in a
+header, is largely self-correcting: a disputed invoice line gets caught
+by the team that reads its own bill. Against that, a directory or JWT
+check costs response time on every request, forever, and adds one more
+component that needs an owner and a group-mapping table that will drift.
+A chargeback report built on stale mappings is worse than one built on
+honest headers. Coding assistants sharpen the point: the heaviest new
+callers run half on a developer's machine and are hard to bind to a
+directory identity at all.
+
+There is also a real chance the work is never ours to do. Identity
+verified at the source may arrive as part of the platform, and a
+deferral that ends with someone else building the thing is the cheapest
+engineering there is. So GB-2 stays built-but-deferred: the code is
+present and the tests pass, the check sits last in priority, and the
+project does not present it as a settled, first-class feature. GB-3
+(operator-assigned values) carries the load in the meantime, which is
+the mode most callers actually use.
 
 ## The scoped policy chain
 
