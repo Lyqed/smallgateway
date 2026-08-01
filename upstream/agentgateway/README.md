@@ -157,11 +157,13 @@ rebase.
 
 - Upstream `CONTRIBUTION.md` (at the base commit) prescribes: fork → feature
   branch → `make lint` + `make test` → PR against main, conventional-commit
-  style messages. It does not mention a CLA or DCO at this commit —
-  **re-check CLA/DCO requirements at submission time** (the repo is a Linux
-  Foundation project; LF projects commonly require DCO sign-off, and a
-  `Signed-off-by` line can be added with `git commit --amend -s` before
-  pushing if required).
+  style messages. It does not mention a CLA or DCO, but **a DCO check runs
+  in CI on every PR** (verified 2026-08-01 via the check runs on PR #2796:
+  a `DCO` check alongside proxy-lint/Proxy Test/etc.). No CLA check was
+  present. The GB-4 commit (`bb5d1772`) now carries
+  `Signed-off-by: Lyqed <antondoeswonders@gmail.com>`, matching the commit
+  author email as the DCO bot requires. GB-8's commit still needs the same
+  treatment before submission.
 - Review reality per the spike-b governance notes: small sponsored PRs merge
   in hours; external feature PRs (e.g. #2023) can take weeks. Both drafts
   reference the in-tree precedents to shorten review.

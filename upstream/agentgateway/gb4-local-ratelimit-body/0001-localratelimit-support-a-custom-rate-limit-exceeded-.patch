@@ -1,4 +1,4 @@
-From 8ea8421905fd717607eb22acf1af2d57edcef2cd Mon Sep 17 00:00:00 2001
+From bb5d1772907db0568ed3966b6ebd6fb0ff6a85f3 Mon Sep 17 00:00:00 2001
 From: Lyqed <antondoeswonders@gmail.com>
 Date: Sat, 1 Aug 2026 15:52:09 +0300
 Subject: [PATCH] localratelimit: support a custom rate limit exceeded response
@@ -11,6 +11,8 @@ returns the rate limit service's raw_body on rejection.
 The X-RateLimit-* headers are still attached, and gRPC requests keep the
 trailers-only grpc-status response. When `response` is unset the
 existing plain-text 429 behavior is unchanged.
+
+Signed-off-by: Lyqed <antondoeswonders@gmail.com>
 ---
  .../agentgateway/src/http/localratelimit.rs   |  38 ++++
  .../src/http/localratelimit_tests.rs          | 203 ++++++++++++++++++
@@ -24,7 +26,7 @@ existing plain-text 429 behavior is unchanged.
  create mode 100644 crates/agentgateway/src/http/localratelimit_tests.rs
 
 diff --git a/crates/agentgateway/src/http/localratelimit.rs b/crates/agentgateway/src/http/localratelimit.rs
-index c0b269e3..8a8c4e54 100644
+index c0b269e3..4d7efeb6 100644
 --- a/crates/agentgateway/src/http/localratelimit.rs
 +++ b/crates/agentgateway/src/http/localratelimit.rs
 @@ -1,9 +1,15 @@
@@ -47,8 +49,8 @@ index c0b269e3..8a8c4e54 100644
  	#[serde(default)]
  	#[serde(rename = "type")]
  	pub limit_type: RateLimitType,
-+	/// Custom response returned when the limit is exceeded. When unset, a plain-text
-+	/// 429 response is returned.
++	/// Custom response returned when the limit is exceeded.
++	/// When unset, a plain-text 429 response is returned.
 +	#[serde(default, skip_serializing_if = "Option::is_none")]
 +	pub response: Option<RateLimitResponse>,
 +}
@@ -409,7 +411,7 @@ index 9bde14c1..f9b9a17f 100644
  			// Yes, its single with a vec, because we originally supported multiple rate limit policies before
  			// we added the generic multiple support.
 diff --git a/schema/config.json b/schema/config.json
-index 8a58c567..40b4db22 100644
+index 8a58c567..f3d679e9 100644
 --- a/schema/config.json
 +++ b/schema/config.json
 @@ -5509,6 +5509,17 @@
@@ -418,7 +420,7 @@ index 8a58c567..40b4db22 100644
            "default": "requests"
 +        },
 +        "response": {
-+          "description": "Custom response returned when the limit is exceeded. When unset, a plain-text\n429 response is returned.",
++          "description": "Custom response returned when the limit is exceeded.\nWhen unset, a plain-text 429 response is returned.",
 +          "anyOf": [
 +            {
 +              "$ref": "#/$defs/RateLimitResponse"
@@ -471,7 +473,7 @@ index 8a58c567..40b4db22 100644
            "default": "requests"
 +        },
 +        "response": {
-+          "description": "Custom response returned when the limit is exceeded. When unset, a plain-text\n429 response is returned.",
++          "description": "Custom response returned when the limit is exceeded.\nWhen unset, a plain-text 429 response is returned.",
 +          "anyOf": [
 +            {
 +              "$ref": "#/$defs/RateLimitResponse"
@@ -484,14 +486,14 @@ index 8a58c567..40b4db22 100644
        },
        "additionalProperties": false,
 diff --git a/schema/config.md b/schema/config.md
-index 48e61140..e593445c 100644
+index 48e61140..4ea5cee1 100644
 --- a/schema/config.md
 +++ b/schema/config.md
 @@ -2861,10 +2861,18 @@
  |`binds[].listeners[].routes[].policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`binds[].listeners[].routes[].policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
  |`binds[].listeners[].routes[].policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response.body`|array|Static response body.|
 +|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`binds[].listeners[].routes[].policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -499,7 +501,7 @@ index 48e61140..e593445c 100644
  |`binds[].listeners[].routes[].policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`binds[].listeners[].routes[].policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
  |`binds[].listeners[].routes[].policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`binds[].listeners[].routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`binds[].listeners[].routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`binds[].listeners[].routes[].policies.localRateLimit[].response.body`|array|Static response body.|
 +|`binds[].listeners[].routes[].policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`binds[].listeners[].routes[].policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -510,7 +512,7 @@ index 48e61140..e593445c 100644
  |`policies[].policy.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`policies[].policy.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
  |`policies[].policy.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`policies[].policy.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`policies[].policy.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`policies[].policy.localRateLimit.conditional[].response.body`|array|Static response body.|
 +|`policies[].policy.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`policies[].policy.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -518,7 +520,7 @@ index 48e61140..e593445c 100644
  |`policies[].policy.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`policies[].policy.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
  |`policies[].policy.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`policies[].policy.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`policies[].policy.localRateLimit[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`policies[].policy.localRateLimit[].response.body`|array|Static response body.|
 +|`policies[].policy.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`policies[].policy.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -529,7 +531,7 @@ index 48e61140..e593445c 100644
  |`routeGroups[].routes[].policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`routeGroups[].routes[].policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
  |`routeGroups[].routes[].policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`routeGroups[].routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routeGroups[].routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`routeGroups[].routes[].policies.localRateLimit.conditional[].response.body`|array|Static response body.|
 +|`routeGroups[].routes[].policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`routeGroups[].routes[].policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -537,7 +539,7 @@ index 48e61140..e593445c 100644
  |`routeGroups[].routes[].policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`routeGroups[].routes[].policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
  |`routeGroups[].routes[].policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`routeGroups[].routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routeGroups[].routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`routeGroups[].routes[].policies.localRateLimit[].response.body`|array|Static response body.|
 +|`routeGroups[].routes[].policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`routeGroups[].routes[].policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -548,7 +550,7 @@ index 48e61140..e593445c 100644
  |`routes[].policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`routes[].policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
  |`routes[].policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routes[].policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`routes[].policies.localRateLimit.conditional[].response.body`|array|Static response body.|
 +|`routes[].policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`routes[].policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -556,7 +558,7 @@ index 48e61140..e593445c 100644
  |`routes[].policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`routes[].policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
  |`routes[].policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`routes[].policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`routes[].policies.localRateLimit[].response.body`|array|Static response body.|
 +|`routes[].policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`routes[].policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -567,7 +569,7 @@ index 48e61140..e593445c 100644
  |`llm.policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`llm.policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
  |`llm.policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`llm.policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`llm.policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`llm.policies.localRateLimit[].response.body`|array|Static response body.|
 +|`llm.policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`llm.policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -578,7 +580,7 @@ index 48e61140..e593445c 100644
  |`mcp.policies.localRateLimit.conditional[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`mcp.policies.localRateLimit.conditional[].fillInterval`|string|How often the local bucket is refilled.|
  |`mcp.policies.localRateLimit.conditional[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`mcp.policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`mcp.policies.localRateLimit.conditional[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`mcp.policies.localRateLimit.conditional[].response.body`|array|Static response body.|
 +|`mcp.policies.localRateLimit.conditional[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`mcp.policies.localRateLimit.conditional[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
@@ -586,7 +588,7 @@ index 48e61140..e593445c 100644
  |`mcp.policies.localRateLimit[].tokensPerFill`|integer|Number of tokens added to the local bucket each fill interval.|
  |`mcp.policies.localRateLimit[].fillInterval`|string|How often the local bucket is refilled.|
  |`mcp.policies.localRateLimit[].type`|enum|Whether this limit counts requests or LLM tokens.<br>Possible values: `requests`, `tokens`.|
-+|`mcp.policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded. When unset, a plain-text<br>429 response is returned.|
++|`mcp.policies.localRateLimit[].response`|object|Custom response returned when the limit is exceeded.<br>When unset, a plain-text 429 response is returned.|
 +|`mcp.policies.localRateLimit[].response.body`|array|Static response body.|
 +|`mcp.policies.localRateLimit[].response.contentType`|string|Content-Type of the response body. Defaults to `text/plain`.|
 +|`mcp.policies.localRateLimit[].response.status`|integer|HTTP status code to return. Defaults to 429 (Too Many Requests).|
