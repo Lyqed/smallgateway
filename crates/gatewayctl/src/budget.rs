@@ -103,6 +103,22 @@ impl FleetBudgets {
         Self::fleet_alerts(id, entry)
     }
 
+    /// Reclaim a departed node's spend from the fleet ledger (called on
+    /// disconnect). Without this, a dead node's consumed tokens keep counting
+    /// toward `total_spend` forever — starving the surviving hot nodes of
+    /// grantable headroom — and its lingering entry inflates `node_count`,
+    /// shrinking every cold-node floor slice. Removing the entry across every
+    /// capped value restores the survivors' headroom on the next rebalance.
+    ///
+    /// This does NOT re-arm the GB-6 latches: an alert that already fired for a
+    /// crossing stays fired for the window (the crossing genuinely happened).
+    pub fn forget_node(&self, node_id: &str) {
+        let mut caps = self.caps.lock().expect("budget lock");
+        for entry in caps.values_mut() {
+            entry.per_node_spend.remove(node_id);
+        }
+    }
+
     /// The GB-6 alerts a fleet-wide total newly crosses (soft 80%, hard cap),
     /// fired once each per window. Mutates the fired-latches on `entry`.
     fn fleet_alerts(id: &CapId, entry: &mut CapState) -> Vec<Alert> {
@@ -139,12 +155,14 @@ impl FleetBudgets {
 
     /// Rebalance one node's shares across every capped value it knows about,
     /// returning the allocation to grant it. The share for node `n` on value `v`
-    /// is: the tokens `n` already spent on `v` (it must keep its own consumed
-    /// portion), PLUS a slice of the remaining fleet headroom weighted by `n`'s
-    /// share of observed spend — the "hot node gets a bigger slice" rule — with
-    /// a cold-node floor so a node that has spent nothing still gets a starting
-    /// slice. The sum of shares never exceeds the cap: headroom is divided, not
-    /// invented.
+    /// is its weighted slice of the cap: cold nodes (zero observed spend) reserve
+    /// a floor slice carved out of the headroom FIRST, then the hot nodes divide
+    /// the pool that remains of the cap by their share of observed spend — the
+    /// "hot node gets a bigger slice" rule. The sum of shares over all nodes never
+    /// exceeds the cap for ANY fleet size or hot/cold mix — including a fleet whose
+    /// cumulative reported spend already exceeds the cap — because the cap is
+    /// partitioned, not invented (see [`FleetBudgets::share_for_node`] for the
+    /// proof of the conservation invariant).
     pub fn shares_for(&self, node_id: &str) -> Vec<ShareAllocation> {
         let caps = self.caps.lock().expect("budget lock");
         let mut out = Vec::new();
@@ -162,37 +180,87 @@ impl FleetBudgets {
     }
 
     /// The pure share-allocation math for one node against one cap state.
+    ///
+    /// CONSERVATION INVARIANT (proven): the sum of `share_for_node(n)` over every
+    /// node in `entry` is `<= cap`, for ANY node count and ANY hot/cold mix —
+    /// including a fleet whose reported cumulative spend already exceeds the cap.
+    /// The cap is PARTITIONED, never invented. The partition is:
+    ///
+    /// 1. **Cold fleet** (`total == 0`): every node gets an even floor slice
+    ///    `floor(cap * FLOOR / node_count)`. The `node_count` divisor is what
+    ///    keeps K nodes from each claiming `FLOOR` of the cap and inflating the
+    ///    real limit to `K * FLOOR`. Sum `<= cap * FLOOR <= cap`.
+    /// 2. **Mixed / hot fleet** (`total > 0`): the cold nodes (zero observed
+    ///    spend) each reserve a floor slice carved out of the *headroom* and
+    ///    split by `node_count`, so all cold floors together take at most
+    ///    `FLOOR` of the headroom. What is left of the CAP after that cold
+    ///    reservation — the `hot_pool` — is divided among the hot nodes strictly
+    ///    by spend weight: `floor(hot_pool * node_spent / total)`.
+    ///
+    /// Why this conserves even when `total > cap` (the case the previous version
+    /// got wrong): a hot node is granted its *weighted slice of the pool*, it
+    /// does NOT keep its raw `node_spent`. The old formula returned
+    /// `node_spent + slice`, and since `sum(node_spent) == total`, once the fleet
+    /// had collectively reported more than the cap the grants summed to `total`,
+    /// silently raising the real fleet limit to `total`. Dividing a fixed
+    /// `hot_pool` by weight bounds the hot grants to `hot_pool` exactly:
+    /// `sum(floor(hot_pool * s_i / total)) <= hot_pool * (sum s_i)/total ==
+    /// hot_pool`, and `hot_pool + cold_reservation == cap` by construction, so
+    /// the fleet total can never exceed the cap while connected. A node that has
+    /// already spent past its recomputed share is handled by the data plane's own
+    /// per-node deny against the cap ([`gateway_core::budget::LocalBudget`]) — it
+    /// simply stops, it does not get retroactively granted headroom that does not
+    /// exist.
     fn share_for_node(node_id: &str, entry: &CapState) -> u64 {
         let cap = entry.cap;
         let total = entry.total_spend();
         let node_count = entry.per_node_spend.len().max(1) as u64;
         let node_spent = entry.per_node_spend.get(node_id).copied().unwrap_or(0);
 
-        // Fleet headroom left to divide.
+        if cap == 0 {
+            return 0; // uncapped: no share to grant
+        }
+
+        // A cold fleet: no node has spent anything yet. Divide a floor slice of
+        // the whole cap EVENLY across the nodes. Sum across nodes is
+        // <= cap * FLOOR <= cap.
+        if total == 0 {
+            return ((cap as f64) * COLD_NODE_FLOOR_FRACTION / node_count as f64).floor() as u64;
+        }
+
+        // Fleet headroom left before the cap (0 once the fleet is at/over cap).
         let headroom = cap.saturating_sub(total);
 
-        // Weight the headroom by this node's share of observed spend (hot node
-        // bigger slice). A cold fleet (no spend anywhere) divides the headroom
-        // by the cold-node floor so every node gets a starting slice.
-        let weighted_headroom = if total == 0 {
-            // No spend anywhere yet: hand each node a floor slice of the cap.
-            ((cap as f64) * COLD_NODE_FLOOR_FRACTION).floor() as u64
-        } else if node_spent == 0 {
-            // A cold node in an otherwise-hot fleet: a floor slice of the
-            // headroom, split across the cold nodes so hot nodes keep the bulk.
-            let cold_floor = ((headroom as f64) * COLD_NODE_FLOOR_FRACTION / node_count as f64)
-                .floor() as u64;
-            cold_floor
+        // The per-cold-node floor slice, carved out of the headroom and split so
+        // the cold nodes collectively take at most COLD_NODE_FLOOR_FRACTION of
+        // the headroom, leaving the rest of the CAP to the hot nodes. When the
+        // fleet is already at/over cap, headroom is 0 and cold nodes get nothing.
+        let cold_count = entry
+            .per_node_spend
+            .values()
+            .filter(|&&s| s == 0)
+            .count() as u64;
+        let cold_floor_each = if cold_count == 0 {
+            0
         } else {
-            // Hot node: its slice of the headroom in proportion to its spend.
-            ((headroom as f64) * (node_spent as f64 / total as f64)).floor() as u64
+            ((headroom as f64) * COLD_NODE_FLOOR_FRACTION / node_count as f64).floor() as u64
         };
 
-        // The node keeps its own consumed portion plus its weighted headroom
-        // slice, capped at the fleet cap (never grant past the cap).
-        node_spent
-            .saturating_add(weighted_headroom)
-            .min(cap)
+        if node_spent == 0 {
+            // A cold node in an otherwise-hot fleet: just its reserved floor.
+            return cold_floor_each.min(cap);
+        }
+
+        // A hot node divides the pool that REMAINS of the cap after the cold
+        // reservation, by its spend weight. It is granted its weighted slice of
+        // that pool — NOT `node_spent + slice`, which would let the grants sum to
+        // `total` and blow past the cap once the fleet is collectively over it.
+        // Because the hot slices sum to at most `hot_pool` and
+        // `hot_pool + cold_reservation == cap`, the fleet total is conserved.
+        let cold_reservation = cold_floor_each.saturating_mul(cold_count);
+        let hot_pool = cap.saturating_sub(cold_reservation);
+        let hot_slice = ((hot_pool as f64) * (node_spent as f64 / total as f64)).floor() as u64;
+        hot_slice.min(cap)
     }
 
     /// The fleet-wide observed spend for a value (sum across nodes) — the
@@ -278,12 +346,16 @@ mod tests {
         let fb = FleetBudgets::new();
         fb.report_spend("hot", &id("ml"), 100_000, 60_000);
         fb.report_spend("cold", &id("ml"), 100_000, 0);
-        // headroom 40k; cold floor = 10% of 40k / 2 nodes = 2k.
+        // headroom 40k; cold floor = 10% of 40k / 2 nodes = 2k, reserved OUT of
+        // the headroom before the hot node divides the remainder.
         let cold = &fb.shares_for("cold")[0];
         assert_eq!(cold.share, 2_000);
-        // The hot node keeps the bulk: 60k spent + 100% of headroom weight.
+        // The hot node keeps its 60k spend + the remaining headroom (40k - 2k
+        // reserved for the cold node) = 60k + 38k = 98k. NOT 100k: the cold
+        // floor is carved out, so the two shares sum to exactly the cap.
         let hot = &fb.shares_for("hot")[0];
-        assert_eq!(hot.share, 100_000); // 60k + 40k headroom (all spend is its)
+        assert_eq!(hot.share, 98_000);
+        assert_eq!(cold.share + hot.share, 100_000, "conserved: sum == cap");
     }
 
     #[test]
@@ -293,6 +365,119 @@ mod tests {
         fb.report_spend("n1", &id("ml"), 100_000, 100_000);
         let s = &fb.shares_for("n1")[0];
         assert!(s.share <= s.cap);
+        assert_eq!(s.share, 100_000);
+    }
+
+    /// The core conservation invariant: across MANY nodes, mixed hot and cold,
+    /// the sum of shares must never exceed the cap. This is what an over-
+    /// allocated fleet violates — silently raising the real fleet limit.
+    fn sum_of_shares(fb: &FleetBudgets, nodes: &[&str], v: &str) -> u64 {
+        nodes
+            .iter()
+            .map(|n| fb.shares_for(n).iter().find(|a| a.id == id(v)).map_or(0, |a| a.share))
+            .sum()
+    }
+
+    #[test]
+    fn a_cold_fleet_conserves_the_cap_across_many_nodes() {
+        let fb = FleetBudgets::new();
+        fb.observe_cap(&id("ml"), 100_000);
+        // 20 cold nodes must NOT each claim 10% of the cap (which would sum to
+        // 2x the cap). The node_count divisor keeps the sum <= cap.
+        let nodes: Vec<String> = (0..20).map(|i| format!("n{i}")).collect();
+        for n in &nodes {
+            fb.report_spend(n, &id("ml"), 100_000, 0);
+        }
+        let refs: Vec<&str> = nodes.iter().map(String::as_str).collect();
+        let sum = sum_of_shares(&fb, &refs, "ml");
+        assert!(sum <= 100_000, "20 cold nodes must not inflate the cap: {sum}");
+        // Each node gets an even floor slice: 10% of 100k / 20 = 500.
+        assert_eq!(fb.shares_for("n0")[0].share, 500);
+    }
+
+    #[test]
+    fn a_mixed_hot_and_cold_fleet_conserves_the_cap() {
+        let fb = FleetBudgets::new();
+        // 3 hot nodes and 5 cold nodes; the sum of every node's share must not
+        // exceed the cap even though each is granted independently.
+        fb.report_spend("h1", &id("ml"), 100_000, 30_000);
+        fb.report_spend("h2", &id("ml"), 100_000, 15_000);
+        fb.report_spend("h3", &id("ml"), 100_000, 5_000);
+        for c in ["c1", "c2", "c3", "c4", "c5"] {
+            fb.report_spend(c, &id("ml"), 100_000, 0);
+        }
+        let refs = ["h1", "h2", "h3", "c1", "c2", "c3", "c4", "c5"];
+        let sum = sum_of_shares(&fb, &refs, "ml");
+        assert!(sum <= 100_000, "mixed fleet must conserve the cap: {sum}");
+    }
+
+    /// The case the previous allocator got wrong (the HIGH): a fleet whose
+    /// CUMULATIVE reported spend already EXCEEDS the cap. Every node reports a
+    /// cumulative figure; nothing stops their sum from crossing the fleet cap.
+    /// The old math granted each hot node `node_spent + slice`, and since the
+    /// per-node spends sum to the (over-cap) total, the grants summed to `total`
+    /// — silently raising the real fleet limit to whatever the fleet had already
+    /// spent. This asserts the grants are re-partitioned back down to the cap.
+    #[test]
+    fn a_fleet_already_over_the_cap_is_repartitioned_back_to_the_cap() {
+        let fb = FleetBudgets::new();
+        // Five nodes each reporting spend near the cap: total 375k, 3.75x the
+        // 100k cap. Fully connected, no partition.
+        for (n, spent) in [
+            ("n1", 90_000),
+            ("n2", 80_000),
+            ("n3", 70_000),
+            ("n4", 75_000),
+            ("n5", 60_000),
+        ] {
+            fb.report_spend(n, &id("ml"), 100_000, spent);
+        }
+        let refs = ["n1", "n2", "n3", "n4", "n5"];
+        let sum = sum_of_shares(&fb, &refs, "ml");
+        // Old code: sum == 375_000 (== total), 3.75x the cap. New: <= cap.
+        assert!(
+            sum <= 100_000,
+            "an over-cap fleet must be repartitioned to the cap, not granted its \
+             full over-cap spend: sum={sum}"
+        );
+        // The hottest node still gets the biggest slice (weight preserved).
+        let n1 = fb.shares_for("n1")[0].share;
+        let n5 = fb.shares_for("n5")[0].share;
+        assert!(n1 > n5, "hottest node keeps the biggest slice: {n1} vs {n5}");
+    }
+
+    /// The pathological version of the same defect at large fleet size: 30 hot
+    /// nodes each reporting spend at the cap. The old allocator would grant each
+    /// its clamped `cap`, summing to 30x the cap.
+    #[test]
+    fn many_nodes_each_at_the_cap_do_not_multiply_the_cap() {
+        let fb = FleetBudgets::new();
+        let nodes: Vec<String> = (0..30).map(|i| format!("n{i}")).collect();
+        for n in &nodes {
+            // Each node reports it has spent the whole cap.
+            fb.report_spend(n, &id("ml"), 100_000, 100_000);
+        }
+        let refs: Vec<&str> = nodes.iter().map(String::as_str).collect();
+        let sum = sum_of_shares(&fb, &refs, "ml");
+        assert!(
+            sum <= 100_000,
+            "30 nodes each at the cap must not sum to 30x the cap: {sum}"
+        );
+    }
+
+    #[test]
+    fn forget_node_reclaims_a_departed_nodes_spend() {
+        let fb = FleetBudgets::new();
+        fb.report_spend("survivor", &id("ml"), 100_000, 20_000);
+        fb.report_spend("gone", &id("ml"), 100_000, 50_000);
+        // Before: total 70k, survivor's slice of the 30k headroom is small.
+        assert_eq!(fb.total_spend(&id("ml")), 70_000);
+        fb.forget_node("gone");
+        // After: the departed node's 50k is reclaimed; the survivor now divides
+        // the full headroom again.
+        assert_eq!(fb.total_spend(&id("ml")), 20_000);
+        let s = &fb.shares_for("survivor")[0];
+        // 20k spent + 100% of the restored 80k headroom = 100k.
         assert_eq!(s.share, 100_000);
     }
 

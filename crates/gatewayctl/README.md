@@ -247,6 +247,36 @@ is a **pure function** (`classify`) of the three hashes plus break-glass state,
 so every truth-table row is unit-tested without a network; the end-to-end
 drift→heal is proven over real gRPC in [`tests/reconcile.rs`](tests/reconcile.rs).
 
+### GB-5 budget-share allocation ([`budget.rs`](src/budget.rs))
+
+The control-plane half of GB-5 (docs/01 Q4; docs/02 "GB-5 at fleet scale —
+budget shares"; docs/04 Phase 3). The **data plane** owns the local counters and
+the enforcement decision (`gatewayd`); the control plane owns the fleet-wide
+half. Over the **same FleetService stream**, a node reports its observed
+per-spender spend (`UsageReport`); the control plane folds it into an in-memory
+fleet ledger, **rebalances each node's share** of every capped value, and grants
+the shares back (`ShareGrant`). The allocation is a pure function of the
+telemetry: a node keeps its own consumed portion plus a slice of the remaining
+fleet headroom **weighted by its share of observed spend** — so a **hot node gets
+a bigger slice** — with a cold-node floor so a fresh node still gets a starting
+slice, and the sum of shares never exceeds the cap (headroom divided, not
+invented). A node near the limit of its share sends a **`SyncCheck`** (the ~90%
+synchronous escalation) and gets a fresh grant back immediately.
+
+GB-6 alerts also fire from **this** enforcement point: a fleet-wide spend
+crossing 80% (soft) or the cap (hard) — a crossing no single node reached alone —
+is raised at ingest, carrying the value, cap, spend, and node/fleet context, into
+a pluggable alert sink. The allocation math is unit-tested in
+[`src/budget.rs`](src/budget.rs); the wire path (UsageReport → rebalance →
+ShareGrant, SyncCheck → regrant, fleet-wide alert) end-to-end over real gRPC in
+[`tests/budget.rs`](tests/budget.rs). The **bounded-overspend under partition**
+is a data-plane property (the node spends only up to its held share when the
+control plane is unreachable) — MEASURED in `gatewayd`'s
+`scripts/budget-demo.sh`.
+
+Runtime spend state is in-memory and **never truth**: wipe it and the next round
+of usage telemetry rebuilds the shares from the caps (which come from Git).
+
 ### Break-glass with TTL ([`store.rs`](src/store.rs) + `--break-glass-file`)
 
 A node may be marked **break-glass** for a bounded window (`--break-glass-file`
@@ -301,9 +331,18 @@ Per docs/07's open questions and the task's milestone scope:
   — it is the ordered-wave substrate a canary sits on. What is deferred is the
   metric/analysis gate _between_ waves (advance only if wave _k_'s SLOs hold);
   today a wave advances on a full ACK, not on an analysis verdict.
-- **Postgres.** The runtime store is in-memory; Postgres replaces it later and,
-  per docs/07, is never truth (observed reality only, re-derivable from Git plus
-  the stream).
+- **Postgres.** The runtime store — and the GB-5 fleet budget ledger — are
+  in-memory; Postgres replaces them later and, per docs/07, is never truth
+  (observed reality only, re-derivable from Git plus the stream). **GB-5
+  durable spend counters** are the specific in-memory state deferred here.
+- **Counter-schema migration across hot-swaps** (docs/03 limitation 3). GB-5
+  budget counters carry forward across a config swap as-is (a swap changes the
+  *cap* a request reads, not the running counter); **versioned counter schemas
+  with migration hooks** for a *changed* stateful-module schema stay deferred to
+  Phase 4.
+- **Richer GB-6 alert sinks.** The milestone ships a structured log sink plus a
+  webhook-shaped JSON body; a real webhook POST, a pager, or a bus is deferred
+  behind that seam.
 - **Per-node latching** (docs/03 limitation 1's other fork). Waves are the chosen
   application mode; per-node desired-vs-latched bookkeeping is deferred, not
   rejected forever — some slow deliberate per-node migrations want it.

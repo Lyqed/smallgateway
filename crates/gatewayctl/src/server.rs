@@ -487,6 +487,10 @@ impl FleetService for FleetSvc {
             info!("[stream] node {:?} disconnected", node_for_loop);
             cp.store.disconnect(&node_for_loop);
             cp.sessions.remove(&node_for_loop).await;
+            // GB-5: reclaim the departed node's spend from the fleet ledger so
+            // its consumed tokens stop counting against the survivors' headroom
+            // and its entry stops inflating node_count.
+            cp.budgets.forget_node(&node_for_loop);
         });
 
         let out: ServerStream = Box::pin(ReceiverStream::new(rx));

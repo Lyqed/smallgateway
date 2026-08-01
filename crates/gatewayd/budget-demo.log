@@ -14,45 +14,72 @@ The 100k-token scenario, five lines of YAML (demo/budget.yaml):
 --------------------------------------------------------------
 (1)(2)(3) GB-5 default cap + GB-6 alerts + GB-4 cap rejection
 --------------------------------------------------------------
-team=free-tier is capped at 5_000 tokens (a per-value override). We drive
-repeated requests; the running tally crosses 80% and the cap, firing the
-GB-6 soft and hard alerts AT the enforcement point, then the next request
-is rejected at request start with the operator's GB-4 body.
+team=free-tier is capped at 25 tokens for a legible demo (the same cap
+machinery as the headline 100k scenario, a smaller number). Each fixture
+stream is ~9 tokens, so the running tally crosses 80% then the cap; the
+GB-6 soft and hard alerts fire AT the enforcement point, then the next
+request is rejected at request start with the operator's GB-4 body.
 
   request #1 for team=free-tier -> HTTP 200
   request #2 for team=free-tier -> HTTP 200
   request #3 for team=free-tier -> HTTP 200
-  request #4 for team=free-tier -> HTTP 200
-  request #5 for team=free-tier -> HTTP 200
-  request #6 for team=free-tier -> HTTP 200
-  request #7 for team=free-tier -> HTTP 200
-  request #8 for team=free-tier -> HTTP 200
+  request #4 for team=free-tier -> HTTP 429
 
 The operator's GB-4 body on the rejected request (naming cap + spend):
 $ curl -sN -X POST 'http://127.0.0.1:6188/openai/v1/chat' -H 'x-attr-team: free-tier' -d '{}'
+{"error":"budget_exhausted","spender":"team=free-tier","cap_tokens":"25","spend_tokens":"28","route":"/openai"}
+gatewayd enforcement log (GB-6 alerts + GB-5 budget lines) for free-tier:
+    [2026-08-01T19:13:08Z INFO  gatewayd::budget] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=9/25 tokens (share=25) cfg=v1
+    [2026-08-01T19:13:09Z INFO  gatewayd::budget] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=18/25 tokens (share=25) cfg=v1
+    [2026-08-01T19:13:09Z WARN  gatewayd::budget] [gb6 SOFT-80%] spender=team=free-tier spend=21/25 tokens (84%) node=standalone
+    [2026-08-01T19:13:09Z WARN  gatewayd::budget] [gb6 HARD-CAP] spender=team=free-tier spend=25/25 tokens (100%) node=standalone
+    [2026-08-01T19:13:09Z ERROR gatewayd::proxy] [gb5 /openai] team=free-tier EXCEEDED mid-stream: spent 28/25 tokens; CUTTING the stream with the GB-4 terminal event cfg=v1
+    [2026-08-01T19:13:09Z INFO  gatewayd::budget] [budget /openai] team=free-tier no usage frame; spent=28/25 tokens (share=25, estimate stands) [CUT] cfg=v1
+    [2026-08-01T19:13:09Z INFO  gatewayd::proxy] [gb5 /openai] team=free-tier DENIED at admission: spent 28/25 tokens (rejecting: missing_attribution) cfg=v1
+    [2026-08-01T19:13:09Z INFO  gatewayd::proxy] [gb5 /openai] team=free-tier DENIED at admission: spent 28/25 tokens (rejecting: missing_attribution) cfg=v1
+
+--------------------------------------------------------------
+(4) GB-5 MID-STREAM CUT with the GB-4 terminal event
+--------------------------------------------------------------
+A 3-token cap is exhausted MID-generation. The stream is cut with the
+operator's terminal event (event: error / data: budget_exhausted); the
+upstream's [DONE] never reaches the client — the stream did not run to
+completion.
+
+$ curl -sN -X POST 'http://127.0.0.1:6188/openai/v1/chat' -H 'x-attr-team: ml-research' -d '{}'
 data: {"id":"chatcmpl-spike1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}
 
 data: {"id":"chatcmpl-spike1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"content":"The Gateway"},"finish_reason":null}],"usage":null}
 
-data: {"id":"chatcmpl-spike1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"content":" Project keeps"},"finish_reason":null}],"usage":null}
-
-data: {"id":"chatcmpl-spike1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{"content":" truth in Git."},"finish_reason":null}],"usage":null}
-
-data: {"id":"chatcmpl-spike1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
-
-data: {"id":"chatcmpl-spike1","object":"chat.completion.chunk","model":"gpt-4.1","choices":[],"usage":{"prompt_tokens":14,"completion_tokens":9,"total_tokens":23}}
-
-data: [DONE]
+event: error
+data: {"error":"budget_exhausted","spender":"team=ml-research","cap_tokens":3,"spend_tokens":7}
 
 
-gatewayd enforcement log (GB-6 alerts + GB-5 budget lines) for free-tier:
-    [2026-08-01T18:43:29Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=9/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:29Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=18/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:30Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=27/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:30Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=36/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:30Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=45/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:30Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=54/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:31Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=63/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:31Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=72/5000 tokens (share=5000) cfg=v1
-    [2026-08-01T18:43:31Z INFO  gatewayd::proxy] [budget /openai] team=free-tier reconciled est=10->auth=9; spent=81/5000 tokens (share=5000) cfg=v1
+gatewayd log: the mid-stream cut and the reconciled terminal count:
+    [2026-08-01T19:13:10Z ERROR gatewayd::proxy] [gb5 /openai] team=ml-research EXCEEDED mid-stream: spent 7/3 tokens; CUTTING the stream with the GB-4 terminal event cfg=v1
+    [2026-08-01T19:13:10Z INFO  gatewayd::budget] [budget /openai] team=ml-research no usage frame; spent=7/3 tokens (share=3, estimate stands) [CUT] cfg=v1
 
+--------------------------------------------------------------
+(5) GB-5 BOUNDED OVERSPEND UNDER PARTITION — the MEASURED number
+--------------------------------------------------------------
+When a node cannot reach the control plane it fails to a DOCUMENTED
+bounded-overspend policy: spend only up to the share it already holds,
+then stop. A node holding a 40k share of a 100k cap admits one last stream
+and is cut at its share + that stream's tail. The overspend is MEASURED —
+reported as a number against the configured cap, never estimated:
+
+NOTE: unlike scenarios 1-4 (which drive the real gatewayd over HTTP), this
+number comes from executing the enforcement unit (LocalBudget) under a
+SIMULATED partition — real code, real measurement, no gRPC round trip:
+$ cargo test -q -p gatewayd --bin gatewayd budget::tests::measured_bounded_overspend_under_partition -- --nocapture 2>/dev/null | grep MEASURED
+[MEASURED] partition bounded-overspend: cap=100000 tokens, held_share=40000, spent=41600, overspend=1600 tokens (1.60% of the cap); the node was UNREACHABLE and stopped at its share + one stream's tail, never unbounded
+
+Bounded: the overspend is one stream's tail past the held share, strictly
+less than one request's worth — never the unbounded local-bucket failure
+(docs/01 Q4; docs/02 'GB-5 at fleet scale — budget shares').
+
+==============================================================
+ Phase 3 demo complete. GB-5 caps enforced, GB-6 alerts fired,
+ mid-stream cut with the GB-4 terminal event, partition
+ overspend MEASURED as a number against the cap.
+==============================================================

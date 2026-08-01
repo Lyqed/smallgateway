@@ -231,24 +231,19 @@ impl LocalBudget {
         let Some(cap) = self.cap else {
             return Verdict::Allow; // uncapped: never denies, never escalates
         };
+        let prospective = self.spent.saturating_add(tokens);
         // Never let a node's spend cross the fleet cap, even if its share was
         // over-allocated: the cap is the hard fleet-wide limit.
-        if self.spent.saturating_add(tokens) > cap {
+        if prospective > cap {
             return Verdict::Deny { cap };
         }
-        // The share is the node's local budget; crossing it is not itself a
-        // hard deny (the fleet cap above is), but it means "spend the rest only
-        // after re-confirming with the control plane" — the escalation path.
-        let prospective = self.spent.saturating_add(tokens);
+        // The share is the node's local budget; crossing 90% of it is not a hard
+        // deny (the fleet cap above is) — it means "keep serving THIS spend, but
+        // escalate so the control plane re-confirms or grows the share before the
+        // next one". The partition variant (`check_partitioned`) is what turns
+        // past-share into the bounded-overspend deny when the control plane is
+        // unreachable.
         if self.share > 0 && prospective as f64 >= ESCALATION_FRACTION * self.share as f64 {
-            // Still within the fleet cap (checked above) but into the
-            // near-limit band of the local share: keep serving, but escalate.
-            if prospective > self.share {
-                // Past the local share entirely: only the control plane can
-                // authorize more (a bigger share). Under partition this
-                // becomes the bounded-overspend deny — see `check_partitioned`.
-                return Verdict::Escalate;
-            }
             return Verdict::Escalate;
         }
         Verdict::Allow

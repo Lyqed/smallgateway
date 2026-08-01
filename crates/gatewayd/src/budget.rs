@@ -71,10 +71,6 @@ impl NodeBudgets {
         }
     }
 
-    pub fn node_id(&self) -> &str {
-        &self.node_id
-    }
-
     /// Flip partition mode on/off (the control-plane client sets it on a stream
     /// loss and clears it on reconnect). While partitioned the admit/meter
     /// decisions cannot escalate and enforce bounded overspend.
@@ -164,7 +160,10 @@ impl NodeBudgets {
 
     /// Whether a capped value is at/above the ~90% escalation band of its local
     /// share, so the proxy/client should escalate to a synchronous check. Reads
-    /// the current spend; safe to call after `meter`.
+    /// the current spend; safe to call after `meter`. (The client loop escalates
+    /// via [`NodeBudgets::escalating`] over all values; this single-value probe
+    /// is the enforcement-point counterpart, exercised by the tests.)
+    #[allow(dead_code)]
     pub fn should_escalate(&self, id: &CapId) -> bool {
         let inner = self.inner.lock().expect("budget lock");
         match inner.get(id) {
@@ -179,6 +178,39 @@ impl NodeBudgets {
         let mut inner = self.inner.lock().expect("budget lock");
         if let Some(e) = inner.get_mut(id) {
             e.budget.reconcile(estimated, authoritative);
+        }
+    }
+
+    /// GB-5 end-of-stream settlement: reconcile each capped spender's live
+    /// estimate for this stream to the provider's authoritative terminal frame
+    /// (docs/01 Q3) when one landed, then log its post-reconcile state. When no
+    /// usage frame arrived the estimate stands as the charge (its error bound is
+    /// the published Q3 number). `caps` is the request's `(CapId, cap)` list.
+    pub fn settle_and_log(
+        &self,
+        caps: &[(CapId, u64)],
+        estimated: u64,
+        authoritative: Option<u64>,
+        route: &str,
+        version: u64,
+        cut: bool,
+    ) {
+        let cut_note = if cut { " [CUT]" } else { "" };
+        for (id, cap) in caps {
+            if let Some(auth) = authoritative {
+                self.settle(id, estimated, auth);
+                if let Some((_, share, spent)) = self.snapshot(id) {
+                    log::info!(
+                        "[budget {route}] {id} reconciled est={estimated}->auth={auth}; \
+                         spent={spent}/{cap} tokens (share={share}){cut_note} cfg=v{version}"
+                    );
+                }
+            } else if let Some((_, share, spent)) = self.snapshot(id) {
+                log::info!(
+                    "[budget {route}] {id} no usage frame; spent={spent}/{cap} tokens \
+                     (share={share}, estimate stands){cut_note} cfg=v{version}"
+                );
+            }
         }
     }
 
@@ -230,6 +262,7 @@ impl NodeBudgets {
     /// The MEASURED overspend for one capped value: tokens spent beyond the
     /// node's held share (the partition bound). Zero on the common path. This is
     /// the number the partition demo/test reports against the configured cap.
+    #[allow(dead_code)] // exercised by the partition test + budget-demo.sh
     pub fn overspend(&self, id: &CapId) -> u64 {
         self.inner
             .lock()
@@ -246,38 +279,6 @@ impl NodeBudgets {
             .expect("budget lock")
             .get(id)
             .map(|e| (e.budget.cap(), e.budget.share(), e.budget.spent()))
-    }
-}
-
-/// A capturing [`AlertSink`] for the demo/tests: keeps every alert AND writes
-/// the structured log line, so a test asserts on the alerts and the demo greps
-/// the log. A `log`-backed sink for production wraps `log::warn!` instead.
-pub struct CapturingSink {
-    alerts: Mutex<Vec<Alert>>,
-}
-
-impl Default for CapturingSink {
-    fn default() -> Self {
-        CapturingSink {
-            alerts: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl CapturingSink {
-    pub fn new() -> CapturingSink {
-        CapturingSink::default()
-    }
-
-    pub fn alerts(&self) -> Vec<Alert> {
-        self.alerts.lock().expect("alerts lock").clone()
-    }
-}
-
-impl AlertSink for CapturingSink {
-    fn emit(&self, alert: &Alert) {
-        log::warn!("{alert}");
-        self.alerts.lock().expect("alerts lock").push(alert.clone());
     }
 }
 
@@ -306,15 +307,29 @@ mod tests {
         CapId::new("team", "ml-research")
     }
 
-    fn budgets() -> (Arc<NodeBudgets>, Arc<CapturingSink>) {
+    /// A test alert sink capturing every alert the enforcement layer raised.
+    #[derive(Default)]
+    struct CaptureSink(Mutex<Vec<Alert>>);
+    impl CaptureSink {
+        fn alerts(&self) -> Vec<Alert> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+    impl AlertSink for CaptureSink {
+        fn emit(&self, alert: &Alert) {
+            self.0.lock().unwrap().push(alert.clone());
+        }
+    }
+
+    fn budgets() -> (Arc<NodeBudgets>, Arc<CaptureSink>) {
         // Share the sink so a test can read the alerts it captured. NodeBudgets
         // takes a Box<dyn AlertSink>; wrap the Arc in a thin forwarding sink.
-        let sink = Arc::new(CapturingSink::new());
+        let sink = Arc::new(CaptureSink::default());
         let fwd = ForwardSink(sink.clone());
         (Arc::new(NodeBudgets::new("n1", Box::new(fwd))), sink)
     }
 
-    struct ForwardSink(Arc<CapturingSink>);
+    struct ForwardSink(Arc<CaptureSink>);
     impl AlertSink for ForwardSink {
         fn emit(&self, alert: &Alert) {
             self.0.emit(alert);

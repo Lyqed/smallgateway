@@ -50,7 +50,7 @@ cp demo/budget.yaml "$CFG"
 MOCK_PID=""; GW_PID=""
 cleanup() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
-  [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true
+  [ -n "$GW_PID" ] && kill -9 "$GW_PID" 2>/dev/null || true
   rm -rf "$CFG_DIR" "$GW_LOG"
 }
 trap cleanup EXIT
@@ -73,7 +73,9 @@ start_gw() { # re-read cfg each start
   sleep 0.6
 }
 stop_gw() {
-  [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true
+  # SIGKILL, not SIGTERM: pingora treats SIGTERM as a graceful shutdown with a
+  # 300s grace period, which would stall the demo. We want an immediate stop.
+  [ -n "$GW_PID" ] && kill -9 "$GW_PID" 2>/dev/null || true
   wait "$GW_PID" 2>/dev/null || true
   GW_PID=""
 }
@@ -97,30 +99,39 @@ say ""
 sed -n '/spend_caps:/,/free-tier: 5000/p' demo/budget.yaml | sed 's/^/    /' | tee -a "$OUT"
 say ""
 
-start_mock "$FIXTURES/openai.sse" openai 40
+# The headline config caps free-tier at 5_000 tokens; each fixture stream is
+# ~9 tokens, so exhausting it would take hundreds of requests. For a legible
+# demo we swap free-tier to a 25-token cap — the SAME machinery, a smaller
+# number — so three ~9-token streams cross 80% then the cap.
+sed 's/free-tier: 5000/free-tier: 25/' demo/budget.yaml >"$CFG"
+start_mock "$FIXTURES/openai.sse" openai 20
 start_gw
 
 # ---------------------------------------------------------------------------
 say "--------------------------------------------------------------"
 say "(1)(2)(3) GB-5 default cap + GB-6 alerts + GB-4 cap rejection"
 say "--------------------------------------------------------------"
-say "team=free-tier is capped at 5_000 tokens (a per-value override). We drive"
-say "repeated requests; the running tally crosses 80% and the cap, firing the"
-say "GB-6 soft and hard alerts AT the enforcement point, then the next request"
-say "is rejected at request start with the operator's GB-4 body."
+say "team=free-tier is capped at 25 tokens for a legible demo (the same cap"
+say "machinery as the headline 100k scenario, a smaller number). Each fixture"
+say "stream is ~9 tokens, so the running tally crosses 80% then the cap; the"
+say "GB-6 soft and hard alerts fire AT the enforcement point, then the next"
+say "request is rejected at request start with the operator's GB-4 body."
 say ""
 M=$(mark)
-for i in 1 2 3 4 5 6 7 8; do
+code=""
+for i in 1 2 3 4 5; do
   code=$(curl -sN -o /dev/null -w '%{http_code}' \
     -X POST "http://127.0.0.1:$PORT/openai/v1/chat" \
     -H 'x-attr-team: free-tier' -d '{}')
   say "  request #$i for team=free-tier -> HTTP $code"
-  # Once we see a 429 the cap is enforced at admission; stop.
+  # Once we see the cap rejection at admission, stop.
   [ "$code" = "429" ] && break
 done
 say ""
-say "The operator's GB-4 body on the rejected request (naming cap + spend):"
-run "curl -sN -X POST 'http://127.0.0.1:$PORT/openai/v1/chat' -H 'x-attr-team: free-tier' -d '{}'"
+if [ "$code" = "429" ]; then
+  say "The operator's GB-4 body on the rejected request (naming cap + spend):"
+  run "curl -sN -X POST 'http://127.0.0.1:$PORT/openai/v1/chat' -H 'x-attr-team: free-tier' -d '{}'"
+fi
 say "gatewayd enforcement log (GB-6 alerts + GB-5 budget lines) for free-tier:"
 gw_since "$M" | grep -E '\[gb6 |\[gb5 |\[budget ' | grep -i 'free-tier' | sed 's/^/    /' | tee -a "$OUT" || true
 say ""
@@ -159,6 +170,9 @@ say "then stop. A node holding a 40k share of a 100k cap admits one last stream"
 say "and is cut at its share + that stream's tail. The overspend is MEASURED —"
 say "reported as a number against the configured cap, never estimated:"
 say ""
+say "NOTE: unlike scenarios 1-4 (which drive the real gatewayd over HTTP), this"
+say "number comes from executing the enforcement unit (LocalBudget) under a"
+say "SIMULATED partition — real code, real measurement, no gRPC round trip:"
 run "cargo test -q -p gatewayd --bin gatewayd budget::tests::measured_bounded_overspend_under_partition -- --nocapture 2>/dev/null | grep MEASURED"
 say "Bounded: the overspend is one stream's tail past the held share, strictly"
 say "less than one request's worth — never the unbounded local-bucket failure"

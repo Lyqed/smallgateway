@@ -34,8 +34,12 @@
 //!   health, break-glass windows) — Postgres replaces it later and is never
 //!   truth.
 //! - [`token`]: single-use, short-TTL join-token bootstrap.
-//! - [`server`]: the tonic `FleetService` — auth, push, fan-out, ack/nack, and
-//!   the session/push-ack correlation the rollout builds on.
+//! - [`budget`]: GB-5 fleet-wide budget-share allocation — observed-spend
+//!   telemetry, continuous per-node share rebalancing, the ~90% synchronous
+//!   escalation reply, and fleet-wide GB-6 alerts from the ingest.
+//! - [`server`]: the tonic `FleetService` — auth, push, fan-out, ack/nack,
+//!   GB-5 usage/escalation handling, and the session/push-ack correlation the
+//!   rollout builds on.
 //!
 //! **Deferred beyond this milestone** (stated, not implied — docs/07's open
 //! questions): config canary ANALYSIS between waves (Phase 5 — multi-wave is the

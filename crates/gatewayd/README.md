@@ -19,7 +19,9 @@ gatewayd --control-plane <host:port> --node-id <id> --join-token <secret> \
 ```
 
 Proof lives in `scripts/demo.sh` → `demo.log` (file mode, GB-1..9), in the
-fleet demo `../gatewayctl/scripts/fleet-demo.sh` → `../gatewayctl/fleet-demo.log`
+budget demo `scripts/budget-demo.sh` → `budget-demo.log` (Phase 3: GB-5 caps,
+GB-6 alerts, mid-stream cut, MEASURED partition overspend), in the fleet demo
+`../gatewayctl/scripts/fleet-demo.sh` → `../gatewayctl/fleet-demo.log`
 (control-plane mode across two nodes), and in the conformance suite below.
 
 ## Control-plane client mode (Phase 2, milestone 1)
@@ -61,8 +63,8 @@ and the run writes the machine-readable summary `target/conformance.json`
 | GB-2 claim mappings from verified logins | **Built, deferred by judgment** (HS256 mapping works, but this is the lowest-priority check and may not ship as a promised capability, see the note below) | `gb2_claim_mapped_key_proven_from_verified_jwt`, `gb2_forged_caller_header_never_believed_without_token` |
 | GB-3 operator-pinned values | **Implemented** | `gb3_pinned_key_overwrites_caller_value` |
 | GB-4 rejection templates | **Implemented** (bodies + scoped overrides; the mid-stream terminal event is typed/validated, the cut itself is Phase 3) | `gb4_unknown_route_uses_the_operator_template_verbatim`, `gb4_scoped_rejection_template_overrides_down_the_chain` |
-| GB-5 spend caps | Phase 3 | — |
-| GB-6 native alerts | Phase 3 | — |
+| GB-5 spend caps | **Implemented** (budget shares: per-value caps, ~90% synchronous escalation, mid-stream cut, bounded overspend under partition MEASURED) | `gb5_value_over_its_cap_is_rejected_at_request_start_with_the_operator_template`, `gb5_budget_exhausted_mid_stream_cuts_with_the_gb4_terminal_event`, `gb5_an_uncapped_value_override_is_never_cut`, `gb5_cap_composes_down_the_scoped_chain_route_tightens_fleet` (`tests/conformance/gb5.rs`) |
+| GB-6 native alerts | **Implemented** (soft 80% + hard cap fire from the enforcement layer; log + webhook-shaped sink) | `gateway_core::budget` (`AlertLatch`), `gatewayd::budget` (`alerts_fire_from_the_meter_at_soft_then_hard`), `gatewayctl::tests::budget` (`a_fleet_wide_spend_crossing_fires_a_gb6_alert_from_the_ingest`) |
 | GB-7 invoice-grade attribution on AWS | **Mechanism implemented** (mock-verified; live AWS is a documented follow-up, below) | `gb7_session_tags_ride_the_credentials_to_bedrock`, `gb7_credentials_cached_per_tag_set_with_expiry`, `gb7_caller_raw_session_tag_rejected_at_config_load` |
 | GB-8 invoice-grade attribution on Vertex | **Implemented** (same semantics as our upstream agentgateway PR, native) | `gb8_operator_labels_merged_into_body_operator_wins`, `gb8_unresolvable_label_fails_closed_with_gb4_template` |
 | GB-9 hot-swappable config | **Implemented** (single node; fleet distribution via control-plane client mode is Phase 2 M1 — the same reload path, one more trigger) | reload/proxy unit tests + demo scenarios 7-9; control-plane-mode reload tests; `../gatewayctl/scripts/fleet-demo.sh` |
@@ -174,6 +176,86 @@ sees the request. On labeled vertex routes the request body is buffered
 for the merge (upstream leg re-framed chunked); a body that is not a
 JSON object is refused with a plain 400 — no spend can have occurred.
 
+## GB-5 spend caps via budget shares, GB-6 alerts, mid-stream enforcement
+
+The Phase 3 stateful layer (docs/01 Q4; docs/02 "GB-5 at fleet scale — budget
+shares"; docs/04 Phase 3). Proof: `scripts/budget-demo.sh` → `budget-demo.log`.
+
+### The 100k-token scenario, five lines of YAML
+
+A spend cap is a field on any scope's `attribution`, keyed by attribution key,
+in **tokens** (`demo/budget.yaml`):
+
+```yaml
+spend_caps:
+  team:
+    default: 100000            # every value of `team` capped at 100k tokens
+    overrides:
+      ml-research: 200000      # a Git-reviewed per-value lift
+      free-tier: 5000          # and a per-value tighten
+```
+
+It composes down the scoped chain exactly like the pins: a lower scope's
+`default` and per-value entries win (a route can tighten the fleet default; an
+app override can loosen one value). A value with no default and no override is
+**uncapped**; a `null` override is an explicit "this value is uncapped."
+
+### Budget shares (the distributed-systems core)
+
+A spend limit per attribution value enforced across N data planes is the hard
+problem. The chosen design (docs/01 Q4) is **budget shares**, not a central
+counter (a hop + SPOF per request) and not pure-local buckets (unbounded
+overspend):
+
+- The control plane allocates each data plane a **share** of the cap from
+  observed spend telemetry (a node reports its cumulative spend up the existing
+  FleetService stream as a `UsageReport`; the control plane rebalances and grants
+  shares back, so a **hot node gets a bigger slice**).
+- A data plane spends **freely against its local share** — the common path is one
+  in-memory counter check per capped tag, **no per-request hop, no SPOF**.
+- It **escalates to a synchronous check** with the control plane only above **~90%**
+  local-share consumption (a `SyncCheck`, answered with a fresh `ShareGrant`).
+
+### Bounded overspend under partition — MEASURED, not estimated
+
+When a node cannot reach the control plane it fails to a **documented
+bounded-overspend policy**: it spends only up to the share it already holds, then
+hard-denies. The bound is one in-flight stream's tail past the share — never the
+unbounded local-bucket failure. The number is measured, not estimated:
+
+```
+[MEASURED] partition bounded-overspend: cap=100000 tokens, held_share=40000,
+spent=41600, overspend=1600 tokens (1.60% of the cap); the node was UNREACHABLE
+and stopped at its share + one stream's tail, never unbounded
+```
+
+(`budget::tests::measured_bounded_overspend_under_partition`, captured in
+`budget-demo.log` scenario 5.)
+
+### Enforcement, at request start and mid-stream
+
+- **Request start.** A value already at its cap is rejected with the operator's
+  GB-4 template (status + body), which now also accepts optional `{{cap}}` and
+  `{{spend}}` token placeholders. No token reaches the upstream.
+- **Mid-stream.** The Meter tap over the canonical event stream tallies output
+  tokens incrementally; when the running tally crosses the bound the stream is
+  **cut** with the operator's GB-4 **streaming terminal event** (`event:` /
+  `data:`) rather than running to completion — GB-4 extended to streaming. The
+  live estimate (`chars/4`) meters the stream and is **reconciled to the
+  provider's terminal usage frame** at stream end (docs/01 Q3); a cap tightened
+  mid-stream does **not** retroactively apply (docs/03 limitation 2 — the stream
+  meters under the version it bound, `cfg=vN` on the `[budget]` line).
+
+### GB-6 alerts from the enforcement layer
+
+Alerts fire **at the point of enforcement**, not reconstructed later from logs: a
+soft alert when a spender crosses 80% and a hard alert when it hits the cap, each
+carrying the attribution value, cap, current spend, and node/fleet context. The
+data plane fires per-node from the meter; the control plane fires **fleet-wide**
+from the aggregated usage telemetry (so a crossing no single node reached alone
+is still caught). Delivery is pluggable — the milestone ships a structured
+`log::warn!` sink plus a webhook-shaped JSON body (logged, not yet POSTed).
+
 ## Hot reload: what is promised
 
 The doc-03 semantics (`docs/03-hot-swap.md`), made real for a single node:
@@ -216,9 +298,20 @@ The doc-03 semantics (`docs/03-hot-swap.md`), made real for a single node:
 - **No stateful-policy migration yet.** Anything that owns counters
   (budgets, rate limits, quota shares) is a state-migration problem across
   a swap — inherit versioned counters or reset them (doc 03, limitation 3).
-  Phase 3/4 scope. The GB-7 credential cache deliberately lives OUTSIDE
-  snapshots: its key carries every input that changes the minted
-  credentials, so a config swap simply stops hitting stale entries.
+  GB-5 budget counters deliberately live OUTSIDE snapshots (like the GB-7
+  credential cache): a config swap changes the *cap* a request reads from its
+  pinned policy, never the running counters, so the counter keeps accruing
+  across the swap. **Versioned counter schemas with migration hooks across a
+  hot-swap stay deferred to Phase 4** (doc 03 limitation 3) — today a swap
+  carries the counter forward as-is rather than migrating a changed schema.
+- **GB-5 durable counters are in-memory.** Postgres-backed durable spend
+  counters are deferred and, per docs/07, never truth; wipe the state and the
+  next round of usage telemetry rebuilds the shares. Richer GB-6 alert sinks
+  (a real webhook POST, a pager, a bus) are deferred behind the shipped
+  log + webhook-shaped emitter.
+- **The GB-7 credential cache** deliberately lives OUTSIDE snapshots: its key
+  carries every input that changes the minted credentials, so a config swap
+  simply stops hitting stale entries.
 - **Single node.** Fleet distribution (ACK/NACK waves, canary
   configuration) is the control-plane phase; this crate is one node
   latching or rejecting its own file.

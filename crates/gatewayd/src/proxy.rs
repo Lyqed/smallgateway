@@ -36,30 +36,30 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use log::{error, info};
-use pingora::http::{RequestHeader, ResponseHeader};
+use pingora::http::RequestHeader;
 use pingora::prelude::*;
 
 use gateway_core::adapters::Adapter;
-use gateway_core::attribution::{self, Origin, Tag};
+use gateway_core::attribution::Tag;
 use gateway_core::aws::{CredentialCache, Credentials};
 use gateway_core::budget::{CapId, Verdict};
-use gateway_core::config::{self, Config, ProviderKind, RejectionTemplate, StsConfig, ATTR_HEADER_PREFIX};
+use gateway_core::config::{self, ProviderKind, ATTR_HEADER_PREFIX};
 use gateway_core::event::Event;
-use gateway_core::expr::EvalCtx;
-use gateway_core::jwt;
 use gateway_core::labels;
 use gateway_core::metering::Meter;
-use gateway_core::scope::{validate_session_tag_value, EffectivePolicy};
 use gateway_core::snapshot::Snapshot;
-use gateway_core::template;
 
 use crate::aws_auth;
 use crate::budget::{MeterOutcome, NodeBudgets};
+use crate::proxy_support::{
+    caller_attrs, eval_ctx, now_unix, opt, resolve_policy, resolve_session_tags, respond_rejection,
+    verified_claims,
+};
 use crate::reload::SharedSnapshot;
 
 pub struct Gateway {
@@ -80,6 +80,10 @@ pub struct Gateway {
 }
 
 impl Gateway {
+    /// Standalone convenience constructor with a fresh single-node budget set
+    /// (used by the proxy unit tests; `main` builds the shared budgets and uses
+    /// [`Gateway::with_budgets`] so file and control-plane modes share one set).
+    #[allow(dead_code)]
     pub fn new(shared: SharedSnapshot) -> Self {
         Self::with_budgets(
             shared,
@@ -98,12 +102,6 @@ impl Gateway {
             sts_cache: CredentialCache::new(),
             budgets,
         }
-    }
-
-    /// The node's budget counters — for the control-plane client to report and
-    /// rebalance, and for tests.
-    pub fn budgets(&self) -> Arc<NodeBudgets> {
-        self.budgets.clone()
     }
 }
 
@@ -217,156 +215,6 @@ impl ReqCtx {
 }
 
 /// Caller-sent attribution headers (`x-attr-<key>`), first value wins.
-fn caller_attrs(head: &RequestHeader) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for (name, value) in head.headers.iter() {
-        if let Some(key) = name.as_str().strip_prefix(ATTR_HEADER_PREFIX) {
-            if let Ok(v) = value.to_str() {
-                out.entry(key.to_string()).or_insert_with(|| v.to_string());
-            }
-        }
-    }
-    out
-}
-
-/// The documented CEL context: request meta (+ claims); `attribution` is
-/// filled in later for label expressions.
-fn eval_ctx(head: &RequestHeader, path: &str, claims: Option<&serde_json::Map<String, serde_json::Value>>) -> EvalCtx {
-    let mut headers = BTreeMap::new();
-    for (name, value) in head.headers.iter() {
-        if let Ok(v) = value.to_str() {
-            headers
-                .entry(name.as_str().to_ascii_lowercase())
-                .or_insert_with(|| v.to_string());
-        }
-    }
-    EvalCtx {
-        method: head.method.as_str().to_string(),
-        path: path.to_string(),
-        headers,
-        claims: claims.map(|c| serde_json::Value::Object(c.clone())),
-        attribution: BTreeMap::new(),
-    }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// GB-4: the operator's body verbatim — correct status and content type,
-/// never a bare 4xx of our own invention.
-async fn respond_rejection(
-    session: &mut Session,
-    t: &RejectionTemplate,
-    vars: &[(&str, &str)],
-) -> Result<()> {
-    // The GB-5 additions {{cap}}/{{spend}} are optional and only supplied by
-    // the budget rejection path. Default them to "-" for every OTHER reason
-    // (missing attribution, unresolvable label, session tag) so an operator
-    // body that uses them never leaks a literal placeholder on a non-budget
-    // rejection.
-    let mut all: Vec<(&str, &str)> = Vec::with_capacity(vars.len() + 2);
-    all.extend_from_slice(vars);
-    if !all.iter().any(|(k, _)| *k == "cap") {
-        all.push(("cap", "-"));
-    }
-    if !all.iter().any(|(k, _)| *k == "spend") {
-        all.push(("spend", "-"));
-    }
-    let body = template::render(&t.body, &all);
-    let mut header = ResponseHeader::build(t.status, Some(2))?;
-    header.insert_header("content-type", t.content_type.clone())?;
-    header.insert_header("content-length", body.len().to_string())?;
-    session.write_response_header(Box::new(header), false).await?;
-    session.write_response_body(Some(Bytes::from(body)), true).await?;
-    Ok(())
-}
-
-/// GB-2: claims from a verified HS256 token, or `None` (absent header,
-/// bad signature, expired — each logged). Consulted whenever auth is
-/// configured: claim mappings, CEL derivations, and label expressions all
-/// read from the SAME verified source. Takes the request's pinned config,
-/// never the live cell.
-fn verified_claims(
-    cfg: &Config,
-    head: &RequestHeader,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let auth = cfg.auth.as_ref()?;
-    let raw = head.headers.get(auth.jwt.header.as_str())?.to_str().ok()?;
-    let token = raw
-        .strip_prefix("Bearer ")
-        .or_else(|| raw.strip_prefix("bearer "))?
-        .trim();
-    match jwt::verify_hs256(token, auth.jwt.hs256_secret.as_bytes(), now_unix()) {
-        Ok(claims) => Some(claims),
-        Err(e) => {
-            info!("[auth] jwt rejected: {e}");
-            None
-        }
-    }
-}
-
-/// Resolve one policy's contract: derived CEL values evaluated against the
-/// request context (an eval error is logged and leaves the key unresolved
-/// — required keys then report missing, fail closed).
-fn resolve_policy(
-    policy: &EffectivePolicy,
-    caller: &BTreeMap<String, String>,
-    claims: Option<&serde_json::Map<String, serde_json::Value>>,
-    ctx: &EvalCtx,
-    prefix: &str,
-) -> attribution::Resolution {
-    attribution::resolve(
-        policy,
-        |key| caller.get(key).cloned(),
-        claims,
-        |key| match policy.derived.get(key) {
-            None => None,
-            Some(expr) => match expr.eval_string(ctx) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    info!("[attr {prefix}] derived {key:?} failed: {e}");
-                    None
-                }
-            },
-        },
-    )
-}
-
-/// GB-7: session tags from RESOLVED attribution values. Static config
-/// values pass through; `from_attribution` reads the adjudicated tag —
-/// and re-checks (defense in depth; config validation already guarantees
-/// it) that the value is not caller-origin.
-fn resolve_session_tags(
-    sts: &StsConfig,
-    tags: &[Tag],
-) -> std::result::Result<Vec<(String, String)>, (String, String)> {
-    let mut out = Vec::with_capacity(sts.tags.len());
-    for spec in &sts.tags {
-        let value = match (&spec.value, &spec.from_attribution) {
-            (Some(v), _) => v.clone(),
-            (None, Some(key)) => {
-                let tag = tags.iter().find(|t| &t.key == key).ok_or_else(|| {
-                    (key.clone(), format!("attribution key {key:?} did not resolve"))
-                })?;
-                if tag.origin == Origin::Caller {
-                    // Statically unreachable; never sign caller-raw anyway.
-                    return Err((key.clone(), format!("attribution key {key:?} is caller-origin")));
-                }
-                validate_session_tag_value(&tag.value)
-                    .map_err(|e| (key.clone(), e))?;
-                tag.value.clone()
-            }
-            (None, None) => unreachable!("config validation enforces exactly-one-of"),
-        };
-        out.push((spec.key.clone(), value));
-    }
-    Ok(out)
-}
-
 #[async_trait]
 impl ProxyHttp for Gateway {
     type CTX = ReqCtx;
@@ -815,8 +663,8 @@ impl ProxyHttp for Gateway {
             if delta > 0 {
                 let route_prefix =
                     ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
-                // Clone the caps out so the &mut ctx borrow for `cut_stream`
-                // below is free of the immutable caps borrow.
+                // Clone the caps out so the &mut ctx borrow for the cut below
+                // is free of the immutable caps borrow.
                 let caps = ctx.caps.clone();
                 for (id, cap) in &caps {
                     match self.budgets.meter(id, Some(*cap), delta) {
@@ -832,7 +680,24 @@ impl ProxyHttp for Gateway {
                                  terminal event cfg=v{}",
                                 ctx.snapshot.version
                             );
-                            self.cut_stream(body, ctx, &id, cap, spent);
+                            // Replace the outgoing chunk with the operator's
+                            // GB-4 terminal event and latch the cut so every
+                            // later chunk is suppressed.
+                            let streaming = ctx
+                                .snapshot
+                                .config
+                                .rejections
+                                .missing_attribution
+                                .streaming
+                                .as_ref();
+                            *body = Some(crate::proxy_support::render_cut_event(
+                                streaming,
+                                &id,
+                                cap,
+                                spent,
+                                &route_prefix,
+                            ));
+                            ctx.cut = true;
                             break;
                         }
                         MeterOutcome::Continue => {}
@@ -868,89 +733,20 @@ impl ProxyHttp for Gateway {
                     .unwrap_or_else(|| "n/a".to_string()),
             );
 
-            // GB-5: reconcile the live estimate for THIS stream to the
-            // provider's authoritative terminal frame (docs/01 Q3), then log
-            // each capped spender's post-reconcile state. The authoritative
-            // output count is the billing number; the estimate was the
-            // mid-stream enforcement proxy for it.
-            let est = ctx.meter.estimated_output_tokens();
-            if let Some(auth) = report.authoritative_output_tokens {
-                for (id, cap) in &ctx.caps {
-                    self.budgets.settle(id, est, auth);
-                    if let Some((_, share, spent)) = self.budgets.snapshot(id) {
-                        info!(
-                            "[budget {}] {id} reconciled est={est}->auth={auth}; spent={spent}/{cap} \
-                             tokens (share={share}){} cfg=v{}",
-                            binding.prefix,
-                            if ctx.cut { " [CUT]" } else { "" },
-                            ctx.snapshot.version,
-                        );
-                    }
-                }
-            } else if !ctx.caps.is_empty() {
-                // No terminal usage frame: the estimate stands as the charge
-                // (its error bound is the published Q3 number).
-                for (id, cap) in &ctx.caps {
-                    if let Some((_, share, spent)) = self.budgets.snapshot(id) {
-                        info!(
-                            "[budget {}] {id} no usage frame; spent={spent}/{cap} tokens \
-                             (share={share}, estimate stands){} cfg=v{}",
-                            binding.prefix,
-                            if ctx.cut { " [CUT]" } else { "" },
-                            ctx.snapshot.version,
-                        );
-                    }
-                }
-            }
+            // GB-5: reconcile each capped spender's live estimate for THIS
+            // stream to the provider's authoritative terminal frame (docs/01
+            // Q3) and log its post-reconcile state — the billing number.
+            self.budgets.settle_and_log(
+                &ctx.caps,
+                ctx.meter.estimated_output_tokens(),
+                report.authoritative_output_tokens,
+                &binding.prefix,
+                ctx.snapshot.version,
+                ctx.cut,
+            );
         }
         Ok(None)
     }
-}
-
-impl Gateway {
-    /// Cut an in-flight stream: replace the current outgoing chunk with the
-    /// operator's GB-4 streaming terminal event (the typed
-    /// [`StreamingRejection`] from the request's bound policy), and latch
-    /// `ctx.cut` so every later chunk is suppressed. Falls back to a bare data
-    /// frame if the operator defined no `streaming` block — the cut still fires,
-    /// the stream still stops, only the payload is a minimal default.
-    ///
-    /// [`StreamingRejection`]: gateway_core::config::StreamingRejection
-    fn cut_stream(
-        &self,
-        body: &mut Option<Bytes>,
-        ctx: &mut ReqCtx,
-        id: &CapId,
-        cap: u64,
-        spent: u64,
-    ) {
-        ctx.cut = true;
-        let cap_s = cap.to_string();
-        let spent_s = spent.to_string();
-        let key_s = id.to_string();
-        let route = ctx
-            .route
-            .as_ref()
-            .map(|b| b.prefix.clone())
-            .unwrap_or_default();
-        let vars: [(&str, &str); 4] = [
-            ("key", key_s.as_str()),
-            ("route", route.as_str()),
-            ("cap", cap_s.as_str()),
-            ("spend", spent_s.as_str()),
-        ];
-        let rendered = match &ctx.snapshot.config.rejections.missing_attribution.streaming {
-            Some(streaming) => template::render_terminal_event(streaming, &vars),
-            None => format!(
-                "data: {{\"error\":\"budget exhausted for {key_s}\",\"cap\":{cap},\"spend\":{spent}}}\n\n"
-            ),
-        };
-        *body = Some(Bytes::from(rendered));
-    }
-}
-
-fn opt(n: Option<u64>) -> String {
-    n.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
 }
 
 #[cfg(test)]

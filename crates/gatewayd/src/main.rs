@@ -14,6 +14,7 @@ mod aws_auth;
 mod budget;
 mod client;
 mod proxy;
+mod proxy_support;
 mod reload;
 
 use std::path::PathBuf;
