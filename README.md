@@ -58,6 +58,14 @@ GB-4/GB-8 changes proceeding as parallel upstream contributions
 Phase 1 — the standalone, Baseline-conformant-from-a-file data plane — is
 under way in `crates/`.
 
-License: to be chosen before the repo goes public (Apache-2.0 is the working
-assumption, matching the ecosystem we intend to upstream into). Deferred,
-deliberately, like everything else that can be.
+## Contributing
+
+Provider adapters are the most accessible first contribution. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) for the ownership contract, where to start,
+and the conformance bar. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE). This matches the ecosystem we intend to
+upstream into; the working assumption is now the committed one.
