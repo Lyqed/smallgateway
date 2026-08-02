@@ -145,7 +145,7 @@ CRD-before-CR ordering handled, are in deploy/gitops/.
 
 # Real-world gateways, complete
 
-Two production-shaped configs — the full policy surface, nothing elided.
+Three production-shaped configs — the full policy surface, nothing elided.
 These are NATIVE gateway configs (file mode, or the flat config a control
 plane renders from a fleet repo): the advanced provider blocks below (the
 STS role chain, the Vertex WIF auth, injection, locations, telemetry,
@@ -310,6 +310,91 @@ alerts:
     endpoint: { host: hooks.internal, port: 443, tls: true }
     path: /clinical-fleet/gb6
 ```
+
+## Local models, where there is no invoice at all
+
+A company running vLLM, Ollama, or TGI on its own GPUs is not an edge
+case of this design — in one way it is the cleanest case. Every serious
+local server speaks the OpenAI dialect, so the provider block is two
+lines: no role chain, no WIF, no cloud identity to mint. GB-7 and GB-8
+simply have nothing to reach, because there is no cloud bill. Air-gapped
+orgs run the single-binary file mode on a box next to the model server.
+
+What changes is what the numbers MEAN. With Bedrock or Vertex the scarce
+thing is money and the authoritative record is the invoice. With a local
+pool the cost is already sunk — you bought the GPUs — and the scarce
+thing is capacity. The same machinery reads differently:
+
+- Attribution (GB-1/2/3) answers "who is consuming the pool," which is
+  the question the GPU queue makes everyone ask eventually.
+- Token caps (GB-5) become fair-share admission: a team's cap is its
+  slice of the pool. The engine being tokens-only stops being a stance
+  and becomes the literal unit — there is no per-token price here, and
+  the gateway never pretended to hold one.
+- `alert_at` (GB-6) is a capacity early-warning to the team's own
+  webhook, before the pool saturates.
+- The model gate matters MORE, not less: one pool often serves the 70B
+  and the 8B side by side, and which teams may touch the expensive one
+  is exactly a `models:` line per scope.
+- The OTLP span stream stands in for the invoice: the per-request,
+  per-key token record in your own collector is the usage ledger for
+  internal chargeback, if you want one. USD stays out of the gateway
+  either way.
+
+What this buys: the shared GPU pool gets the same refuse-at-the-door
+discipline as a cloud bill — unattributed requests never reach the
+server, each team holds a stated slice, and the big model is fenced.
+
+```yaml
+# gateway.yaml — a self-hosted fleet: one vLLM pool, no cloud at all
+providers:
+  llm-pool:
+    kind: openai                       # vLLM/Ollama/TGI speak this dialect
+    upstream: { host: vllm.gpu-pool.internal, port: 8000 }
+
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: { env: prod }
+    models: ['llama-3.3*', 'qwen2.5-coder*']   # the pool serves exactly these
+    spend_caps:
+      team:
+        default: 5000000               # tokens/day: a stated slice of the pool
+        window: day
+        alert_at: 80
+
+routes:
+  - prefix: /llm
+    provider: llm-pool
+
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'
+  model_not_allowed:
+    status: 403
+    content_type: application/json
+    body: '{"error":"model_not_allowed","asked":"{{model}}","help":"This pool serves llama-3.3 and qwen2.5-coder."}'
+
+alerts:
+  webhook:
+    endpoint: { host: alertmanager.monitoring.svc.cluster.local, port: 9093 }
+    path: /api/v2/alerts
+
+telemetry:
+  otlp:
+    endpoint: { host: otel-collector.monitoring.svc.cluster.local, port: 4318 }
+    service_name: gpu-pool-fleet
+```
+
+On OpenAI dialects the model gate reads `model` from the request body
+(the gateway buffers and inspects it before anything is forwarded), so
+the fence holds even though the path never names the model.
 
 ## Who is told, exactly
 
