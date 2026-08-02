@@ -38,6 +38,7 @@ lifetime.
 
 | Doc | What it answers |
 |-----|-----------------|
+| [10-getting-started.md](docs/10-getting-started.md) | **Start here**: zero to an enforcing gateway in ten minutes, plus the two ways a large organization splits ownership |
 | [00-principles.md](docs/00-principles.md) | The operating constraints: two binaries plus Git, defer-by-default, ownership |
 | [01-design-questions.md](docs/01-design-questions.md) | The central questions every decision hangs off |
 | [02-architecture.md](docs/02-architecture.md) | Data plane and control plane design |
@@ -45,6 +46,9 @@ lifetime.
 | [04-build-plan.md](docs/04-build-plan.md) | Step-by-step build from scratch, with the risk-ordered sequencing |
 | [05-features.md](docs/05-features.md) | Baseline-required features, plus the optional catalog (everything LiteLLM does, triaged) |
 | [06-prior-art.md](docs/06-prior-art.md) | What we steal and from whom, including agentgateway's own path to 6/8 |
+| [07-control-plane.md](docs/07-control-plane.md) | Truth in Git, rendered manifests, waves, canaries, the fleet |
+| [09-live-cloud.md](docs/09-live-cloud.md) | Pointing the mock-proven mechanisms at real AWS and GCP |
+| [deploy/README.md](deploy/README.md) | Kubernetes: the LLMGateway CRD, the operator, Helm, GitOps |
 
 ## Status
 
