@@ -152,8 +152,12 @@ If you are an app developer and this doc arrived from your platform
 team: the contract is one of two things, and they picked which.
 
 - **`x-attr-*` headers** — plain strings naming who the spend belongs
-  to (`x-attr-team: acme`). No token involved; the gateway checks and
-  pins them per its config.
+  to, and the header names are not ours: each is `x-attr-<key>` for a
+  key THE FLEET's config defines. `required_keys: [team]` is exactly
+  why the examples below send `x-attr-team`; a fleet requiring
+  `[cost_center, workload]` means your requests carry
+  `x-attr-cost_center` and `x-attr-workload` instead. No token
+  involved; the gateway checks and pins them per its config.
 - **`GATEWAY_TOKEN`** — a JWT the gateway VERIFIES (fleets configured
   with `auth.jwt`). It is not an OpenAI key and not a cloud
   credential. It comes from your org's identity provider, or from the
@@ -174,7 +178,9 @@ client = OpenAI(
     # UPSTREAM checks it (on pass-through providers this is your real
     # provider key, forwarded). auth.jwt fleets: the GATEWAY_TOKEN.
     api_key=GATEWAY_TOKEN,
-    default_headers={"x-attr-team": "acme"},  # the attribution contract
+    # One header per key the fleet requires: this fleet's config says
+    # required_keys: [team], hence x-attr-team. Yours may differ.
+    default_headers={"x-attr-team": "acme"},
 )
 r = client.chat.completions.create(model="llama-3.3-70b", messages=[...])
 ```
