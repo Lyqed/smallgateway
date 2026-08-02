@@ -266,11 +266,96 @@ pub(crate) enum Gb7Failure {
     Exchange(String),
 }
 
-/// GB-7: resolve session tags from ATTRIBUTION values and mint (or cache-hit)
-/// the session-tagged credentials. Extracted from the proxy hook so it stays
-/// focused; the hook maps [`Gb7Failure`] onto its rejection/502 responses. On
-/// success returns `(creds, region, session_tags, cache_hit)` for the caller to
-/// log and carry to `upstream_request_filter`.
+/// The per-request role identity: the allow-list gate, then `role_arn` and
+/// `session_name` templates rendered against ADJUDICATED attribution. A
+/// placeholder key must be non-caller-origin unless it is the allow-listed
+/// key (the closed set is what makes a caller-picked value safe: the caller
+/// chooses WHICH operator-built role, never a new one). Key names are the
+/// operator's own; nothing here privileges any particular key.
+pub(crate) fn resolve_role_identity(
+    sts: &StsConfig,
+    tags: &[Tag],
+) -> std::result::Result<(String, String), (String, String)> {
+    if let Some(allow) = &sts.allow {
+        let tag = tags.iter().find(|t| t.key == allow.key).ok_or_else(|| {
+            (
+                allow.key.clone(),
+                format!("attribution key {:?} did not resolve", allow.key),
+            )
+        })?;
+        if !allow.values.iter().any(|v| v == &tag.value) {
+            return Err((
+                allow.key.clone(),
+                format!(
+                    "value {:?} is not in the operator's allow-list for {:?}",
+                    tag.value, allow.key
+                ),
+            ));
+        }
+    }
+    let role_arn = render_role_material(&sts.role_arn, "role_arn", sts, tags)?;
+    if !role_arn.starts_with("arn:") || !role_arn.contains(":role/") {
+        return Err((
+            "role_arn".to_string(),
+            format!("rendered role ARN {role_arn:?} is not an IAM role ARN"),
+        ));
+    }
+    let session_name = gateway_core::aws::sanitize_session_name(&render_role_material(
+        &sts.session_name,
+        "session_name",
+        sts,
+        tags,
+    )?);
+    Ok((role_arn, session_name))
+}
+
+/// Render one role-material template against the adjudicated tag set,
+/// enforcing the caller-origin rule per placeholder. Fail closed on any
+/// unresolved key.
+fn render_role_material(
+    spec: &gateway_core::config::OperatorValueSpec,
+    what: &str,
+    sts: &StsConfig,
+    tags: &[Tag],
+) -> std::result::Result<String, (String, String)> {
+    let template_text = spec
+        .as_template()
+        .ok_or_else(|| (what.to_string(), "mis-specified operator value".to_string()))?;
+    let keys = template::placeholders(&template_text).map_err(|e| (what.to_string(), e))?;
+    let mut vars: Vec<(String, String)> = Vec::with_capacity(keys.len());
+    for key in keys {
+        let tag = tags.iter().find(|t| t.key == key).ok_or_else(|| {
+            (key.clone(), format!("attribution key {key:?} did not resolve"))
+        })?;
+        let allow_gated = sts.allow.as_ref().is_some_and(|a| a.key == key);
+        if tag.origin == Origin::Caller && !allow_gated {
+            // Statically unreachable (scope.rs refuses the config); never
+            // render caller-raw role material anyway.
+            return Err((
+                key.clone(),
+                format!("attribution key {key:?} is caller-origin and not allow-gated"),
+            ));
+        }
+        vars.push((key, tag.value.clone()));
+    }
+    let var_refs: Vec<(&str, &str)> =
+        vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let rendered = template::render(&template_text, &var_refs);
+    if rendered.contains("{{") {
+        return Err((
+            what.to_string(),
+            "template left unresolved placeholders".to_string(),
+        ));
+    }
+    Ok(rendered)
+}
+
+/// GB-7: resolve the role identity and session tags from ATTRIBUTION values
+/// and mint (or cache-hit) the session-tagged credentials. Extracted from the
+/// proxy hook so it stays focused; the hook maps [`Gb7Failure`] onto its
+/// rejection/502 responses. On success returns
+/// `(creds, region, session_tags, cache_hit)` for the caller to log and carry
+/// to `upstream_request_filter`.
 pub(crate) async fn resolve_gb7_credentials(
     cache: &gateway_core::aws::CredentialCache,
     sts: &StsConfig,
@@ -278,11 +363,23 @@ pub(crate) async fn resolve_gb7_credentials(
     now: u64,
 ) -> std::result::Result<(gateway_core::aws::Credentials, String, Vec<(String, String)>, bool), Gb7Failure>
 {
+    let (role_arn, session_name) =
+        resolve_role_identity(sts, tags).map_err(|(key, reason)| Gb7Failure::Reject { key, reason })?;
     let session_tags = resolve_session_tags(sts, tags)
         .map_err(|(key, reason)| Gb7Failure::Reject { key, reason })?;
-    let (creds, cached) = crate::aws_auth::credentials_for(cache, sts, &session_tags, now)
-        .await
-        .map_err(|e| Gb7Failure::Exchange(e.to_string()))?;
+    info!(
+        "[gb7] role identity: role={role_arn} session_name={session_name}"
+    );
+    let (creds, cached) = crate::aws_auth::credentials_for(
+        cache,
+        sts,
+        &role_arn,
+        &session_name,
+        &session_tags,
+        now,
+    )
+    .await
+    .map_err(|e| Gb7Failure::Exchange(e.to_string()))?;
     Ok((creds, sts.region.clone(), session_tags, cached))
 }
 
@@ -321,4 +418,115 @@ pub(crate) fn render_cut_event(
         ),
     };
     Bytes::from(rendered)
+}
+
+#[cfg(test)]
+mod role_identity_tests {
+    use super::*;
+    use gateway_core::config::{AllowList, OperatorValueSpec, SessionTag, StsConfig, Upstream};
+
+    fn sts(role: &str, session: &str, allow: Option<AllowList>) -> StsConfig {
+        StsConfig {
+            endpoint: Upstream { host: "127.0.0.1".into(), port: 6199, tls: false, sni: None },
+            role_arn: OperatorValueSpec::Bare(role.to_string()),
+            session_name: OperatorValueSpec::Bare(session.to_string()),
+            region: "us-east-1".into(),
+            duration_secs: 900,
+            tags: vec![SessionTag {
+                key: "cc".into(),
+                value: None,
+                from_attribution: Some("cost_center".into()),
+            }],
+            allow,
+        }
+    }
+
+    fn tag(key: &str, value: &str, origin: Origin) -> Tag {
+        Tag { key: key.into(), value: value.into(), origin }
+    }
+
+    #[test]
+    fn templates_resolve_and_sanitize_with_operator_chosen_keys() {
+        // No key name is privileged: cost_center/tenant/workload, all
+        // gateway-established, feed role and session material.
+        let sts = sts(
+            "arn:aws:iam::1:role/bedrock-{{cost_center}}",
+            "{{tenant}}-{{workload}}",
+            None,
+        );
+        let tags = [
+            tag("cost_center", "research", Origin::Assigned),
+            tag("tenant", "acme ward", Origin::Proven),
+            tag("workload", "batch", Origin::Derived),
+        ];
+        let (role, session) = resolve_role_identity(&sts, &tags).unwrap();
+        assert_eq!(role, "arn:aws:iam::1:role/bedrock-research");
+        // The space sanitizes to '-' per AWS's RoleSessionName charset.
+        assert_eq!(session, "acme-ward-batch");
+    }
+
+    #[test]
+    fn allow_list_rejects_values_outside_the_closed_set() {
+        let sts = sts(
+            "arn:aws:iam::1:role/gw",
+            "gatewayd",
+            Some(AllowList { key: "team".into(), values: vec!["ml".into()] }),
+        );
+        let tags = [tag("team", "intruder", Origin::Caller)];
+        let err = resolve_role_identity(&sts, &tags).unwrap_err();
+        assert_eq!(err.0, "team");
+        assert!(err.1.contains("allow-list"), "{}", err.1);
+    }
+
+    #[test]
+    fn allow_gated_caller_key_may_select_the_role() {
+        // The APIM-parity affordance: caller-picked, operator-closed.
+        let sts = sts(
+            "arn:aws:iam::1:role/bedrock-{{team}}",
+            "gatewayd",
+            Some(AllowList { key: "team".into(), values: vec!["ml".into(), "web".into()] }),
+        );
+        let tags = [tag("team", "ml", Origin::Caller)];
+        let (role, _) = resolve_role_identity(&sts, &tags).unwrap();
+        assert_eq!(role, "arn:aws:iam::1:role/bedrock-ml");
+    }
+
+    #[test]
+    fn caller_origin_key_without_allow_gate_is_refused_at_runtime() {
+        // Statically unreachable (scope.rs refuses the config), but the
+        // runtime defense holds on its own.
+        let sts = sts("arn:aws:iam::1:role/bedrock-{{team}}", "gatewayd", None);
+        let tags = [tag("team", "ml", Origin::Caller)];
+        let err = resolve_role_identity(&sts, &tags).unwrap_err();
+        assert!(err.1.contains("caller-origin"), "{}", err.1);
+    }
+
+    #[test]
+    fn unresolved_template_key_fails_closed() {
+        let sts = sts("arn:aws:iam::1:role/gw-{{ghost}}", "gatewayd", None);
+        let tags = [tag("cost_center", "research", Origin::Assigned)];
+        let err = resolve_role_identity(&sts, &tags).unwrap_err();
+        assert_eq!(err.0, "ghost");
+        assert!(err.1.contains("did not resolve"), "{}", err.1);
+    }
+
+    #[test]
+    fn rendered_role_must_still_be_an_arn() {
+        let sts = sts("{{cost_center}}", "gatewayd", None);
+        let tags = [tag("cost_center", "research", Origin::Assigned)];
+        let err = resolve_role_identity(&sts, &tags).unwrap_err();
+        assert!(err.1.contains("not an IAM role ARN"), "{}", err.1);
+    }
+
+    #[test]
+    fn missing_allow_key_fails_closed_before_any_credential_work() {
+        let sts = sts(
+            "arn:aws:iam::1:role/gw",
+            "gatewayd",
+            Some(AllowList { key: "team".into(), values: vec!["ml".into()] }),
+        );
+        let err = resolve_role_identity(&sts, &[]).unwrap_err();
+        assert_eq!(err.0, "team");
+        assert!(err.1.contains("did not resolve"), "{}", err.1);
+    }
 }

@@ -285,12 +285,52 @@ pub struct CredentialCache {
     inner: Mutex<HashMap<String, Credentials>>,
 }
 
-/// The cache key: every input that changes the minted credentials.
-pub fn cache_key(role_arn: &str, endpoint: &str, tags: &[(String, String)]) -> String {
+/// The cache key: every input that changes the minted credentials. The
+/// RESOLVED session name and the duration are part of the identity: with
+/// per-request session names, credentials minted under caller A's
+/// RoleSessionName must never be served to caller B — the session name is
+/// what CloudTrail attributes, and misattribution there is the exact
+/// failure this product exists to prevent.
+pub fn cache_key(
+    role_arn: &str,
+    session_name: &str,
+    duration_secs: u32,
+    endpoint: &str,
+    tags: &[(String, String)],
+) -> String {
     let mut sorted: Vec<&(String, String)> = tags.iter().collect();
     sorted.sort();
     let tag_part: Vec<String> = sorted.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    format!("{role_arn}|{endpoint}|{}", tag_part.join(","))
+    format!(
+        "{role_arn}|{session_name}|{duration_secs}|{endpoint}|{}",
+        tag_part.join(",")
+    )
+}
+
+/// Sanitize a rendered RoleSessionName to AWS's real constraint:
+/// `[A-Za-z0-9_+=,.@-]`, 2-64 chars. Invalid characters map to `-`; the
+/// result is truncated to 64; a result shorter than AWS's 2-char minimum
+/// falls back to the validated default rather than reaching STS as a
+/// guaranteed ValidationError.
+pub fn sanitize_session_name(raw: &str) -> String {
+    let mut out: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '=' | ',' | '.' | '@' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(64)
+        .collect();
+    while out.ends_with(['-', '_']) {
+        out.pop();
+    }
+    if out.chars().count() < 2 {
+        return "gatewayd".to_string();
+    }
+    out
 }
 
 impl CredentialCache {
@@ -533,6 +573,8 @@ mod tests {
         let cache = CredentialCache::new();
         let key = cache_key(
             "arn:role",
+            "gatewayd",
+            900,
             "127.0.0.1:6199",
             &[("team".to_string(), "ml".to_string())],
         );
@@ -551,11 +593,38 @@ mod tests {
 
     #[test]
     fn cache_key_is_order_insensitive_but_value_sensitive() {
-        let a = cache_key("r", "e", &[("a".into(), "1".into()), ("b".into(), "2".into())]);
-        let b = cache_key("r", "e", &[("b".into(), "2".into()), ("a".into(), "1".into())]);
-        let c = cache_key("r", "e", &[("a".into(), "1".into()), ("b".into(), "3".into())]);
+        let a = cache_key("r", "s", 900, "e", &[("a".into(), "1".into()), ("b".into(), "2".into())]);
+        let b = cache_key("r", "s", 900, "e", &[("b".into(), "2".into()), ("a".into(), "1".into())]);
+        let c = cache_key("r", "s", 900, "e", &[("a".into(), "1".into()), ("b".into(), "3".into())]);
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn cache_key_separates_session_names_and_durations() {
+        // Per-request session names: caller A's CloudTrail identity must
+        // never be served to caller B off the cache, even with an identical
+        // tag-set. Same for a changed requested duration.
+        let tags = [("t".to_string(), "x".to_string())];
+        let a = cache_key("r", "acme-app-1", 900, "e", &tags);
+        let b = cache_key("r", "acme-app-2", 900, "e", &tags);
+        let c = cache_key("r", "acme-app-1", 3600, "e", &tags);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn sanitize_session_name_matches_aws_constraints() {
+        // Invalid chars map to '-', 64-char truncation, trailing junk
+        // trimmed, and the 2-char AWS minimum falls back to the default.
+        assert_eq!(sanitize_session_name("acme-app-user"), "acme-app-user");
+        assert_eq!(sanitize_session_name("A B/C"), "A-B-C");
+        assert_eq!(sanitize_session_name("x"), "gatewayd");
+        assert_eq!(sanitize_session_name(""), "gatewayd");
+        assert_eq!(sanitize_session_name("a!!"), "gatewayd");
+        let long = "a".repeat(80);
+        assert_eq!(sanitize_session_name(&long).chars().count(), 64);
+        assert_eq!(sanitize_session_name("ok@user.name+x=y,z"), "ok@user.name+x=y,z");
     }
 
     #[test]

@@ -383,6 +383,50 @@ fn validate_effective_for_provider(
                 }
             }
         }
+        // Role material (role_arn / session_name templates) follows the same
+        // rule, with ONE deliberate exception: a caller-asserted key gated by
+        // this block's allow-list is admissible, because the allow-list closes
+        // the value set to operator-approved members — the caller picks WHICH
+        // pre-built role, never a new one.
+        let universe = policy.key_universe();
+        if let Some(allow) = &sts.allow {
+            if !universe.contains(allow.key.as_str()) {
+                errs.push(format!(
+                    "{ctx_name}: sts allow.key {:?} is a key the composed chain never \
+                     requires, pins, claim-maps, or derives — it could never resolve",
+                    allow.key
+                ));
+            }
+        }
+        for (what, spec) in [("role_arn", &sts.role_arn), ("session_name", &sts.session_name)] {
+            let Some(template) = spec.as_template() else { continue };
+            let Ok(keys) = crate::template::placeholders(&template) else { continue };
+            for key in keys {
+                if !universe.contains(key.as_str()) {
+                    errs.push(format!(
+                        "{ctx_name}: sts {what} references attribution key {key:?}, \
+                         which the composed chain never requires, pins, claim-maps, \
+                         or derives — it could never resolve"
+                    ));
+                    continue;
+                }
+                let gateway_established = policy.pinned.contains_key(&key)
+                    || policy.from_claims.contains_key(&key)
+                    || policy.derived.contains_key(&key);
+                let allow_gated = sts
+                    .allow
+                    .as_ref()
+                    .is_some_and(|a| a.key == key);
+                if !gateway_established && !allow_gated {
+                    errs.push(format!(
+                        "{ctx_name}: sts {what} references attribution key {key:?}, \
+                         which is caller-asserted (not pinned, claim-mapped, or derived) \
+                         and not gated by this block's allow-list — a caller must never \
+                         steer which role is assumed"
+                    ));
+                }
+            }
+        }
     }
 }
 

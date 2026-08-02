@@ -309,7 +309,7 @@ fn log_active_routes(shared: &SharedSnapshot, source: &str) {
                 .as_ref()
                 .map(|s| format!(
                     " sts[role={} tags={:?}]",
-                    s.role_arn,
+                    s.role_arn.as_template().unwrap_or(std::borrow::Cow::Borrowed("<invalid>")),
                     s.tags.iter().map(|t| t.key.as_str()).collect::<Vec<_>>()
                 ))
                 .unwrap_or_default(),

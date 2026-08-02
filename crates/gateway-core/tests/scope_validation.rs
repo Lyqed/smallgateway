@@ -297,3 +297,145 @@ fn bad_derived_cel_fails_config_load_with_scope_named() {
         "{errs:?}"
     );
 }
+
+// ---- GB-7 role material (role_arn / session_name templates + allow) ----
+
+/// Swap the base config to a bedrock provider with an sts block whose body
+/// is supplied by the caller (indented 6, under `sts:`).
+fn bedrock_sts_yaml(sts_body: &str) -> String {
+    base_yaml().replace("kind: openai", "kind: bedrock").replace(
+        "    upstream: { host: 127.0.0.1, port: 6190 }",
+        &format!(
+            "    upstream: {{ host: 127.0.0.1, port: 6190 }}\n    sts:\n{sts_body}"
+        ),
+    )
+}
+
+#[test]
+fn sts_role_template_on_gateway_established_key_is_accepted() {
+    // `env` is pinned (gateway-established): a role/session template over it
+    // is fine, and the bare-string template form parses like a plain string.
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/gw-{{env}}\n",
+        "      session_name: '{{env}}-batch'\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    Config::from_yaml(&yaml).unwrap();
+}
+
+#[test]
+fn sts_templates_privilege_no_key_names() {
+    // The generality invariant: cost_center / tenant work exactly like any
+    // other operator-chosen key — nothing hardcodes team/app/user.
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/bedrock-{{cost_center}}\n",
+        "      session_name: '{{tenant}}-{{cost_center}}'\n",
+        "      tags: [ { key: cc, from_attribution: cost_center } ]",
+    ))
+    .replace(
+        "pinned: { env: prod }",
+        "pinned: { env: prod, cost_center: research, tenant: acme }",
+    );
+    Config::from_yaml(&yaml).unwrap();
+}
+
+#[test]
+fn sts_role_template_on_caller_key_without_allow_is_rejected() {
+    // `team` is required-only (caller-asserted): without an allow-list the
+    // caller could steer which role is assumed. Statically refused.
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/bedrock-{{team}}\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter().any(|e| e.contains("must never steer")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn sts_role_template_on_caller_key_with_allow_list_is_accepted() {
+    // The APIM-parity affordance: the allow-list closes the value set, so a
+    // caller picks WHICH operator-built role, never a new one.
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/bedrock-{{team}}\n",
+        "      allow: { key: team, values: [ml, web] }\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    Config::from_yaml(&yaml).unwrap();
+}
+
+#[test]
+fn sts_role_template_on_unknown_key_is_rejected() {
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/gw-{{ghost}}\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("could never resolve")), "{errs:?}");
+}
+
+#[test]
+fn sts_allow_key_unknown_is_rejected() {
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/gw\n",
+        "      allow: { key: ghost, values: [x] }\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("could never resolve")), "{errs:?}");
+}
+
+#[test]
+fn sts_static_role_arn_must_look_like_a_role_arn() {
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: not-an-arn\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("not an IAM role ARN")), "{errs:?}");
+}
+
+#[test]
+fn sts_static_session_name_charset_is_validated() {
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/gw\n",
+        "      session_name: 'bad name!'\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("AWS does not accept")), "{errs:?}");
+}
+
+#[test]
+fn sts_operator_value_map_forms_parse() {
+    // Explicit map forms: value on role_arn, from_attribution on
+    // session_name (env is pinned, so gateway-established).
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: { value: 'arn:aws:iam::1:role/gw' }\n",
+        "      session_name: { from_attribution: env }\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    Config::from_yaml(&yaml).unwrap();
+}
+
+#[test]
+fn sts_operator_value_with_both_sources_is_rejected() {
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: { value: 'arn:aws:iam::1:role/gw', from_attribution: env }\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("exactly one of")), "{errs:?}");
+}

@@ -135,13 +135,23 @@ impl Upstream {
 /// GB-7: AssumeRole-with-session-tags against an STS endpoint; the tags are
 /// the invoice-grade join — operator/attribution-derived only, never
 /// caller-raw (validation rejects a tag sourced from a caller-origin key).
+///
+/// `role_arn` and `session_name` are [`OperatorValueSpec`]s: a bare string
+/// behaves exactly as before, and a string containing `{{key}}` placeholders
+/// is an operator-authored TEMPLATE resolved per request against adjudicated
+/// attribution (the operator writes the template; a caller can never change
+/// it). Placeholder keys must be gateway-established (pinned, claim-mapped,
+/// or derived) — with ONE deliberate exception: a caller-asserted key that
+/// this block's `allow` list gates is admissible, because the allow-list
+/// closes the value set to operator-approved members (the APIM-parity
+/// affordance: the caller picks WHICH pre-built door, never a new one).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StsConfig {
     pub endpoint: Upstream,
-    pub role_arn: String,
-    #[serde(default = "default_session_name")]
-    pub session_name: String,
+    pub role_arn: OperatorValueSpec,
+    #[serde(default = "default_session_name_spec")]
+    pub session_name: OperatorValueSpec,
     #[serde(default = "default_region")]
     pub region: String,
     /// Requested credential lifetime; the cache honors the Expiration the
@@ -149,10 +159,72 @@ pub struct StsConfig {
     #[serde(default = "default_sts_duration")]
     pub duration_secs: u32,
     pub tags: Vec<SessionTag>,
+    /// Closed-set gate on ONE attribution key: a request whose resolved
+    /// value of `key` is not in `values` is rejected with the GB-4 body
+    /// before any credential is minted. Also the only mechanism that admits
+    /// a caller-asserted key into `role_arn`/`session_name` templates.
+    #[serde(default)]
+    pub allow: Option<AllowList>,
 }
 
-fn default_session_name() -> String {
-    "gatewayd".to_string()
+/// A value the operator decides. Either a bare string (also the template
+/// form: `{{key}}` placeholders resolve against adjudicated attribution) or
+/// the explicit map form with exactly one of `value` / `from_attribution`.
+/// Mirrors the GB-8 LabelSpec static-or-dynamic split; deliberately has NO
+/// free CEL arm — role material must not be steerable by request contents
+/// (an expression can read caller headers; a template cannot).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum OperatorValueSpec {
+    /// Bare-string sugar: `role_arn: "arn:..."` or a `{{key}}` template.
+    Bare(String),
+    /// Explicit map form.
+    Spec(OperatorValueFields),
+}
+
+/// The explicit map form of [`OperatorValueSpec`]. Exactly one of `value`
+/// (static or `{{key}}` template) or `from_attribution` (single resolved
+/// attribution key) must be set — enforced by validation, which reports the
+/// precise error the untagged enum cannot.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorValueFields {
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub from_attribution: Option<String>,
+}
+
+impl OperatorValueSpec {
+    /// The template string this spec resolves through: a bare string or
+    /// `value:` is itself the template; `from_attribution: k` is exactly
+    /// the one-key template `{{k}}`. Returns `None` when the map form is
+    /// mis-specified (neither or both set) — validation reports that.
+    pub fn as_template(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match self {
+            OperatorValueSpec::Bare(s) => Some(std::borrow::Cow::Borrowed(s)),
+            OperatorValueSpec::Spec(f) => match (&f.value, &f.from_attribution) {
+                (Some(v), None) => Some(std::borrow::Cow::Borrowed(v)),
+                (None, Some(k)) => Some(std::borrow::Cow::Owned(format!("{{{{{k}}}}}"))),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The closed-set gate for [`StsConfig::allow`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllowList {
+    /// The attribution key the gate reads (operator-chosen; nothing is
+    /// hardcoded — `team`, `tenant`, `cost_center`, whatever the fleet uses).
+    pub key: String,
+    /// The operator-approved values. Anything else is rejected.
+    pub values: Vec<String>,
+}
+
+fn default_session_name_spec() -> OperatorValueSpec {
+    OperatorValueSpec::Bare("gatewayd".to_string())
 }
 
 fn default_region() -> String {

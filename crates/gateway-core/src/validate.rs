@@ -10,7 +10,8 @@
 use std::collections::BTreeSet;
 
 use crate::config::{
-    Config, ProviderKind, RejectionOverrides, RejectionTemplate, Rejections, ATTR_HEADER_PREFIX,
+    Config, OperatorValueSpec, ProviderKind, RejectionOverrides, RejectionTemplate, Rejections,
+    ATTR_HEADER_PREFIX,
 };
 use crate::scope::{
     MAX_LABEL_KEY_LEN, MAX_LABEL_VALUE_LEN, MAX_SESSION_TAG_KEY_LEN, MAX_SESSION_TAG_VALUE_LEN,
@@ -40,8 +41,43 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
                     p.kind.name()
                 ));
             }
-            if sts.role_arn.trim().is_empty() {
-                errs.push(format!("{ctx}: role_arn must not be empty"));
+            validate_operator_value(&sts.role_arn, &format!("{ctx}: role_arn"), errs, |t| {
+                // A fully-static ARN is checked whole; a template is checked
+                // on its literal skeleton (the rendered ARN is re-checked per
+                // request, fail closed).
+                if t.trim().is_empty() {
+                    return Err("must not be empty".to_string());
+                }
+                if !t.starts_with("arn:") || !t.contains(":role/") {
+                    return Err(format!(
+                        "{t:?} is not an IAM role ARN (want arn:...:role/...)"
+                    ));
+                }
+                Ok(())
+            });
+            validate_operator_value(
+                &sts.session_name,
+                &format!("{ctx}: session_name"),
+                errs,
+                |t| {
+                    // Static-only check; templates sanitize per request.
+                    if template::placeholders(t).map(|p| p.is_empty()).unwrap_or(true) {
+                        validate_session_name(t)?;
+                    }
+                    Ok(())
+                },
+            );
+            if let Some(allow) = &sts.allow {
+                let actx = format!("{ctx}: allow");
+                check_key(&allow.key, &format!("{actx}.key"), errs);
+                if allow.values.is_empty() {
+                    errs.push(format!("{actx}.values must not be empty"));
+                }
+                for v in &allow.values {
+                    if v.trim().is_empty() {
+                        errs.push(format!("{actx}.values must not contain empty entries"));
+                    }
+                }
             }
             if sts.endpoint.host.trim().is_empty() {
                 errs.push(format!("{ctx}: endpoint.host must not be empty"));
@@ -251,6 +287,53 @@ pub fn validate_session_tag_value(value: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// AWS RoleSessionName: 2-64 chars of `[A-Za-z0-9_+=,.@-]` (the API's
+/// `[\w+=,.@-]` pattern). Static names are checked here; per-request
+/// template renders go through [`crate::aws::sanitize_session_name`].
+pub fn validate_session_name(name: &str) -> Result<(), String> {
+    let len = name.chars().count();
+    if !(2..=64).contains(&len) {
+        return Err(format!("RoleSessionName must be 2-64 characters, got {len}"));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '=' | ',' | '.' | '@' | '-'))
+    {
+        return Err(format!(
+            "RoleSessionName {name:?} contains characters AWS does not accept ([\\w+=,.@-])"
+        ));
+    }
+    Ok(())
+}
+
+/// Shared shape-check for an [`OperatorValueSpec`]: exactly-one-of on the
+/// map form, well-formed `{{key}}` placeholders with valid key names, plus
+/// a caller-supplied check on the template text itself.
+fn validate_operator_value(
+    spec: &OperatorValueSpec,
+    ctx: &str,
+    errs: &mut Vec<String>,
+    check_template: impl Fn(&str) -> Result<(), String>,
+) {
+    let Some(template) = spec.as_template() else {
+        errs.push(format!(
+            "{ctx}: exactly one of 'value' or 'from_attribution' must be set"
+        ));
+        return;
+    };
+    match template::placeholders(&template) {
+        Err(e) => errs.push(format!("{ctx}: {e}")),
+        Ok(keys) => {
+            for key in &keys {
+                check_key(key, &format!("{ctx}: placeholder"), errs);
+            }
+        }
+    }
+    if let Err(e) = check_template(&template) {
+        errs.push(format!("{ctx}: {e}"));
+    }
 }
 
 fn aws_tag_char(c: char) -> bool {

@@ -30,21 +30,26 @@ use gateway_core::config::{StsConfig, Upstream};
 /// Whole-exchange timeout for one STS call.
 const STS_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Get credentials for this tag-set: cache hit, or one AssumeRole
-/// exchange. Returns the credentials plus whether the cache served them
-/// (the log line makes the caching visible per request).
+/// Get credentials for this (resolved role identity, tag-set): cache hit,
+/// or one AssumeRole exchange. `role_arn` and `session_name` arrive RESOLVED
+/// (templates already rendered and sanitized by the proxy layer); both are
+/// part of the cache identity so per-request session names never serve one
+/// caller's CloudTrail identity to another. Returns the credentials plus
+/// whether the cache served them.
 pub async fn credentials_for(
     cache: &CredentialCache,
     sts: &StsConfig,
+    role_arn: &str,
+    session_name: &str,
     session_tags: &[(String, String)],
     now_unix: u64,
 ) -> Result<(Credentials, bool), String> {
     let endpoint = format!("{}:{}", sts.endpoint.host, sts.endpoint.port);
-    let key = cache_key(&sts.role_arn, &endpoint, session_tags);
+    let key = cache_key(role_arn, session_name, sts.duration_secs, &endpoint, session_tags);
     if let Some(creds) = cache.get(&key, now_unix) {
         return Ok((creds, true));
     }
-    let creds = assume_role(sts, session_tags).await?;
+    let creds = assume_role(sts, role_arn, session_name, session_tags).await?;
     cache.put(key, creds.clone());
     Ok((creds, false))
 }
@@ -52,11 +57,13 @@ pub async fn credentials_for(
 /// One `AssumeRole` exchange against the configured STS endpoint.
 async fn assume_role(
     sts: &StsConfig,
+    role_arn: &str,
+    session_name: &str,
     session_tags: &[(String, String)],
 ) -> Result<Credentials, String> {
     let body = aws::assume_role_body(
-        &sts.role_arn,
-        &sts.session_name,
+        role_arn,
+        session_name,
         sts.duration_secs,
         session_tags,
     );
@@ -74,8 +81,7 @@ async fn assume_role(
     }
     let creds = aws::parse_assume_role_response(&response)?;
     info!(
-        "[gb7] AssumeRole ok: role={} tags={} access_key={} expires_unix={}",
-        sts.role_arn,
+        "[gb7] AssumeRole ok: role={role_arn} session_name={session_name} tags={} access_key={} expires_unix={}",
         session_tags
             .iter()
             .map(|(k, v)| format!("{k}={v}"))
