@@ -586,3 +586,46 @@ fn spend_cap_bad_window_is_a_parse_error() {
     );
     assert!(matches!(Config::from_yaml(&yaml), Err(ConfigError::Parse(_))));
 }
+
+// ---- GB-8 auth chain ----
+
+#[test]
+fn vertex_auth_on_non_vertex_provider_is_rejected() {
+    let yaml = base_yaml().replace(
+        "    upstream: { host: 127.0.0.1, port: 6190 }",
+        concat!(
+            "    upstream: { host: 127.0.0.1, port: 6190 }\n",
+            "    auth:\n",
+            "      web_identity_token: { env: GW_TOKEN }\n",
+            "      wif: { project_number: '1', pool_id: p, provider_id: pr }\n",
+            "      service_account_email: gw@x.iam.gserviceaccount.com\n",
+            "      sts_endpoint: { host: 127.0.0.1, port: 6197 }\n",
+            "      iam_endpoint: { host: 127.0.0.1, port: 6197 }",
+        ),
+    );
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter().any(|e| e.contains("vertex-kind providers only")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn vertex_auth_lifetime_and_email_are_validated() {
+    let yaml = base_yaml().replace("kind: openai", "kind: vertex").replace(
+        "    upstream: { host: 127.0.0.1, port: 6190 }",
+        concat!(
+            "    upstream: { host: 127.0.0.1, port: 6190 }\n",
+            "    auth:\n",
+            "      web_identity_token: { env: GW_TOKEN }\n",
+            "      wif: { project_number: '1', pool_id: p, provider_id: pr }\n",
+            "      service_account_email: not-an-email\n",
+            "      lifetime_secs: 7200\n",
+            "      sts_endpoint: { host: 127.0.0.1, port: 6197 }\n",
+            "      iam_endpoint: { host: 127.0.0.1, port: 6197 }",
+        ),
+    );
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("not an email")), "{errs:?}");
+    assert!(errs.iter().any(|e| e.contains("lifetime_secs must be 300-3600")), "{errs:?}");
+}

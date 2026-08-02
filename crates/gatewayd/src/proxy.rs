@@ -57,6 +57,9 @@ pub struct Gateway {
     /// across config swaps on purpose — the key carries every input that
     /// changes the minted credentials.
     sts_cache: CredentialCache,
+    /// GB-8: SA bearer tokens per (sa, scopes, pool, provider). Same
+    /// cross-swap lifetime rationale as the STS cache.
+    gcp_tokens: crate::gcp_auth::GcpTokenCache,
     /// GB-5: the node-local budget counters (shared with the control-plane
     /// client, which reports spend and applies share grants). Lives OUTSIDE
     /// the snapshot on purpose — a config swap changes the CAP a request reads
@@ -88,6 +91,7 @@ impl Gateway {
             shared,
             wasm: None,
             sts_cache: CredentialCache::new(),
+            gcp_tokens: crate::gcp_auth::GcpTokenCache::new(),
             budgets,
         }
     }
@@ -140,6 +144,9 @@ pub struct ReqCtx {
     body_buf: Vec<u8>,
     /// GB-7: credentials + region for SigV4 signing.
     aws: Option<AwsSigning>,
+    /// GB-8 auth: the minted SA bearer for vertex providers with an auth
+    /// chain; applied as `Authorization: Bearer` in upstream_request_filter.
+    gcp_bearer: Option<String>,
     body_bytes: usize,
     body_chunks: usize,
     event_counts: [usize; 6],
@@ -187,6 +194,7 @@ impl ReqCtx {
             forced: None,
             body_buf: Vec::new(),
             aws: None,
+            gcp_bearer: None,
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
@@ -442,6 +450,30 @@ impl ProxyHttp for Gateway {
             }
         }
 
+        // GB-8 auth: mint (or cache-hit) the SA bearer for vertex providers
+        // with an auth chain. An exchange failure is a 502 (infra, loud),
+        // never the operator's GB-4 body — same posture as GB-7.
+        if let Some(auth) = &cfg.providers[&route.provider].auth {
+            match crate::gcp_auth::bearer_for(&self.gcp_tokens, auth, now_unix()).await {
+                Ok((bearer, cached)) => {
+                    info!(
+                        "[gb8-auth {}] sa={} cache={} cfg=v{v}",
+                        route.prefix,
+                        auth.service_account_email,
+                        if cached { "hit" } else { "miss" },
+                    );
+                    ctx.gcp_bearer = Some(bearer);
+                }
+                Err(e) => {
+                    error!("[gb8-auth {}] token mint FAILED: {e} cfg=v{v}", route.prefix);
+                    return Err(Error::explain(
+                        HTTPStatus(502),
+                        format!("gcp token exchange failed: {e}"),
+                    ));
+                }
+            }
+        }
+
         // Operator-forced injection: resolve now, fail closed BEFORE the
         // upstream sees anything. A caller can never pick the values (no
         // allow-gate here; guardrails are pure operator policy).
@@ -579,6 +611,13 @@ impl ProxyHttp for Gateway {
             &ctx.wasm_header_set,
             &ctx.wasm_header_remove,
         )?;
+
+        // GB-8 auth: the gateway's own minted bearer replaces whatever
+        // Authorization the caller sent — the credential is the operator's,
+        // never the caller's.
+        if let Some(bearer) = &ctx.gcp_bearer {
+            upstream_request.insert_header("authorization", format!("Bearer {bearer}"))?;
+        }
 
         // Operator-forced headers: applied BEFORE signing so the signature
         // covers them (operator wins over any caller value: insert_header

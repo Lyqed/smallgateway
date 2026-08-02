@@ -79,6 +79,13 @@ pub struct Provider {
     /// this provider (guardrails and friends). See [`Injection`].
     #[serde(default)]
     pub inject: Option<Injection>,
+    /// GB-8's auth half (vertex-kind only): the gateway MINTS the Google
+    /// credential itself — Workload Identity Federation token exchange, then
+    /// a service-account access token — and sets `Authorization: Bearer` on
+    /// the upstream. Absent: the caller's own Authorization passes through
+    /// unchanged (the original behavior). See [`VertexAuth`].
+    #[serde(default)]
+    pub auth: Option<VertexAuth>,
     /// GB-7 (bedrock kind only): exchange attribution values for STS
     /// session-tag credentials and SigV4-sign every upstream request.
     #[serde(default)]
@@ -203,7 +210,8 @@ pub struct BaseHop {
 /// (projected service-account token, managed-identity token file) or an
 /// environment variable. Exactly one (validated). Deliberately NOT a
 /// caller header — the base identity belongs to the platform, never to the
-/// request.
+/// request. Shared by the AWS base hop and the Vertex WIF exchange: one
+/// generic OIDC source, not a cloud-specific client.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenSourceSpec {
@@ -211,6 +219,60 @@ pub struct TokenSourceSpec {
     pub file: Option<String>,
     #[serde(default)]
     pub env: Option<String>,
+}
+
+/// The Vertex auth chain: the platform's OIDC token is exchanged at Google
+/// STS for a FEDERATED token (Workload Identity Federation), which then
+/// mints a SERVICE-ACCOUNT access token via iamcredentials
+/// `generateAccessToken`; that bearer signs the upstream Vertex request.
+/// The SA token carries NO per-caller identity — per-caller attribution
+/// rides the GB-8 billing labels in the body — so one token is correctly
+/// shared across callers and cached per (sa, scopes, pool, provider).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VertexAuth {
+    pub web_identity_token: TokenSourceSpec,
+    pub wif: WifAudience,
+    pub service_account_email: String,
+    /// Google STS (`sts.googleapis.com`), as an [`Upstream`] so tests mock it.
+    pub sts_endpoint: Upstream,
+    /// iamcredentials (`iamcredentials.googleapis.com`), mockable likewise.
+    pub iam_endpoint: Upstream,
+    #[serde(default = "default_gcp_scopes")]
+    pub scopes: Vec<String>,
+    /// SA-token lifetime; sent as the "<n>s" string form Google requires.
+    #[serde(default = "default_gcp_lifetime")]
+    pub lifetime_secs: u32,
+}
+
+/// The WIF audience components:
+/// `//iam.googleapis.com/projects/{project_number}/locations/global/`
+/// `workloadIdentityPools/{pool_id}/providers/{provider_id}` (no scheme —
+/// Google STS rejects one).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WifAudience {
+    pub project_number: String,
+    pub pool_id: String,
+    pub provider_id: String,
+}
+
+impl WifAudience {
+    /// The audience string, exactly as Google STS expects it.
+    pub fn audience(&self) -> String {
+        format!(
+            "//iam.googleapis.com/projects/{}/locations/global/workloadIdentityPools/{}/providers/{}",
+            self.project_number, self.pool_id, self.provider_id
+        )
+    }
+}
+
+fn default_gcp_scopes() -> Vec<String> {
+    vec!["https://www.googleapis.com/auth/cloud-platform".to_string()]
+}
+
+fn default_gcp_lifetime() -> u32 {
+    3600
 }
 
 fn default_base_session_name() -> String {

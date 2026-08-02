@@ -25,6 +25,8 @@ gateway-wasm = { path = "../gateway-wasm" }
 # Phase 2 M1: the fleet wire contract, for control-plane client mode.
 gateway-proto = { path = "../gateway-proto" }
 serde_json = "1"
+# RFC3339 expireTime parsing for the GCP SA-token cache (GB-8 auth).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Same foundation stack as spikes/proxy-pingora (Phase 0 decision: Pingora).
 pingora = { version = "0.8", features = ["proxy"] }
 # Same `http` the pingora stack uses; needed to rebuild the request Uri

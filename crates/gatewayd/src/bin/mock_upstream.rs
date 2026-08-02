@@ -47,6 +47,7 @@ fn main() {
     let mut provider = String::from("openai");
     let mut delay_ms = 80u64;
     let mut require_sigv4 = false;
+    let mut require_bearer: Option<String> = None;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -66,6 +67,7 @@ fn main() {
             "--fixture" => fixture = args[i + 1].clone(),
             "--provider" => provider = args[i + 1].clone(),
             "--delay-ms" => delay_ms = args[i + 1].parse().expect("delay-ms"),
+            "--require-bearer" => require_bearer = Some(args[i + 1].clone()),
             other => {
                 eprintln!("unknown flag {other}");
                 std::process::exit(2);
@@ -118,8 +120,9 @@ fn main() {
         let frames = frames.clone();
         let content_type = content_type.to_string();
         let provider = provider.clone();
+        let require_bearer = require_bearer.clone();
         thread::spawn(move || {
-            if let Err(e) = handle(stream, &provider, require_sigv4, &content_type, &frames, delay_ms)
+            if let Err(e) = handle(stream, &provider, require_sigv4, require_bearer.as_deref(), &content_type, &frames, delay_ms)
             {
                 eprintln!("[mock] connection error: {e}");
             }
@@ -294,10 +297,12 @@ fn respond_403(mut w: TcpStream, reason: &str) -> std::io::Result<()> {
     w.flush()
 }
 
+#[allow(clippy::too_many_arguments)] // one call site, a test binary
 fn handle(
     stream: TcpStream,
     provider: &str,
     require_sigv4: bool,
+    require_bearer: Option<&str>,
     content_type: &str,
     frames: &[Vec<u8>],
     delay_ms: u64,
@@ -330,6 +335,23 @@ fn handle(
     // GB-8 visibility: body labels (vertex).
     if provider == "vertex" {
         echo.extend(body_label_echo(&req.body));
+    }
+
+    // GB-8 auth enforcement (--require-bearer <prefix>): the request must
+    // carry a gateway-minted SA bearer; the caller's own Authorization (or
+    // none) is refused, and the accepted bearer is echoed so a test can
+    // PROVE the token cache (same bearer across requests = one mint).
+    if let Some(prefix) = require_bearer {
+        let auth = req.header("authorization").unwrap_or("");
+        let bearer = auth.strip_prefix("Bearer ").unwrap_or("");
+        if !bearer.starts_with(prefix) {
+            return respond_403(
+                stream,
+                &format!("expected a Bearer starting {prefix:?}, got {auth:?}"),
+            );
+        }
+        eprintln!("[mock] accepted bearer {bearer}");
+        echo.push(("x-echo-bearer".to_string(), bearer.to_string()));
     }
 
     eprintln!("[mock] {} -> streaming {} frames", req.line, frames.len());

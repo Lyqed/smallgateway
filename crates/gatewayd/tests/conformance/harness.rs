@@ -133,6 +133,46 @@ pub fn spawn_sts(port: u16) -> Proc {
     proc
 }
 
+/// The mock Google token plane (STS token exchange + iamcredentials
+/// generateAccessToken in one process) for the GB-8 auth chain.
+pub fn spawn_gcp(port: u16) -> Proc {
+    let child = Command::new(env!("CARGO_BIN_EXE_mock_gcp"))
+        .args(["--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mock_gcp");
+    let proc = Proc { child };
+    wait_for_port(port, "mock_gcp");
+    proc
+}
+
+/// Mock upstream that REFUSES any request whose Authorization is not a
+/// gateway-minted bearer (`--require-bearer <prefix>`), and echoes the
+/// accepted bearer so a test can prove the token cache.
+pub fn spawn_mock_bearer(port: u16, fixture: &str, provider: &str, bearer_prefix: &str) -> Proc {
+    let child = Command::new(env!("CARGO_BIN_EXE_mock_upstream"))
+        .args([
+            "--port",
+            &port.to_string(),
+            "--fixture",
+            fixture,
+            "--provider",
+            provider,
+            "--delay-ms",
+            "5",
+            "--require-bearer",
+            bearer_prefix,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mock_upstream (bearer)");
+    let proc = Proc { child };
+    wait_for_port(port, "mock_upstream");
+    proc
+}
+
 /// Mock STS in `--require-signed-chain` mode: an unsigned (or mis-signed)
 /// chained AssumeRole gets a 403, so a two-hop test cannot pass vacuously.
 pub fn spawn_sts_signed(port: u16) -> Proc {

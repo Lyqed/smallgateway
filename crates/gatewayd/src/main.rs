@@ -11,6 +11,7 @@
 //! Spike B), now config-driven.
 
 mod aws_auth;
+mod gcp_auth;
 mod budget;
 mod client;
 mod proxy;

@@ -146,6 +146,57 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
                 }
             }
         }
+        if let Some(auth) = &p.auth {
+            let actx = format!("provider {name:?}: auth");
+            if p.kind != ProviderKind::Vertex {
+                errs.push(format!(
+                    "{actx}: the vertex auth chain applies to vertex-kind providers \
+                     only ({name:?} is {})",
+                    p.kind.name()
+                ));
+            }
+            match (&auth.web_identity_token.file, &auth.web_identity_token.env) {
+                (Some(f), None) if !f.trim().is_empty() => {}
+                (None, Some(v)) if !v.trim().is_empty() => {}
+                _ => errs.push(format!(
+                    "{actx}.web_identity_token: exactly one of 'file' or 'env' must \
+                     be set, non-empty"
+                )),
+            }
+            if !auth.service_account_email.contains('@') {
+                errs.push(format!(
+                    "{actx}.service_account_email {:?} is not an email",
+                    auth.service_account_email
+                ));
+            }
+            for (field, v) in [
+                ("wif.project_number", &auth.wif.project_number),
+                ("wif.pool_id", &auth.wif.pool_id),
+                ("wif.provider_id", &auth.wif.provider_id),
+            ] {
+                if v.trim().is_empty() {
+                    errs.push(format!("{actx}.{field} must not be empty"));
+                }
+            }
+            if auth.scopes.is_empty() {
+                errs.push(format!("{actx}.scopes must not be empty"));
+            }
+            if !(300..=3600).contains(&auth.lifetime_secs) {
+                errs.push(format!(
+                    "{actx}.lifetime_secs must be 300-3600 (generateAccessToken's \
+                     default ceiling), got {}",
+                    auth.lifetime_secs
+                ));
+            }
+            for (field, up) in [("sts_endpoint", &auth.sts_endpoint), ("iam_endpoint", &auth.iam_endpoint)] {
+                if up.host.trim().is_empty() {
+                    errs.push(format!("{actx}.{field}.host must not be empty"));
+                }
+                if up.port == 0 {
+                    errs.push(format!("{actx}.{field}.port must be 1-65535"));
+                }
+            }
+        }
         if let Some(inject) = &p.inject {
             let ictx = format!("provider {name:?}: inject");
             for h in &inject.headers {

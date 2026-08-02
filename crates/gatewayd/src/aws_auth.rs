@@ -162,7 +162,7 @@ async fn base_credentials_for(
 
 /// Read the platform's web-identity token from its configured source.
 /// Validation guarantees exactly one of file/env is set.
-fn read_web_identity_token(src: &TokenSourceSpec) -> Result<String, String> {
+pub(crate) fn read_web_identity_token(src: &TokenSourceSpec) -> Result<String, String> {
     match (&src.file, &src.env) {
         (Some(path), _) => std::fs::read_to_string(path)
             .map(|t| t.trim().to_string())
@@ -215,26 +215,38 @@ fn sign_sts_call(
     ]
 }
 
-/// Minimal HTTP/1.1 form POST: write the request, read to EOF
-/// (`Connection: close`), split head from body. `extra_headers` carries the
-/// SigV4 header set for the signed chained hop (empty for unsigned calls);
-/// Host and Content-Type stay here so their bytes match what got signed.
+/// Minimal HTTP/1.1 form POST (STS). See [`http_post`].
 async fn http_post_form(
     endpoint: &Upstream,
     path: &str,
     body: &str,
     extra_headers: &[(String, String)],
 ) -> Result<(u16, String), String> {
+    http_post(endpoint, path, "application/x-www-form-urlencoded", body, extra_headers).await
+}
+
+/// Minimal HTTP/1.1 POST: write the request, read to EOF
+/// (`Connection: close`), split head from body. Shared by the AWS STS hops
+/// and the GCP token exchanges (`crate::gcp_auth`). `extra_headers` carries
+/// auth headers (SigV4 set, Bearer); Host and Content-Type stay here so
+/// signed bytes match what is sent.
+pub(crate) async fn http_post(
+    endpoint: &Upstream,
+    path: &str,
+    content_type: &str,
+    body: &str,
+    extra_headers: &[(String, String)],
+) -> Result<(u16, String), String> {
     let addr = format!("{}:{}", endpoint.host, endpoint.port);
     let mut stream = TcpStream::connect(&addr)
         .await
-        .map_err(|e| format!("cannot connect to STS {addr}: {e}"))?;
+        .map_err(|e| format!("cannot connect to {addr}: {e}"))?;
     let extras: String = extra_headers
         .iter()
         .map(|(k, v)| format!("{k}: {v}\r\n"))
         .collect();
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/x-www-form-urlencoded\r\n{extras}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {content_type}\r\n{extras}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len(),
     );
     stream

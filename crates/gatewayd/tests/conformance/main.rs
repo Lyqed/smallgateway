@@ -792,5 +792,91 @@ fn forced_guardrail_headers_are_signed_and_operator_wins() {
     });
 }
 
+// -------------------------------------------------- GB-8: the auth chain
+
+/// Vertex + the WIF auth chain: the gateway mints the Google credential
+/// itself (token exchange -> generateAccessToken -> Bearer) and the labels
+/// still ride the body. Both endpoints point at the one mock_gcp process.
+fn gb8_auth_cfg(vertex_port: u16, gcp_port: u16, token_file: &str) -> String {
+    format!(
+        r#"
+providers:
+  vertex-main:
+    kind: vertex
+    upstream: {{ host: 127.0.0.1, port: {vertex_port} }}
+    auth:
+      web_identity_token: {{ file: {token_file} }}
+      wif:
+        project_number: "123456789"
+        pool_id: gw-pool
+        provider_id: gw-provider
+      service_account_email: gateway@example-project.iam.gserviceaccount.com
+      sts_endpoint: {{ host: 127.0.0.1, port: {gcp_port} }}
+      iam_endpoint: {{ host: 127.0.0.1, port: {gcp_port} }}
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: {{ env: prod }}
+routes:
+  - prefix: /vertex
+    provider: vertex-main
+    labels:
+      - key: team
+        from_attribution: team
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{{"error":"unknown_route","path":"{{{{route}}}}"}}'
+"#
+    )
+}
+
+#[test]
+fn gb8_auth_chain_mints_the_bearer_and_caches_it() {
+    check("GB-8", "gb8_auth_chain_mints_the_bearer_and_caches_it", || {
+        let p = ports(3);
+        let token_file = std::env::temp_dir().join(format!("gb8-web-identity-{}.jwt", p[1]));
+        std::fs::write(&token_file, "mock-oidc-token\n").expect("write token file");
+        // The upstream REFUSES anything that is not a gateway-minted SA
+        // bearer, and mock_gcp refuses misspelled URNs / a bad audience /
+        // an integer lifetime — so a 200 proves the whole WIF chain spoke
+        // the real wire shapes, and the caller's own Authorization (below,
+        // a JWT-shaped decoy) never reached the upstream.
+        let _gcp = spawn_gcp(p[1]);
+        let _mock = spawn_mock_bearer(p[0], &demo_fixture("vertex.sse"), "vertex", "sa-token-");
+        let _gw = spawn_gatewayd(
+            &gb8_auth_cfg(p[0], p[1], token_file.to_str().unwrap()),
+            p[2],
+            "gb8auth",
+        );
+        let body = br#"{"contents":[{"parts":[{"text":"hi"}]}]}"#;
+        let headers = [
+            ("x-attr-team", "ml-research"),
+            ("content-type", "application/json"),
+            ("authorization", "Bearer caller-own-token"),
+        ];
+        let path = "/vertex/v1/models/gemini:streamGenerateContent";
+
+        let r1 = http(p[2], "POST", path, &headers, body);
+        assert_eq!(r1.status, 200, "body: {}", r1.body_text());
+        let b1 = r1.header("x-echo-bearer").expect("bearer echoed").to_string();
+        assert!(b1.starts_with("sa-token-"), "{b1}");
+        // Labels still ride the body alongside the minted auth.
+        assert_eq!(r1.header("x-echo-label-team"), Some("ml-research"));
+
+        // Second request: the SA token comes from the cache — same bearer,
+        // no second mint.
+        let r2 = http(p[2], "POST", path, &headers, body);
+        assert_eq!(r2.status, 200, "body: {}", r2.body_text());
+        assert_eq!(r2.header("x-echo-bearer"), Some(b1.as_str()), "token cache");
+        let _ = std::fs::remove_file(&token_file);
+    });
+}
+
 // GB-5 / GB-6 conformance lives in its own file (size budget).
 mod gb5;
