@@ -259,9 +259,10 @@ telemetry:                             # spans to the collector you own
 The chain above is the MOST machinery, not the default. The `sts:` block
 is optional, and its `role_arn` takes a bare string as well as a
 template, which yields three honest shapes. "Team" below is the sensible
-default, standing in for whatever key the template actually names — the
-grain (cost center, entity, user) is the org's choice, as everywhere in
-this document:
+default because teams are the taxonomy most organizations already
+attribute by; it stands in for whatever key the template actually names —
+the grain (cost center, entity, user) is the org's choice, as everywhere
+in this document:
 
 | Shape | Who holds AWS credentials | Reach into the bill |
 |---|---|---|
