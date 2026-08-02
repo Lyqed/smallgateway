@@ -406,9 +406,7 @@ verified against the config surface, not asserted:
   role's trust policy can REQUIRE the gateway's tags — `sts:TagSession`
   plus `aws:RequestTag` conditions make an untagged assumption fail at
   AWS itself. The discipline the gateway enforces becomes mandatory one
-  layer down, in the cloud's own policy engine. Ready-to-apply policy
-  JSONs for exactly this — base trust, tag-requiring target trust,
-  model-scoped permissions — are in deploy/aws/.
+  layer down, in the cloud's own policy engine.
 
 - **Account-per-entity (Organizations).** The default at
   hospital-network and multi-entity scale, where compliance boundaries
