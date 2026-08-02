@@ -14,7 +14,7 @@ use pingora::prelude::*;
 
 use gateway_core::attribution::{self, Origin, Tag};
 use gateway_core::budget::CapId;
-use gateway_core::config::{Config, RejectionTemplate, StreamingRejection, StsConfig};
+use gateway_core::config::{Config, ProviderKind, RejectionTemplate, StreamingRejection, StsConfig};
 use gateway_core::expr::EvalCtx;
 use gateway_core::jwt;
 use gateway_core::scope::{validate_session_tag_value, EffectivePolicy};
@@ -476,6 +476,177 @@ pub(crate) fn render_cut_event(
         ),
     };
     Bytes::from(rendered)
+}
+
+/// docs/11 decision 1: what the response head says the tap should be.
+#[derive(Debug, PartialEq)]
+pub(crate) enum TapPlan {
+    /// The head confirms the dialect's stream format: the streaming adapter
+    /// bound at request time stands.
+    Stream,
+    /// `application/json`: one logical message, usage inside — swap in the
+    /// bounded terminal-parse tap.
+    JsonTerminal,
+    /// A gateway metering HOLE: the response should have been meterable but
+    /// the gateway cannot read it (content-coded bytes, or a stream
+    /// content-type that mismatches the route's dialect). Loud, span-stamped
+    /// `meter_degraded` — this is the operator's under-metering signal.
+    Degraded(&'static str),
+    /// A response that legitimately carries no in-band usage to meter: a
+    /// non-2xx error path, or a content type that is not a metered dialect
+    /// (audio from TTS, text from transcription, an SDK binary). Metering is
+    /// stated absent at info level — NOT a degradation, so it never pollutes
+    /// the `meter_degraded` alert stream.
+    NotApplicable(&'static str),
+}
+
+/// The response head — status, Content-Type, Content-Encoding — is the only
+/// thing HTTP gives us to distinguish a stream from a JSON body from an
+/// error, so the tap is decided HERE, per response, never assumed from the
+/// request's `stream` flag (which providers ignore on their 4xx paths).
+/// Pure so the whole decision table is unit-testable.
+pub(crate) fn decide_tap(
+    status: u16,
+    content_type: Option<&str>,
+    content_encoding: Option<&str>,
+    kind: ProviderKind,
+) -> TapPlan {
+    // D2's defensive half: coded bytes never reach a dialect parser. The
+    // upstream leg negotiates identity, so hitting this means either the
+    // caller-signed pass-through exception or a provider ignoring the
+    // negotiation — both degrade metering loudly instead of parsing garbage.
+    let coding = content_encoding.unwrap_or("identity").trim().to_ascii_lowercase();
+    if !coding.is_empty() && coding != "identity" {
+        // The upstream leg negotiated identity, so a coded body means either
+        // the caller-signed pass-through exception or a provider ignoring the
+        // negotiation. Either way a meterable response we cannot read — a
+        // real hole, not "not applicable".
+        return TapPlan::Degraded("content-coded body; metering degraded (docs/11 D2)");
+    }
+    // Providers answer their error paths with a body (JSON) regardless of the
+    // request's stream flag; no tokens were generated, nothing is owed.
+    if !(200..300).contains(&status) {
+        return TapPlan::NotApplicable("non-2xx response; unmetered error path");
+    }
+    let ct = content_type
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let dialect_stream_ct = match kind {
+        ProviderKind::Bedrock => "application/vnd.amazon.eventstream",
+        _ => "text/event-stream",
+    };
+    if ct == dialect_stream_ct {
+        return TapPlan::Stream;
+    }
+    if ct == "application/json" {
+        return TapPlan::JsonTerminal;
+    }
+    if ct == "text/event-stream" || ct == "application/vnd.amazon.eventstream" {
+        // A stream framing that isn't THIS route's dialect: we would misparse
+        // it. A meterable response we refuse to read wrong — a hole.
+        return TapPlan::Degraded("stream content-type does not match the route's dialect");
+    }
+    // Audio (TTS), text (transcription), an SDK binary: 2xx responses that
+    // carry no in-band usage by nature. Nothing to meter, and saying so is
+    // not a degradation.
+    TapPlan::NotApplicable("content-type carries no in-band usage; metering absent")
+}
+
+#[cfg(test)]
+mod tap_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn sse_head_keeps_the_streaming_adapter() {
+        assert_eq!(
+            decide_tap(200, Some("text/event-stream; charset=utf-8"), None, ProviderKind::OpenAi),
+            TapPlan::Stream
+        );
+        assert_eq!(
+            decide_tap(
+                200,
+                Some("application/vnd.amazon.eventstream"),
+                Some("identity"),
+                ProviderKind::Bedrock
+            ),
+            TapPlan::Stream
+        );
+    }
+
+    #[test]
+    fn json_head_swaps_in_the_terminal_parse() {
+        assert_eq!(
+            decide_tap(200, Some("application/json"), None, ProviderKind::OpenAi),
+            TapPlan::JsonTerminal
+        );
+        assert_eq!(
+            decide_tap(200, Some("Application/JSON; charset=utf-8"), Some(""), ProviderKind::Vertex),
+            TapPlan::JsonTerminal
+        );
+    }
+
+    #[test]
+    fn error_responses_are_not_applicable_not_misfed() {
+        // The exact shape that used to buffer forever inside the SSE parser:
+        // a 429 JSON error answering a streaming request. NotApplicable, not
+        // Degraded — a provider error is not a gateway metering hole.
+        assert!(matches!(
+            decide_tap(429, Some("application/json"), None, ProviderKind::Anthropic),
+            TapPlan::NotApplicable(_)
+        ));
+        assert!(matches!(
+            decide_tap(301, Some("text/html"), None, ProviderKind::OpenAi),
+            TapPlan::NotApplicable(_)
+        ));
+    }
+
+    #[test]
+    fn coded_bytes_are_a_degradation() {
+        // A meterable body the gateway cannot read -> Degraded (span-stamped).
+        assert!(matches!(
+            decide_tap(200, Some("application/json"), Some("gzip"), ProviderKind::OpenAi),
+            TapPlan::Degraded(_)
+        ));
+        assert!(matches!(
+            decide_tap(200, Some("text/event-stream"), Some("br"), ProviderKind::Anthropic),
+            TapPlan::Degraded(_)
+        ));
+    }
+
+    #[test]
+    fn dialect_mismatched_stream_heads_degrade_instead_of_misparsing() {
+        assert!(matches!(
+            decide_tap(200, Some("text/event-stream"), None, ProviderKind::Bedrock),
+            TapPlan::Degraded(_)
+        ));
+        assert!(matches!(
+            decide_tap(200, Some("application/vnd.amazon.eventstream"), None, ProviderKind::OpenAi),
+            TapPlan::Degraded(_)
+        ));
+    }
+
+    #[test]
+    fn unmeterable_content_types_are_not_applicable_not_degraded() {
+        // Audio (TTS), text (transcription), an SDK binary, no content-type:
+        // 2xx responses with no in-band usage. NotApplicable so a fleet of
+        // TTS calls never floods the meter_degraded alert.
+        assert!(matches!(
+            decide_tap(200, Some("audio/mpeg"), None, ProviderKind::OpenAi),
+            TapPlan::NotApplicable(_)
+        ));
+        assert!(matches!(
+            decide_tap(200, Some("text/plain"), None, ProviderKind::OpenAi),
+            TapPlan::NotApplicable(_)
+        ));
+        assert!(matches!(
+            decide_tap(200, None, None, ProviderKind::OpenAi),
+            TapPlan::NotApplicable(_)
+        ));
+    }
 }
 
 #[cfg(test)]

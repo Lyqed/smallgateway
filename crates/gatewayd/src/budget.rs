@@ -277,6 +277,48 @@ impl NodeBudgets {
         }
     }
 
+    /// Non-streaming end-of-stream settlement: a JSON response was metered as
+    /// ONE terminal message (docs/11 D1), so no per-chunk `meter` ran during
+    /// the body. Charge the authoritative total through the SAME `meter`
+    /// enforcement path a stream uses — so GB-6 alerts fire, the cut bound is
+    /// checked, and partition is honored — then log. `charged` is the token
+    /// count to bill (authoritative input+output; the billable unit for
+    /// embeddings is input, which output-only settlement dropped). Returns the
+    /// per-cap `MeterOutcome`, so the caller can note a would-cut on a
+    /// non-streaming response (the body already completed; there is nothing
+    /// left to cut, but the crossing is real and logged).
+    ///
+    /// Unlike `settle_and_log`, this does NOT call `reconcile`: `meter`
+    /// already committed the exact authoritative number (the estimate was 0
+    /// for a JSON body — nothing to reconcile against).
+    pub fn charge_terminal_and_log(
+        &self,
+        caps: &[(CapId, CapTerms)],
+        charged: u64,
+        route: &str,
+        version: u64,
+        now_unix: u64,
+    ) -> Vec<MeterOutcome> {
+        let mut outcomes = Vec::with_capacity(caps.len());
+        for (id, terms) in caps {
+            let cap = terms.cap;
+            let outcome = self.meter(id, Some(terms), charged, now_unix);
+            let crossed = if matches!(outcome, MeterOutcome::Cut { .. }) {
+                " [OVER CAP]"
+            } else {
+                ""
+            };
+            if let Some((_, share, spent)) = self.snapshot(id) {
+                log::info!(
+                    "[budget {route}] {id} non-streaming charge={charged}; \
+                     spent={spent}/{cap} tokens (share={share}){crossed} cfg=v{version}"
+                );
+            }
+            outcomes.push(outcome);
+        }
+        outcomes
+    }
+
     /// Apply a control-plane `ShareGrant`: (re)set each named budget's share to
     /// the granted tokens without losing its running spend. A grant for a value
     /// not yet seen creates the budget at the granted share.
@@ -590,6 +632,46 @@ mod tests {
         assert_eq!(b.overspend(&id()), 700, "40_700 spent, 40_000 share");
         // And no new stream can start under partition.
         assert_eq!(b.admit(&id(), cap, 0), Verdict::Deny { cap: 100_000 });
+    }
+
+    #[test]
+    fn terminal_charge_fires_gb6_alerts_like_the_meter_path() {
+        // docs/11 D1: a non-streaming JSON body charges its whole
+        // authoritative total through the enforcement path, so GB-6 alerts
+        // fire on the crossing exactly as they do for a stream — the bypass
+        // the review found is closed.
+        let (b, sink) = budgets();
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let caps = vec![(id(), terms)];
+        // First non-streaming request bills 84k tokens: crosses the 80% soft
+        // threshold in one shot.
+        b.charge_terminal_and_log(&caps, 84_000, "r", 1, 0);
+        assert_eq!(sink.alerts().len(), 1);
+        assert!(matches!(sink.alerts()[0].kind, AlertKind::SoftThreshold { .. }));
+        // A second non-streaming request pushes past the hard cap: HardCap
+        // alert AND the outcome reports the crossing (nothing to cut on an
+        // already-complete body, but the ledger and alert are correct).
+        let outcomes = b.charge_terminal_and_log(&caps, 20_000, "r", 1, 0);
+        assert!(sink.alerts().iter().any(|a| a.kind == AlertKind::HardCap));
+        assert!(matches!(outcomes[0], MeterOutcome::Cut { .. }));
+        // And a subsequent request is denied at admission — the cap moved.
+        let t = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        assert_eq!(b.admit(&id(), Some(&t), 0), Verdict::Deny { cap: 100_000 });
+    }
+
+    #[test]
+    fn terminal_charge_honors_partition_bound() {
+        // Under partition the non-streaming charge cannot exceed the held
+        // share any more than a stream can (bounded overspend holds for
+        // stream:false traffic too).
+        let (b, _) = budgets();
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let caps = vec![(id(), terms)];
+        b.apply_shares(&[(id(), 100_000, 40_000)]);
+        b.set_partitioned(true);
+        let outcomes = b.charge_terminal_and_log(&caps, 41_000, "r", 1, 0);
+        assert!(matches!(outcomes[0], MeterOutcome::Cut { .. }), "past the 40k share -> over bound");
+        assert_eq!(b.overspend(&id()), 1_000);
     }
 
     #[test]

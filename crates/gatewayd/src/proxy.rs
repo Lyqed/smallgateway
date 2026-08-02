@@ -22,9 +22,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use log::{error, info};
-use pingora::http::RequestHeader;
+use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::prelude::*;
 
+use gateway_core::adapters::json_body::JsonBodyTap;
 use gateway_core::adapters::Adapter;
 use gateway_core::attribution::Tag;
 use gateway_core::aws::{CredentialCache, Credentials};
@@ -40,7 +41,7 @@ use gateway_wasm::{BoundModules, Hook};
 use crate::aws_auth;
 use crate::budget::NodeBudgets;
 use crate::proxy_support::{
-    caller_attrs, eval_ctx, now_unix, respond_rejection, verified_claims,
+    caller_attrs, decide_tap, eval_ctx, now_unix, respond_rejection, verified_claims, TapPlan,
 };
 use crate::reload::SharedSnapshot;
 use crate::wasm_runtime::WasmRuntime;
@@ -202,6 +203,24 @@ pub struct ReqCtx {
     /// implements on_response_event), resolved ONCE at bind — the hot loop does
     /// one bool check, not a lookup per event.
     wasm_per_event: bool,
+    /// docs/11 D1: which tap the response head selected, decided in
+    /// `upstream_response_filter`. A streaming tap charges GB-5 incrementally
+    /// per chunk and settles the estimate at the end; a JSON-terminal tap
+    /// charged nothing during the body and settles the authoritative total
+    /// through the enforcement `meter` path at the end. `None` until the
+    /// response head arrives (or on a request rejected before proxying).
+    tap: Option<TapMode>,
+}
+
+/// Which metering tap the response head bound (docs/11 D1). Distinguishes the
+/// two end-of-stream settlement paths.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TapMode {
+    /// A provider stream: GB-5 charged incrementally, estimate settled.
+    Stream,
+    /// A non-streaming JSON body: one terminal message, authoritative total
+    /// charged through the enforcement path at the end.
+    JsonTerminal,
 }
 
 impl ReqCtx {
@@ -240,6 +259,7 @@ impl ReqCtx {
             wasm_header_set: BTreeMap::new(),
             wasm_header_remove: Vec::new(),
             wasm_per_event,
+            tap: None,
         }
     }
 
@@ -794,6 +814,46 @@ impl ProxyHttp for Gateway {
             &ctx.wasm_header_remove,
         )?;
 
+        // docs/11 D2: the tap must be able to read the response bytes, so
+        // the upstream leg never invites a content coding — Accept-Encoding
+        // is overwritten to identity. Content negotiation is hop-scoped: the
+        // provider still chooses within the offer, and the client's copy of
+        // the stream is byte-identical either way, so dialect fidelity holds.
+        //
+        // The ONE case where overwriting is unsafe is a caller SigV4
+        // signature that binds Accept-Encoding: mutating it breaks
+        // verification at AWS. SigV4 is the only scheme that signs headers —
+        // its Authorization value starts `AWS4-HMAC-SHA256`. So the exact,
+        // narrow exception is: a Bedrock route the gateway does NOT
+        // re-credential (no STS chain, no minted bearer, no operator-injected
+        // Authorization) AND whose caller presented a SigV4 Authorization.
+        // A caller Bedrock API key (`Authorization: Bearer ...`) signs
+        // nothing, so its Accept-Encoding is safely stripped — checking the
+        // scheme, not merely the absence of a gateway credential, closes the
+        // caller-API-key hole the review flagged. On the true pass-through
+        // exception the response-head dispatch degrades metering loudly
+        // instead of feeding coded bytes to a parser.
+        let gateway_injected_auth = ctx
+            .forced
+            .as_ref()
+            .is_some_and(|f| f.headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("authorization")));
+        let caller_sigv4 = upstream_request
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim_start().starts_with("AWS4-HMAC-SHA256"));
+        let caller_signed_passthrough = ctx
+            .route
+            .as_ref()
+            .is_some_and(|b| matches!(b.kind, ProviderKind::Bedrock))
+            && ctx.aws.is_none()
+            && ctx.gcp_bearer.is_none()
+            && caller_sigv4
+            && !gateway_injected_auth;
+        if !caller_signed_passthrough {
+            upstream_request.insert_header("accept-encoding", "identity")?;
+        }
+
         // GB-8 auth: the gateway's own minted bearer replaces whatever
         // Authorization the caller sent — the credential is the operator's,
         // never the caller's.
@@ -867,6 +927,95 @@ impl ProxyHttp for Gateway {
                 &payload_hash,
                 extra_signed,
             )?;
+        }
+        Ok(())
+    }
+
+    /// docs/11 decision 1: the response head decides the tap. The dialect
+    /// adapter bound at request time was an assumption; the head — status +
+    /// Content-Type + Content-Encoding — is what HTTP actually says came
+    /// back. The streaming adapter stands only when the head confirms the
+    /// dialect's stream format; an `application/json` head swaps in the
+    /// bounded terminal-parse tap (the usage object is in the body); every
+    /// other head drops the tap with a LOUD log line — unmetered is a
+    /// stated outcome, never a silent zero. This is also what keeps 4xx
+    /// JSON error bodies out of the SSE parser.
+    async fn upstream_response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        let Some(binding) = ctx.route.as_ref() else {
+            return Ok(()); // rejected before proxying; nothing to dispatch
+        };
+        let kind = binding.kind;
+        let prefix = binding.prefix.clone();
+        let status = upstream_response.status.as_u16();
+        // Pingora dispatches EVERY upstream header task to this filter,
+        // including 1xx informational heads (100 Continue on an Expect:
+        // 100-continue POST, 103 Early Hints). Those are not the response —
+        // the final status arrives as its own later header task. Skipping
+        // them here is load-bearing: without the guard, a 100 would classify
+        // as a non-2xx "unmetered" head and DROP the streaming adapter bound
+        // at request time, and the real 200 that follows keeps the (now None)
+        // adapter — the whole stream would meter a silent zero (docs/11 D1).
+        if (100..200).contains(&status) {
+            return Ok(());
+        }
+        let content_type = upstream_response
+            .headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok());
+        let content_encoding = upstream_response
+            .headers
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok());
+        match decide_tap(status, content_type, content_encoding, kind) {
+            TapPlan::Stream => {
+                info!(
+                    "[tap {prefix}] response head {status} {} -> streaming adapter cfg=v{}",
+                    content_type.unwrap_or("-"),
+                    ctx.snapshot.version
+                );
+                ctx.tap = Some(TapMode::Stream);
+            }
+            TapPlan::JsonTerminal => {
+                info!(
+                    "[tap {prefix}] response head {status} application/json -> bounded \
+                     terminal parse cfg=v{}",
+                    ctx.snapshot.version
+                );
+                ctx.adapter = Some(Box::new(JsonBodyTap::new(kind)));
+                ctx.tap = Some(TapMode::JsonTerminal);
+            }
+            TapPlan::Degraded(reason) => {
+                // A meterable 2xx the gateway could not read: a real hole,
+                // stamped so the operator's under-metering alert fires.
+                error!(
+                    "[tap {prefix}] response head {status} ct={:?} enc={:?} -> UNMETERED \
+                     (degraded): {reason} cfg=v{}",
+                    content_type,
+                    content_encoding,
+                    ctx.snapshot.version
+                );
+                ctx.error = Some(format!("meter_degraded: {reason}"));
+                ctx.adapter = None;
+                ctx.tap = None;
+            }
+            TapPlan::NotApplicable(reason) => {
+                // A response with no in-band usage to meter (error path, audio,
+                // text). Stated absent at info level — NOT a degradation, so a
+                // fleet of TTS/transcription calls does not flood the alert.
+                info!(
+                    "[tap {prefix}] response head {status} ct={:?} -> metering absent: \
+                     {reason} cfg=v{}",
+                    content_type,
+                    ctx.snapshot.version
+                );
+                ctx.adapter = None;
+                ctx.tap = None;
+            }
         }
         Ok(())
     }
@@ -1044,6 +1193,52 @@ impl ProxyHttp for Gateway {
         }
 
         if end_of_stream {
+            // Terminal-parse taps emit their whole canonical sequence at
+            // finish (docs/11 D1) — drained through the same meter/count
+            // path as streamed events, BEFORE the report below is read, so
+            // a JSON body's usage object lands in the same settle. An Error
+            // event here is the tap's LOUD degradation (overflow past the
+            // bound, a body that would not parse, a shape with no readable
+            // usage): stamp the span and log at error level, matching the
+            // TapPlan::Absent path, so no unmetered 2xx is a silent zero.
+            let mut adapter = ctx.adapter.take();
+            if let Some(adapter) = adapter.as_mut() {
+                for event in adapter.finish() {
+                    if let Event::Error { code, message } = &event {
+                        // Distinguish a GATEWAY metering hole (the body could
+                        // not be read: overflow past the bound, unparseable,
+                        // an unmeterable shape) from a PROVIDER error the
+                        // upstream put in a 2xx envelope. Only the former is
+                        // `meter_degraded` — the operator's signal for
+                        // gateway-side under-metering must not fire on a
+                        // provider's own quota/validation error.
+                        let is_gateway_hole = matches!(
+                            code.as_str(),
+                            "json_body_overflow" | "json_body_parse" | "json_body_shape"
+                        );
+                        if is_gateway_hole {
+                            error!(
+                                "[tap {}] terminal parse degraded ({code}): {message} -> \
+                                 UNMETERED cfg=v{}",
+                                kind.name(),
+                                ctx.snapshot.version
+                            );
+                            ctx.error = Some(format!("meter_degraded: {code}"));
+                        } else {
+                            info!(
+                                "[tap {}] provider error in 2xx body ({code}): {message} cfg=v{}",
+                                kind.name(),
+                                ctx.snapshot.version
+                            );
+                        }
+                    }
+                    ctx.meter.observe(&event);
+                    ctx.count(&event);
+                    info!("[tap {}] {:?}", kind.name(), event);
+                }
+            }
+            ctx.adapter = adapter;
+
             let binding = ctx.route.as_ref().expect("route bound above");
             // The attribution→spend join: tags and token counts on ONE
             // line, so "who spent what" is a grep, not a correlation.
@@ -1074,19 +1269,76 @@ impl ProxyHttp for Gateway {
                 );
             }
 
-            ctx.authoritative_tokens = report.authoritative_output_tokens;
-            // GB-5: reconcile each capped spender's live estimate for THIS
-            // stream to the provider's authoritative terminal frame (docs/01
-            // Q3) and log its post-reconcile state — the billing number.
-            self.budgets.settle_and_log(
-                &ctx.caps,
-                ctx.meter.estimated_output_tokens(),
+            // The billed number is the AUTHORITATIVE total, not output alone:
+            // an embeddings body has input tokens and no output, and dropping
+            // input would let stream:false embeddings escape the cap entirely
+            // (docs/11 D1, the "input tokens parsed then dropped" ledger row).
+            // Provider-supplied counts: saturate the sum (every other budget
+            // arithmetic path saturates; an untrusted/buggy upstream sending
+            // u64::MAX must not panic in debug or wrap to a near-zero charge
+            // in release).
+            let auth_total = match (
+                report.authoritative_input_tokens,
                 report.authoritative_output_tokens,
-                &binding.prefix,
-                ctx.snapshot.version,
-                ctx.cut,
-                now_unix(),
-            );
+            ) {
+                (None, None) => None,
+                (i, o) => Some(i.unwrap_or(0).saturating_add(o.unwrap_or(0))),
+            };
+
+            match ctx.tap {
+                Some(TapMode::JsonTerminal) => {
+                    // A non-streaming body was metered as ONE terminal
+                    // message: nothing was charged during the body, so the
+                    // authoritative total goes through the SAME enforcement
+                    // `meter` path a stream uses — GB-6 alerts fire, the cut
+                    // bound is checked, partition is honored. This is what
+                    // closes the stream:false GB-5 bypass end to end. The span
+                    // records the BILLED number (input+output), so span-vs-
+                    // ledger reconciliation agrees on non-streaming spend.
+                    ctx.authoritative_tokens = auth_total;
+                    if let Some(total) = auth_total {
+                        self.budgets.charge_terminal_and_log(
+                            &ctx.caps,
+                            total,
+                            &binding.prefix,
+                            ctx.snapshot.version,
+                            now_unix(),
+                        );
+                    } else if !ctx.caps.is_empty() {
+                        // A parsed 2xx JSON body on a CAPPED route with no
+                        // authoritative usage read is a metering hole, not a
+                        // free request: stamp the span so it is never a silent
+                        // zero. (Usage-free bodies on uncapped routes — a
+                        // models list, say — are legitimately nothing to bill.)
+                        error!(
+                            "[tap {}] non-streaming 2xx on a capped route carried no \
+                             authoritative usage -> UNMETERED cfg=v{}",
+                            kind.name(),
+                            ctx.snapshot.version
+                        );
+                        ctx.error
+                            .get_or_insert_with(|| "meter_degraded: no_usage_on_capped_route".into());
+                    }
+                }
+                _ => {
+                    // Streaming path: GB-5 was charged incrementally per
+                    // chunk; reconcile the live estimate to the authoritative
+                    // terminal frame (docs/01 Q3) and log the billing number.
+                    // The span records the authoritative output the stream
+                    // billed (streams are output-dominated; the input-token
+                    // ledger row is tracked separately in docs/11).
+                    ctx.authoritative_tokens = report.authoritative_output_tokens;
+                    self.budgets.settle_and_log(
+                        &ctx.caps,
+                        ctx.meter.estimated_output_tokens(),
+                        report.authoritative_output_tokens,
+                        &binding.prefix,
+                        ctx.snapshot.version,
+                        ctx.cut,
+                        now_unix(),
+                    );
+                }
+            }
         }
         Ok(None)
     }
