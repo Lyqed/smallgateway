@@ -525,6 +525,25 @@ fn inject_template_on_unknown_key_is_rejected() {
 }
 
 #[test]
+fn inject_on_passthrough_bedrock_is_rejected() {
+    // Shape 1 (no sts) is caller-signed: rewriting the body would break the
+    // caller's payload hash at AWS, and forced headers would land outside
+    // the signed set. The loader refuses the combination outright.
+    let yaml = base_yaml().replace(
+        "    kind: openai\n    upstream: { host: 127.0.0.1, port: 6190 }",
+        concat!(
+            "    kind: bedrock\n",
+            "    upstream: { host: 127.0.0.1, port: 6190 }\n",
+            "    inject:\n",
+            "      headers:\n",
+            "        - { name: x-amzn-bedrock-guardrailidentifier, value: gr-abc }",
+        ),
+    );
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("requires sts")), "{errs:?}");
+}
+
+#[test]
 fn inject_reserved_headers_are_rejected() {
     for name in ["authorization", "Host", "x-amz-date", "content-length"] {
         let yaml = inject_yaml(&format!(

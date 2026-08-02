@@ -141,6 +141,54 @@ rollback; the diff (`team=acme, 500k tokens/day, alert at 80`) is the
 change-control gate. Worked Argo CD and Flux setups, with the
 CRD-before-CR ordering handled, are in deploy/gitops/.
 
+## 7. Call it from code
+
+The gateway is a proxy, not a format: each route speaks the DIALECT of
+the provider behind it, and the only thing every client adds is the
+attribution contract — `x-attr-*` headers, or a fleet JWT whose claims
+prove the keys. There is deliberately no SDK of ours.
+
+**Recommended for OpenAI-dialect routes** (openai kind — OpenAI itself,
+vLLM, Ollama): the OpenAI SDK with `base_url`, the same five lines
+every team already writes:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://gateway.internal/llm/v1",
+    api_key=FLEET_JWT,                        # auth.jwt fleets; else any string
+    default_headers={"x-attr-team": "acme"},  # the attribution contract
+)
+r = client.chat.completions.create(model="llama-3.3-70b", messages=[...])
+```
+
+**Recommended for Bedrock routes behind shapes 2/3**: plain HTTP — no
+AWS SDK at all, because the gateway holds the credential and signs. The
+JWT's claims carry the attribution the role chain and tags need:
+
+```python
+import requests
+
+r = requests.post(
+    "https://gateway.internal/bedrock/model/anthropic.claude-sonnet-4/converse",
+    headers={"Authorization": f"Bearer {FLEET_JWT}"},
+    json={"messages": [{"role": "user", "content": [{"text": "Hello"}]}]},
+)
+```
+
+Shape 1 pass-through is the one exception: the caller signs, so it is
+boto3 as usual with `endpoint_url` pointed at the gateway. Vertex with
+WIF is the Bedrock story again — POST the native `generateContent` body,
+no Google SDK, no key file.
+
+One boundary, stated: the gateway does NOT translate formats between
+providers — an OpenAI-format request is not rewritten into Converse or
+`generateContent`. If one contract for every backend is what you want, a
+translation layer (LiteLLM proxy et al.) composes in FRONT of the
+gateway; enforcement, attribution, and the invoice join stay here,
+where the credential is.
+
 ---
 
 # Real-world gateways, complete
@@ -171,7 +219,7 @@ org's choice, as everywhere in this document.
 | Shape | Who holds AWS credentials | Reach into the bill |
 |---|---|---|
 | 1. Pass-through — no `sts:` | Every caller keeps its own | Only what callers' own roles and tags already do |
-| 2. One static role + session tags | The gateway; ONE role | Gateway-guaranteed: tags → CUR and CloudTrail |
+| 2. One static role + session tags — **recommended** | The gateway; ONE role | Gateway-guaranteed: tags → CUR and CloudTrail |
 | 3. Templated role chain | The gateway; a role per team | Tags, plus IAM-level separation per team |
 
 ### Shape 1 — pass-through: the gateway enforces, callers keep their identities
@@ -190,12 +238,27 @@ providers:
 Why: zero credential centralization. The gateway can never spend as
 anyone — a gateway compromise is a policy incident, not an identity
 incident — and teams that already carry scoped IAM roles keep them.
-Every check still fires: the 428, the caps, the model gate, the spans.
-The honest trade: the gateway writes no session tags in this shape, so
-the CUR join depends on the role-per-team hygiene the org already has;
-the gateway's own token ledger lives in its spans and logs.
 
-### Shape 2 — one static role, tags carry the who
+And pass-through does NOT mean control-through: every control that
+reads without rewriting still fires exactly as in the other shapes —
+the attribution 428, the model allow-list, token caps and their webhook
+alerts, the OTLP spans. What this shape gives up is only the controls
+that must MODIFY the request: session tags and forced guardrail
+injection, because a caller-signed request cannot be rewritten without
+breaking its signature. The loader enforces the boundary — `inject:`
+on a bedrock provider without `sts:` is refused at load. The remaining
+trade: with no session tags, the CUR join depends on the role-per-team
+hygiene the org already has; the gateway's own token ledger lives in
+its spans and logs.
+
+### Shape 2 — one static role, tags carry the who (recommended)
+
+**Recommended** for a first fleet, and the right long-term shape for
+most: it is the most invoice per unit of IAM — one role to build, zero
+keys for callers, and the who is gateway-guaranteed on every line. Step
+down to shape 1 only if centralizing credentials is a hard no; step up
+to shape 3 only when the bill's separation must ALSO become a
+permission boundary.
 
 The full config of shape 3 below, with its `sts:` block reduced to a
 bare role — no template, no allow list:
@@ -402,6 +465,11 @@ What this buys: the gateway MINTS the Google credential itself (callers
 hold no GCP keys), spend lands labeled in the BigQuery billing export,
 and only EU locations are reachable.
 
+**Recommended: the WIF block as shown.** With `auth:` absent the
+caller's own bearer forwards unchanged (the pass-through shape exists
+here too), but WIF removes long-lived keys from every client at once —
+which is why it is the default to reach for.
+
 ```yaml
 # gateway.yaml — an EU-resident clinical fleet, Vertex
 providers:
@@ -459,8 +527,11 @@ A company running vLLM, Ollama, or TGI on its own GPUs is not an edge
 case of this design — in one way it is the cleanest case. Every serious
 local server speaks the OpenAI dialect, so the provider block is two
 lines: no role chain, no WIF, no cloud identity to mint. GB-7 and GB-8
-simply have nothing to reach, because there is no cloud bill. Air-gapped
-orgs run the single-binary file mode on a box next to the model server.
+simply have nothing to reach, because there is no cloud bill.
+
+**Recommended:** the Kubernetes path for a shared pool; the
+single-binary file mode when the pool is one box or the network is
+air-gapped — same config, no cluster required.
 
 What changes is what the numbers MEAN. With Bedrock or Vertex the scarce
 thing is money and the authoritative record is the invoice. With a local
@@ -592,6 +663,11 @@ rule, fuel- and epoch-sandboxed (a buggy regex cannot hang the stream),
 and breakable-glass (SIGUSR1 disables modules for a bounded TTL). Honest
 cost, measured: ~12.7µs per event with fresh-instance isolation — which
 is why per-event hooks are opt-in per fleet rather than a default.
+
+**Recommended:** leave `per_event_hooks` off until a per-token judgment
+on the response stream is the actual requirement. `on_request` and
+`on_response_end` hooks are always available and cost nothing on the
+streaming path.
 
 ---
 

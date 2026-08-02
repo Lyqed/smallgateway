@@ -217,6 +217,16 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
         }
         if let Some(inject) = &p.inject {
             let ictx = format!("provider {name:?}: inject");
+            // A pass-through bedrock request is caller-SIGNED: rewriting its
+            // body breaks the caller's payload hash at AWS, and forced
+            // headers land outside the signed set where the upstream may
+            // ignore them. Injection needs the gateway to own the signature.
+            if p.kind == ProviderKind::Bedrock && p.sts.is_none() {
+                errs.push(format!(
+                    "{ictx}: forced injection on a bedrock provider requires sts — \
+                     a pass-through request is caller-signed and cannot be modified"
+                ));
+            }
             for h in &inject.headers {
                 let hctx = format!("{ictx}: header {:?}", h.name);
                 if h.name.trim().is_empty() || h.name.contains(char::is_whitespace) {
