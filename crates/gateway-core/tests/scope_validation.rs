@@ -587,6 +587,54 @@ fn inject_empty_path_segment_is_rejected() {
 
 // ---- GB-5 windows + alert_at ----
 
+// ---- Dedicated refusal templates (value_not_allowed / cap_exceeded) ----
+
+#[test]
+fn dedicated_refusal_templates_compose_and_absent_means_fallback() {
+    let yaml = base_yaml().replace(
+        "rejections:",
+        concat!(
+            "rejections:\n",
+            "  value_not_allowed:\n",
+            "    status: 403\n",
+            "    content_type: application/json\n",
+            "    body: '{\"key\":\"{{key}}\",\"value\":\"{{value}}\",\"route\":\"{{route}}\"}'\n",
+            "  cap_exceeded:\n",
+            "    status: 429\n",
+            "    content_type: application/json\n",
+            "    body: '{\"who\":\"{{key}}\",\"spent\":\"{{spend}}\",\"cap\":\"{{cap}}\"}'",
+        ),
+    );
+    let cfg = Config::from_yaml(&yaml).unwrap();
+    let policy = cfg.routes[0].policy();
+    assert_eq!(policy.value_not_allowed.as_ref().unwrap().status, 403);
+    assert_eq!(policy.cap_exceeded.as_ref().unwrap().status, 429);
+
+    // Absent, both stay None: the enforcement sites fall back to
+    // missing_attribution (exercised end-to-end in conformance).
+    let plain = Config::from_yaml(&base_yaml()).unwrap();
+    let policy = plain.routes[0].policy();
+    assert!(policy.value_not_allowed.is_none());
+    assert!(policy.cap_exceeded.is_none());
+}
+
+#[test]
+fn dedicated_templates_refuse_foreign_placeholders() {
+    // {{value}} belongs to value_not_allowed; cap_exceeded must refuse it.
+    let yaml = base_yaml().replace(
+        "rejections:",
+        concat!(
+            "rejections:\n",
+            "  cap_exceeded:\n",
+            "    status: 429\n",
+            "    content_type: application/json\n",
+            "    body: '{\"v\":\"{{value}}\"}'",
+        ),
+    );
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("cap_exceeded")), "{errs:?}");
+}
+
 #[test]
 fn spend_cap_window_and_alert_at_parse() {
     let yaml = base_yaml().replace(

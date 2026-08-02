@@ -79,6 +79,11 @@ pub struct EffectivePolicy {
     pub unknown_route: RejectionTemplate,
     /// The model-gate refusal body (operator's, or the built-in default).
     pub model_not_allowed: RejectionTemplate,
+    /// Allow-list refusal body; `None` = `missing_attribution` speaks.
+    pub value_not_allowed: Option<RejectionTemplate>,
+    /// Budget refusal body (admission + the mid-stream terminal event via
+    /// its `streaming:` half); `None` = `missing_attribution` speaks.
+    pub cap_exceeded: Option<RejectionTemplate>,
 }
 
 impl EffectivePolicy {
@@ -146,6 +151,8 @@ struct Layer {
     missing_attribution: Option<RejectionTemplate>,
     unknown_route: Option<RejectionTemplate>,
     model_not_allowed: Option<RejectionTemplate>,
+    value_not_allowed: Option<RejectionTemplate>,
+    cap_exceeded: Option<RejectionTemplate>,
 }
 
 enum LabelItem {
@@ -687,6 +694,8 @@ fn compile_layer(
         missing_attribution: rejections.and_then(|o| o.missing_attribution.clone()),
         unknown_route: rejections.and_then(|o| o.unknown_route.clone()),
         model_not_allowed: rejections.and_then(|o| o.model_not_allowed.clone()),
+        value_not_allowed: rejections.and_then(|o| o.value_not_allowed.clone()),
+        cap_exceeded: rejections.and_then(|o| o.cap_exceeded.clone()),
     }
 }
 
@@ -817,6 +826,8 @@ fn compose(
         .model_not_allowed
         .clone()
         .unwrap_or_else(crate::config::default_model_not_allowed);
+    let mut value_not_allowed = base.value_not_allowed.clone();
+    let mut cap_exceeded = base.cap_exceeded.clone();
     for layer in chain {
         if let Some(t) = &layer.missing_attribution {
             missing_attribution = t.clone();
@@ -826,6 +837,12 @@ fn compose(
         }
         if let Some(t) = &layer.model_not_allowed {
             model_not_allowed = t.clone();
+        }
+        if let Some(t) = &layer.value_not_allowed {
+            value_not_allowed = Some(t.clone());
+        }
+        if let Some(t) = &layer.cap_exceeded {
+            cap_exceeded = Some(t.clone());
         }
     }
 
@@ -840,6 +857,8 @@ fn compose(
         missing_attribution,
         unknown_route,
         model_not_allowed,
+        value_not_allowed,
+        cap_exceeded,
     }
 }
 

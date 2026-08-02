@@ -265,8 +265,14 @@ pub(crate) fn normalize_and_rewrite(
 /// loudly logged — not the operator's body).
 pub(crate) enum Gb7Failure {
     /// A session tag could not be resolved: reject with the GB-4 template,
-    /// naming `key`.
-    Reject { key: String, reason: String },
+    /// naming `key`. `value` carries the refused VALUE when the failure is
+    /// the allow-list gate (a value outside the operator's closed set) — the
+    /// signal that routes the refusal to the `value_not_allowed` template.
+    Reject {
+        key: String,
+        value: Option<String>,
+        reason: String,
+    },
     /// The AssumeRole exchange itself failed: a 502.
     Exchange(String),
 }
@@ -280,17 +286,19 @@ pub(crate) enum Gb7Failure {
 pub(crate) fn resolve_role_identity(
     sts: &StsConfig,
     tags: &[Tag],
-) -> std::result::Result<(String, String), (String, String)> {
+) -> std::result::Result<(String, String), (String, Option<String>, String)> {
     if let Some(allow) = &sts.allow {
         let tag = tags.iter().find(|t| t.key == allow.key).ok_or_else(|| {
             (
                 allow.key.clone(),
+                None,
                 format!("attribution key {:?} did not resolve", allow.key),
             )
         })?;
         if !allow.values.iter().any(|v| v == &tag.value) {
             return Err((
                 allow.key.clone(),
+                Some(tag.value.clone()),
                 format!(
                     "value {:?} is not in the operator's allow-list for {:?}",
                     tag.value, allow.key
@@ -298,19 +306,19 @@ pub(crate) fn resolve_role_identity(
             ));
         }
     }
-    let role_arn = render_role_material(&sts.role_arn, "role_arn", sts, tags)?;
+    let role_arn = render_role_material(&sts.role_arn, "role_arn", sts, tags)
+        .map_err(|(k, r)| (k, None, r))?;
     if !role_arn.starts_with("arn:") || !role_arn.contains(":role/") {
         return Err((
             "role_arn".to_string(),
+            None,
             format!("rendered role ARN {role_arn:?} is not an IAM role ARN"),
         ));
     }
-    let session_name = gateway_core::aws::sanitize_session_name(&render_role_material(
-        &sts.session_name,
-        "session_name",
-        sts,
-        tags,
-    )?);
+    let session_name = gateway_core::aws::sanitize_session_name(
+        &render_role_material(&sts.session_name, "session_name", sts, tags)
+            .map_err(|(k, r)| (k, None, r))?,
+    );
     Ok((role_arn, session_name))
 }
 
@@ -409,10 +417,10 @@ pub(crate) async fn resolve_gb7_credentials(
     now: u64,
 ) -> std::result::Result<(gateway_core::aws::Credentials, String, Vec<(String, String)>, bool), Gb7Failure>
 {
-    let (role_arn, session_name) =
-        resolve_role_identity(sts, tags).map_err(|(key, reason)| Gb7Failure::Reject { key, reason })?;
+    let (role_arn, session_name) = resolve_role_identity(sts, tags)
+        .map_err(|(key, value, reason)| Gb7Failure::Reject { key, value, reason })?;
     let session_tags = resolve_session_tags(sts, tags)
-        .map_err(|(key, reason)| Gb7Failure::Reject { key, reason })?;
+        .map_err(|(key, reason)| Gb7Failure::Reject { key, value: None, reason })?;
     info!(
         "[gb7] role identity: role={role_arn} session_name={session_name}"
     );
@@ -522,7 +530,10 @@ mod role_identity_tests {
         let tags = [tag("team", "intruder", Origin::Caller)];
         let err = resolve_role_identity(&sts, &tags).unwrap_err();
         assert_eq!(err.0, "team");
-        assert!(err.1.contains("allow-list"), "{}", err.1);
+        // The refused VALUE rides the error — it routes the refusal to the
+        // dedicated value_not_allowed template and fills {{value}}.
+        assert_eq!(err.1.as_deref(), Some("intruder"));
+        assert!(err.2.contains("allow-list"), "{}", err.2);
     }
 
     #[test]
@@ -545,7 +556,7 @@ mod role_identity_tests {
         let sts = sts("arn:aws:iam::1:role/bedrock-{{team}}", "gatewayd", None);
         let tags = [tag("team", "ml", Origin::Caller)];
         let err = resolve_role_identity(&sts, &tags).unwrap_err();
-        assert!(err.1.contains("caller-origin"), "{}", err.1);
+        assert!(err.2.contains("caller-origin"), "{}", err.2);
     }
 
     #[test]
@@ -554,7 +565,7 @@ mod role_identity_tests {
         let tags = [tag("cost_center", "research", Origin::Assigned)];
         let err = resolve_role_identity(&sts, &tags).unwrap_err();
         assert_eq!(err.0, "ghost");
-        assert!(err.1.contains("did not resolve"), "{}", err.1);
+        assert!(err.2.contains("did not resolve"), "{}", err.2);
     }
 
     #[test]
@@ -562,7 +573,7 @@ mod role_identity_tests {
         let sts = sts("{{cost_center}}", "gatewayd", None);
         let tags = [tag("cost_center", "research", Origin::Assigned)];
         let err = resolve_role_identity(&sts, &tags).unwrap_err();
-        assert!(err.1.contains("not an IAM role ARN"), "{}", err.1);
+        assert!(err.2.contains("not an IAM role ARN"), "{}", err.2);
     }
 
     #[test]
@@ -574,6 +585,7 @@ mod role_identity_tests {
         );
         let err = resolve_role_identity(&sts, &[]).unwrap_err();
         assert_eq!(err.0, "team");
-        assert!(err.1.contains("did not resolve"), "{}", err.1);
+        assert_eq!(err.1, None);
+        assert!(err.2.contains("did not resolve"), "{}", err.2);
     }
 }

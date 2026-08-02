@@ -655,6 +655,18 @@ pub struct Rejections {
     /// with a default, because the gate itself is opt-in per scope.
     #[serde(default)]
     pub model_not_allowed: Option<RejectionTemplate>,
+    /// Allow-list refusal: a resolved attribution VALUE outside the
+    /// operator's closed set (`sts.allow`). Placeholders: `{{key}}`,
+    /// `{{value}}` (the refused value), `{{route}}`. OPTIONAL: absent,
+    /// `missing_attribution` speaks for this refusal too.
+    #[serde(default)]
+    pub value_not_allowed: Option<RejectionTemplate>,
+    /// Budget refusal (GB-5) — at admission, and mid-stream through its
+    /// `streaming:` half (the terminal event of a cut). Placeholders:
+    /// `{{key}}`, `{{route}}`, `{{cap}}`, `{{spend}}` (tokens). OPTIONAL:
+    /// absent, `missing_attribution` speaks with the same placeholders.
+    #[serde(default)]
+    pub cap_exceeded: Option<RejectionTemplate>,
 }
 
 /// OTLP telemetry export. Deliberately SDK-free: the exporter speaks
@@ -736,6 +748,10 @@ pub struct RejectionOverrides {
     pub unknown_route: Option<RejectionTemplate>,
     #[serde(default)]
     pub model_not_allowed: Option<RejectionTemplate>,
+    #[serde(default)]
+    pub value_not_allowed: Option<RejectionTemplate>,
+    #[serde(default)]
+    pub cap_exceeded: Option<RejectionTemplate>,
 }
 
 // ------------------------------------------------- model gate (pure helpers)

@@ -400,6 +400,22 @@ pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<Stri
     if let Some(t) = &r.model_not_allowed {
         validate_template(t, &format!("{ctx}.model_not_allowed"), &["model", "route"], errs);
     }
+    if let Some(t) = &r.value_not_allowed {
+        validate_template(
+            t,
+            &format!("{ctx}.value_not_allowed"),
+            &["key", "value", "route"],
+            errs,
+        );
+    }
+    if let Some(t) = &r.cap_exceeded {
+        validate_template(
+            t,
+            &format!("{ctx}.cap_exceeded"),
+            &["key", "route", "cap", "spend"],
+            errs,
+        );
+    }
 }
 
 pub(crate) fn validate_rejection_overrides(o: &RejectionOverrides, ctx: &str, errs: &mut Vec<String>) {
@@ -416,6 +432,22 @@ pub(crate) fn validate_rejection_overrides(o: &RejectionOverrides, ctx: &str, er
     }
     if let Some(t) = &o.model_not_allowed {
         validate_template(t, &format!("{ctx}.model_not_allowed"), &["model", "route"], errs);
+    }
+    if let Some(t) = &o.value_not_allowed {
+        validate_template(
+            t,
+            &format!("{ctx}.value_not_allowed"),
+            &["key", "value", "route"],
+            errs,
+        );
+    }
+    if let Some(t) = &o.cap_exceeded {
+        validate_template(
+            t,
+            &format!("{ctx}.cap_exceeded"),
+            &["key", "route", "cap", "spend"],
+            errs,
+        );
     }
 }
 

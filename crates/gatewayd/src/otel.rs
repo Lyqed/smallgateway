@@ -48,6 +48,9 @@ pub struct SpanRecord {
     pub tokens_authoritative: Option<u64>,
     pub cut: bool,
     pub config_version: u64,
+    /// Infra-failure detail (e.g. the STS error code on a 502) — the span's
+    /// answer to "why did this request fail", debuggable from the collector.
+    pub error: Option<String>,
 }
 
 /// The hot-path handle: a bounded try_send plus a dropped counter.
@@ -184,6 +187,9 @@ pub fn otlp_traces_json(
             if let Some(auth_tokens) = s.tokens_authoritative {
                 attributes.push(int_attr("gateway.tokens.authoritative", auth_tokens));
             }
+            if let Some(error) = &s.error {
+                attributes.push(str_attr("gateway.error", error));
+            }
             for (key, value) in &s.attribution {
                 attributes.push(str_attr(&format!("gateway.attribution.{key}"), value));
             }
@@ -267,6 +273,7 @@ mod tests {
             tokens_authoritative: Some(40),
             cut: false,
             config_version: 7,
+            error: Some("sts: STS returned 403 code=AccessDenied".into()),
         };
         let mut seq = 0;
         let v = otlp_traces_json(&cfg(), "node-1", &[span], &mut seq);
@@ -282,6 +289,10 @@ mod tests {
         assert_eq!(find("gateway.attribution.ward").unwrap()["value"]["stringValue"], "peds-3");
         assert_eq!(find("gateway.tokens.authoritative").unwrap()["value"]["intValue"], "40");
         assert_eq!(find("http.response.status_code").unwrap()["value"]["intValue"], "200");
+        assert_eq!(
+            find("gateway.error").unwrap()["value"]["stringValue"],
+            "sts: STS returned 403 code=AccessDenied"
+        );
         assert_eq!(s["status"]["code"], 1);
     }
 
@@ -300,6 +311,7 @@ mod tests {
             tokens_authoritative: None,
             cut: false,
             config_version: 1,
+            error: None,
         };
         let mut seq = 0;
         let v = otlp_traces_json(&cfg(), "n", &[mk(5), mk(5)], &mut seq);

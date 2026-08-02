@@ -145,8 +145,21 @@ CRD-before-CR ordering handled, are in deploy/gitops/.
 
 The gateway is a proxy, not a format: each route speaks the DIALECT of
 the provider behind it, and the only thing every client adds is the
-attribution contract — `x-attr-*` headers, or a fleet JWT whose claims
-prove the keys. There is deliberately no SDK of ours.
+attribution contract — the answer to "who is this spend for". There is
+deliberately no SDK of ours.
+
+If you are an app developer and this doc arrived from your platform
+team: the contract is one of two things, and they picked which.
+
+- **`x-attr-*` headers** — plain strings naming who the spend belongs
+  to (`x-attr-team: acme`). No token involved; the gateway checks and
+  pins them per its config.
+- **`GATEWAY_TOKEN`** — a JWT the gateway VERIFIES (fleets configured
+  with `auth.jwt`). It is not an OpenAI key and not a cloud
+  credential. It comes from your org's identity provider, or from the
+  team that runs the gateway — in either case, from whoever sent you
+  this doc — and its claims prove the attribution, so you cannot
+  mislabel your own spend.
 
 **Recommended for OpenAI-dialect routes** (openai kind — OpenAI itself,
 vLLM, Ollama): the OpenAI SDK with `base_url`, the same five lines
@@ -157,7 +170,10 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://gateway.internal/llm/v1",
-    api_key=FLEET_JWT,                        # auth.jwt fleets; else any string
+    # Header-attributed fleet: any string works here unless the
+    # UPSTREAM checks it (on pass-through providers this is your real
+    # provider key, forwarded). auth.jwt fleets: the GATEWAY_TOKEN.
+    api_key=GATEWAY_TOKEN,
     default_headers={"x-attr-team": "acme"},  # the attribution contract
 )
 r = client.chat.completions.create(model="llama-3.3-70b", messages=[...])
@@ -165,14 +181,14 @@ r = client.chat.completions.create(model="llama-3.3-70b", messages=[...])
 
 **Recommended for Bedrock routes behind shapes 2/3**: plain HTTP — no
 AWS SDK at all, because the gateway holds the credential and signs. The
-JWT's claims carry the attribution the role chain and tags need:
+token's claims carry the attribution the role chain and tags need:
 
 ```python
 import requests
 
 r = requests.post(
     "https://gateway.internal/bedrock/model/anthropic.claude-sonnet-4/converse",
-    headers={"Authorization": f"Bearer {FLEET_JWT}"},
+    headers={"Authorization": f"Bearer {GATEWAY_TOKEN}"},
     json={"messages": [{"role": "user", "content": [{"text": "Hello"}]}]},
 )
 ```
@@ -368,6 +384,10 @@ rejections:
     status: 403
     content_type: application/json
     body: '{"error":"model_not_allowed","asked":"{{model}}","route":"{{route}}","help":"This fleet runs Claude models only."}'
+  cap_exceeded:                        # optional; absent, missing_attribution speaks
+    status: 429
+    content_type: application/json
+    body: '{"error":"token_budget_exhausted","who":"{{key}}","spent":"{{spend}}","cap":"{{cap}}"}'
 
 alerts:                                # WHO is told: this fleet's receiver
   webhook:
@@ -695,6 +715,13 @@ happen, and one more when configured:
 The addressing is the point: the webhook lives in the fleet's own config,
 so the alert reaches the team that owns the rules and the budget — not a
 central NOC that has to re-route it.
+
+The refusal itself can carry a dedicated voice, too: an optional
+`cap_exceeded` template (`{{cap}}`/`{{spend}}`, plus a `streaming:` half
+for the terminal event of a mid-generation cut) and `value_not_allowed`
+for the allow-list gate (`{{value}}`, the refused value). Absent,
+`missing_attribution` speaks for both — nothing breaks by not writing
+them.
 
 ## A WASM module a client actually asked for: the MRN tripwire
 

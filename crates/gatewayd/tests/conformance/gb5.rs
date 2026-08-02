@@ -99,6 +99,67 @@ fn gb5_value_over_its_cap_is_rejected_at_request_start_with_the_operator_templat
 }
 
 #[test]
+fn gb5_cap_refusal_and_cut_wear_the_dedicated_cap_exceeded_voice() {
+    check(
+        "GB-5",
+        "gb5_cap_refusal_and_cut_wear_the_dedicated_cap_exceeded_voice",
+        || {
+            let p = ports(2);
+            // Same 3-token cap as the cut test, plus a DEDICATED cap_exceeded
+            // template (429, its own body, its own streaming event). Both the
+            // mid-stream cut and the admission refusal must speak with it —
+            // and a plain missing-key refusal must still speak
+            // missing_attribution, proving the templates stay separate.
+            let _mock = spawn_mock(p[0], &spike_fixture("openai.sse"), "openai", false);
+            let cfg = budget_cfg(p[0], 3)
+                + concat!(
+                    "  cap_exceeded:\n",
+                    "    status: 429\n",
+                    "    content_type: application/json\n",
+                    "    body: '{\"error\":\"token_budget_exhausted\",\"who\":\"{{key}}\",\"cap\":\"{{cap}}\",\"spend\":\"{{spend}}\"}'\n",
+                    "    streaming:\n",
+                    "      event: cap\n",
+                    "      data: '{\"error\":\"cap_cut\",\"who\":\"{{key}}\"}'\n",
+                );
+            let _gw = spawn_gatewayd(&cfg, p[1], "gb5v");
+
+            // First stream crosses the cap mid-generation: cut with the
+            // DEDICATED terminal event, not missing_attribution's.
+            let first = http(
+                p[1],
+                "POST",
+                "/openai/v1/chat",
+                &[("x-attr-team", "ml-research")],
+                b"{}",
+            );
+            assert_eq!(first.status, 200);
+            let stream = first.body_text();
+            assert!(stream.contains("event: cap"), "dedicated event name: {stream}");
+            assert!(stream.contains("cap_cut"), "dedicated event body: {stream}");
+            assert!(!stream.contains("budget_exhausted"), "not the fallback voice: {stream}");
+
+            // Admission refusal for the exhausted value: the dedicated 429.
+            let second = http(
+                p[1],
+                "POST",
+                "/openai/v1/chat",
+                &[("x-attr-team", "ml-research")],
+                b"{}",
+            );
+            assert_eq!(second.status, 429, "dedicated status: {}", second.body_text());
+            let body = second.body_text();
+            assert!(body.contains("token_budget_exhausted"), "{body}");
+            assert!(body.contains(r#""cap":"3""#), "cap named: {body}");
+
+            // A missing attribution key still speaks missing_attribution.
+            let missing = http(p[1], "POST", "/openai/v1/chat", &[], b"{}");
+            assert_eq!(missing.status, 428);
+            assert!(missing.body_text().contains("budget_or_attribution"));
+        },
+    );
+}
+
+#[test]
 fn gb5_budget_exhausted_mid_stream_cuts_with_the_gb4_terminal_event() {
     check(
         "GB-5",

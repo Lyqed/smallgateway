@@ -165,6 +165,9 @@ pub struct ReqCtx {
     /// captured at stream end, for the request span.
     start_unix_nanos: u64,
     authoritative_tokens: Option<u64>,
+    /// Infra-failure detail for the request span (e.g. the STS error on a
+    /// 502) — set at the failure site, carried out through `logging`.
+    error: Option<String>,
     /// Vertex location routing: the per-request derived upstream host
     /// (multi-region -> base host, regional -> `<loc>-<base>`), used for
     /// the peer address, SNI, and the Host header.
@@ -221,6 +224,7 @@ impl ReqCtx {
             vertex_host: None,
             start_unix_nanos: crate::otel::now_unix_nanos(),
             authoritative_tokens: None,
+            error: None,
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
@@ -383,7 +387,7 @@ impl ProxyHttp for Gateway {
                 );
                 respond_rejection(
                     session,
-                    &policy.missing_attribution,
+                    policy.cap_exceeded.as_ref().unwrap_or(&policy.missing_attribution),
                     &[
                         ("key", d.id.to_string().as_str()),
                         ("route", route.prefix.as_str()),
@@ -451,23 +455,42 @@ impl ProxyHttp for Gateway {
                     );
                     ctx.aws = Some(AwsSigning { creds, region });
                 }
-                Err(Gb7Failure::Reject { key, reason }) => {
+                Err(Gb7Failure::Reject { key, value, reason }) => {
                     info!(
                         "[req] {method} {path} -> route={} (rejecting: session tag: {reason}) cfg=v{v}",
                         route.prefix
                     );
+                    // The allow-list gate (a refused VALUE) gets its dedicated
+                    // template when the operator wrote one; every other tag
+                    // failure — and the fallback — is missing_attribution.
+                    let template = match value {
+                        Some(_) => policy
+                            .value_not_allowed
+                            .as_ref()
+                            .unwrap_or(&policy.missing_attribution),
+                        None => &policy.missing_attribution,
+                    };
+                    let value = value.unwrap_or_default();
                     respond_rejection(
                         session,
-                        &policy.missing_attribution,
-                        &[("key", key.as_str()), ("route", route.prefix.as_str())],
+                        template,
+                        &[
+                            ("key", key.as_str()),
+                            ("value", value.as_str()),
+                            ("route", route.prefix.as_str()),
+                        ],
                     )
                     .await?;
                     return Ok(true);
                 }
                 Err(Gb7Failure::Exchange(e)) => {
                     // A minted-identity failure is a 502 (infra), loudly logged
-                    // — never the operator's GB-4 body.
+                    // — never the operator's GB-4 body. The error (with the
+                    // STS code when one was parsed) also rides the request
+                    // span, so the first live bring-up is debuggable from the
+                    // fleet's own telemetry.
                     error!("[gb7 {}] credential exchange FAILED: {e} cfg=v{v}", route.prefix);
+                    ctx.error = Some(format!("sts: {}", e.chars().take(160).collect::<String>()));
                     return Err(Error::explain(
                         HTTPStatus(502),
                         format!("sts credential exchange failed: {e}"),
@@ -977,11 +1000,14 @@ impl ProxyHttp for Gateway {
         // GB-4 terminal-event machinery: replace the outgoing chunk with the
         // operator's streaming template and latch `ctx.cut` so later chunks are
         // suppressed. The bound snapshot's streaming template is shared by both.
-        let streaming = ctx
-            .snapshot
-            .config
-            .rejections
-            .missing_attribution
+        let rejections = &ctx.snapshot.config.rejections;
+        let streaming = rejections.missing_attribution.streaming.clone();
+        // The GB-5 cut speaks with the dedicated cap template when one
+        // exists; the WASM cut keeps the missing_attribution voice.
+        let cap_streaming = rejections
+            .cap_exceeded
+            .as_ref()
+            .unwrap_or(&rejections.missing_attribution)
             .streaming
             .clone();
         let route_prefix = ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
@@ -1006,8 +1032,8 @@ impl ProxyHttp for Gateway {
             ctx.last_metered_est = est;
             let caps = ctx.caps.clone();
             if let Some(cut) = crate::proxy_stream::charge_caps_and_cut(
-                &self.budgets, &caps, delta, streaming.as_ref(), &route_prefix, ctx.snapshot.version,
-                now_unix(),
+                &self.budgets, &caps, delta, cap_streaming.as_ref(), &route_prefix,
+                ctx.snapshot.version, now_unix(),
             ) {
                 *body = Some(cut);
                 ctx.cut = true;
@@ -1085,6 +1111,7 @@ impl ProxyHttp for Gateway {
             tokens_authoritative: ctx.authoritative_tokens,
             cut: ctx.cut,
             config_version: ctx.snapshot.version,
+            error: ctx.error.take(),
         });
     }
 }

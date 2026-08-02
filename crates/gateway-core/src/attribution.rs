@@ -192,6 +192,8 @@ mod tests {
             missing_attribution: template(),
             unknown_route: template(),
             model_not_allowed: template(),
+            value_not_allowed: None,
+            cap_exceeded: None,
         }
     }
 

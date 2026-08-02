@@ -97,7 +97,8 @@ async fn assume_role(
     .map_err(|_| format!("STS call to {}:{} timed out", sts.endpoint.host, sts.endpoint.port))??;
     if status != 200 {
         return Err(format!(
-            "STS returned {status}: {}",
+            "STS returned {status} code={}: {}",
+            sts_error_code(&response).unwrap_or("unknown"),
             response.chars().take(200).collect::<String>()
         ));
     }
@@ -151,7 +152,8 @@ async fn base_credentials_for(
     .map_err(|_| format!("STS web-identity call to {endpoint} timed out"))??;
     if status != 200 {
         return Err(format!(
-            "STS AssumeRoleWithWebIdentity returned {status}: {}",
+            "STS AssumeRoleWithWebIdentity returned {status} code={}: {}",
+            sts_error_code(&response).unwrap_or("unknown"),
             response.chars().take(200).collect::<String>()
         ));
     }
@@ -321,4 +323,35 @@ pub fn sign_bedrock_request(
     let authorization = params.authorization(&creds.access_key_id, &creds.secret_access_key);
     upstream_request.insert_header("authorization", authorization)?;
     Ok(())
+}
+
+/// The `<Code>` of an AWS XML error body — `AccessDenied` vs
+/// `InvalidIdentityToken` vs `ExpiredTokenException` is the difference
+/// between "fix the trust policy", "fix the OIDC provider", and "the token
+/// file went stale", so the code is surfaced instead of swallowed.
+fn sts_error_code(body: &str) -> Option<&str> {
+    let start = body.find("<Code>")? + "<Code>".len();
+    let end = body[start..].find("</Code>")? + start;
+    let code = body[start..end].trim();
+    (!code.is_empty() && code.len() <= 64).then_some(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sts_error_code;
+
+    #[test]
+    fn sts_error_code_extracts_the_aws_code_and_tolerates_garbage() {
+        let denied = r#"<ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+          <Error><Type>Sender</Type><Code>AccessDenied</Code>
+          <Message>User is not authorized</Message></Error></ErrorResponse>"#;
+        assert_eq!(sts_error_code(denied), Some("AccessDenied"));
+
+        let stale = "<Error><Code>ExpiredTokenException</Code></Error>";
+        assert_eq!(sts_error_code(stale), Some("ExpiredTokenException"));
+
+        assert_eq!(sts_error_code("not xml at all"), None);
+        assert_eq!(sts_error_code("<Code></Code>"), None);
+        assert_eq!(sts_error_code("<Code>"), None);
+    }
 }
