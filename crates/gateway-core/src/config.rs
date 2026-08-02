@@ -75,6 +75,10 @@ pub use crate::wasm_config::{WasmConfig, WasmHook, WasmModule};
 pub struct Provider {
     pub kind: ProviderKind,
     pub upstream: Upstream,
+    /// Operator-forced headers / body fields for every request through
+    /// this provider (guardrails and friends). See [`Injection`].
+    #[serde(default)]
+    pub inject: Option<Injection>,
     /// GB-7 (bedrock kind only): exchange attribution values for STS
     /// session-tag credentials and SigV4-sign every upstream request.
     #[serde(default)]
@@ -256,6 +260,50 @@ impl OperatorValueSpec {
             },
         }
     }
+}
+
+/// Operator-forced injection: headers and JSON body fields the operator
+/// stamps onto every upstream request for this provider, operator value
+/// ALWAYS winning over a caller's. The general mechanism behind Bedrock
+/// guardrail forcing (two forced headers + an if_absent guardrailConfig
+/// body block are just config), applicable to any provider. Values are
+/// [`OperatorValueSpec`]s (static or `{{key}}` templates over adjudicated
+/// attribution; template keys must be gateway-established — a caller must
+/// never pick which guardrail applies). Unresolvable at request time:
+/// fail closed, the GB-4 rejection.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Injection {
+    #[serde(default)]
+    pub headers: Vec<ForcedHeader>,
+    #[serde(default)]
+    pub body: Vec<ForcedBodyField>,
+}
+
+/// One forced header. Always overrides a caller-sent value, and on signing
+/// providers it enters the SIGNED header set (the signature covers what the
+/// operator forced, so a stripped or altered value fails verification).
+/// `value` is a nested field, never flattened: serde's `flatten` silently
+/// disables `deny_unknown_fields`, which is exactly the config-typo
+/// acceptance this file exists to prevent.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForcedHeader {
+    pub name: String,
+    pub value: OperatorValueSpec,
+}
+
+/// One forced JSON body field at a dotted path (intermediate objects are
+/// created). `if_absent: true` injects only when the path is missing (the
+/// Bedrock guardrailConfig semantic); the default overrides
+/// unconditionally (operator wins).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForcedBodyField {
+    pub path: String,
+    pub value: OperatorValueSpec,
+    #[serde(default)]
+    pub if_absent: bool,
 }
 
 /// The closed-set gate for [`StsConfig::allow`].

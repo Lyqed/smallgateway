@@ -262,13 +262,18 @@ async fn http_post_form(
 /// SigV4-sign the outbound Bedrock request in place: sets `host` (the
 /// canonical host must be what the upstream receives), `x-amz-date`,
 /// `x-amz-security-token`, `x-amz-content-sha256` (UNSIGNED-PAYLOAD — the
-/// documented live-AWS follow-up), and `authorization`.
+/// documented live-AWS follow-up), and `authorization`. `extra_signed`
+/// carries operator-forced headers (already inserted on the request with
+/// these exact values by the caller) so the signature COVERS them — a
+/// stripped or altered guardrail header then fails verification instead of
+/// passing unsigned.
 pub fn sign_bedrock_request(
     upstream_request: &mut RequestHeader,
     upstream: &Upstream,
     region: &str,
     creds: &Credentials,
     now_unix: u64,
+    extra_signed: &[(String, String)],
 ) -> Result<()> {
     let host = format!("{}:{}", upstream.host, upstream.port);
     let (timestamp, _) = aws::amz_date(now_unix);
@@ -280,12 +285,15 @@ pub fn sign_bedrock_request(
     upstream_request.insert_header("x-amz-security-token", creds.session_token.clone())?;
     upstream_request.insert_header("x-amz-content-sha256", UNSIGNED_PAYLOAD)?;
 
-    let signed_headers = vec![
+    let mut signed_headers = vec![
         ("host".to_string(), host),
         ("x-amz-content-sha256".to_string(), UNSIGNED_PAYLOAD.to_string()),
         ("x-amz-date".to_string(), timestamp.clone()),
         ("x-amz-security-token".to_string(), creds.session_token.clone()),
     ];
+    for (name, value) in extra_signed {
+        signed_headers.push((name.to_ascii_lowercase(), value.clone()));
+    }
     let params = SignParams {
         method: upstream_request.method.as_str(),
         path: &path,

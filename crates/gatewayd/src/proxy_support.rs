@@ -310,13 +310,26 @@ pub(crate) fn resolve_role_identity(
 }
 
 /// Render one role-material template against the adjudicated tag set,
-/// enforcing the caller-origin rule per placeholder. Fail closed on any
-/// unresolved key.
+/// enforcing the caller-origin rule per placeholder (the sts allow-list is
+/// the one admissible exception). Fail closed on any unresolved key.
 fn render_role_material(
     spec: &gateway_core::config::OperatorValueSpec,
     what: &str,
     sts: &StsConfig,
     tags: &[Tag],
+) -> std::result::Result<String, (String, String)> {
+    render_operator_template(spec, what, tags, sts.allow.as_ref().map(|a| a.key.as_str()))
+}
+
+/// Shared operator-template renderer: resolve every `{{key}}` against the
+/// adjudicated tags; a Caller-origin key is refused unless it is the
+/// `allow_gated_key` (role material's closed-set exception; injection
+/// passes `None` — guardrails are never caller-steerable). Fail closed.
+fn render_operator_template(
+    spec: &gateway_core::config::OperatorValueSpec,
+    what: &str,
+    tags: &[Tag],
+    allow_gated_key: Option<&str>,
 ) -> std::result::Result<String, (String, String)> {
     let template_text = spec
         .as_template()
@@ -327,10 +340,10 @@ fn render_role_material(
         let tag = tags.iter().find(|t| t.key == key).ok_or_else(|| {
             (key.clone(), format!("attribution key {key:?} did not resolve"))
         })?;
-        let allow_gated = sts.allow.as_ref().is_some_and(|a| a.key == key);
+        let allow_gated = allow_gated_key == Some(key.as_str());
         if tag.origin == Origin::Caller && !allow_gated {
             // Statically unreachable (scope.rs refuses the config); never
-            // render caller-raw role material anyway.
+            // render caller-raw operator material anyway.
             return Err((
                 key.clone(),
                 format!("attribution key {key:?} is caller-origin and not allow-gated"),
@@ -348,6 +361,34 @@ fn render_role_material(
         ));
     }
     Ok(rendered)
+}
+
+/// Operator-forced injection, resolved per request. Headers are lowercased
+/// (they enter the SigV4 signed set on signing providers); body fields keep
+/// their dotted paths. Strictly gateway-established keys — no allow-gate.
+pub(crate) struct ResolvedInjection {
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<gateway_core::labels::ResolvedBodyField>,
+}
+
+pub(crate) fn resolve_injection(
+    inject: &gateway_core::config::Injection,
+    tags: &[Tag],
+) -> std::result::Result<ResolvedInjection, (String, String)> {
+    let mut headers = Vec::with_capacity(inject.headers.len());
+    for h in &inject.headers {
+        let value = render_operator_template(&h.value, &h.name, tags, None)?;
+        headers.push((h.name.to_ascii_lowercase(), value));
+    }
+    let mut body = Vec::with_capacity(inject.body.len());
+    for f in &inject.body {
+        body.push(gateway_core::labels::ResolvedBodyField {
+            path: f.path.clone(),
+            value: render_operator_template(&f.value, &f.path, tags, None)?,
+            if_absent: f.if_absent,
+        });
+    }
+    Ok(ResolvedInjection { headers, body })
 }
 
 /// GB-7: resolve the role identity and session tags from ATTRIBUTION values

@@ -105,6 +105,53 @@ pub fn merge_into_body(body: &[u8], operator: &[(String, String)]) -> Result<Vec
     serde_json::to_vec(&root).map_err(|e| e.to_string())
 }
 
+/// One resolved forced body field: the dotted path, the operator's value,
+/// and whether it only applies when the path is absent.
+#[derive(Debug, Clone)]
+pub struct ResolvedBodyField {
+    pub path: String,
+    pub value: String,
+    pub if_absent: bool,
+}
+
+/// Operator-forced body injection at dotted JSON paths (the general
+/// mechanism behind Bedrock guardrailConfig forcing). Intermediate objects
+/// are created; a non-object in the middle of a path is REPLACED (the
+/// operator's policy cannot be blocked by a malformed caller field, the
+/// same posture as `merge_into_body`). `if_absent` fields leave an
+/// existing value untouched; default is operator-wins override.
+pub fn inject_into_body(body: &[u8], fields: &[ResolvedBodyField]) -> Result<Vec<u8>, String> {
+    if fields.is_empty() {
+        return Ok(body.to_vec());
+    }
+    let mut root: Value = serde_json::from_slice(body)
+        .map_err(|e| format!("request body is not valid JSON: {e}"))?;
+    if !root.is_object() {
+        return Err("request body is not a JSON object".to_string());
+    }
+    for field in fields {
+        let mut cursor = &mut root;
+        let segments: Vec<&str> = field.path.split('.').collect();
+        let (last, parents) = segments.split_last().expect("validated non-empty path");
+        for seg in parents {
+            let obj = cursor.as_object_mut().expect("cursor kept an object");
+            let next = obj
+                .entry(seg.to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !next.is_object() {
+                *next = Value::Object(Map::new());
+            }
+            cursor = next;
+        }
+        let obj = cursor.as_object_mut().expect("cursor kept an object");
+        if field.if_absent && obj.contains_key(*last) {
+            continue;
+        }
+        obj.insert(last.to_string(), Value::String(field.value.clone()));
+    }
+    serde_json::to_vec(&root).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +268,82 @@ mod tests {
     fn empty_operator_set_leaves_the_body_untouched() {
         let body = br#"{"labels":{"team":"client"}}"#;
         assert_eq!(merge_into_body(body, &[]).unwrap(), body.to_vec());
+    }
+}
+
+#[cfg(test)]
+mod inject_tests {
+    use super::*;
+
+    fn f(path: &str, value: &str, if_absent: bool) -> ResolvedBodyField {
+        ResolvedBodyField { path: path.into(), value: value.into(), if_absent }
+    }
+
+    #[test]
+    fn sets_nested_paths_creating_intermediates() {
+        let out = inject_into_body(
+            br#"{"messages":[]}"#,
+            &[f("guardrailConfig.guardrailIdentifier", "gr-abc", false)],
+        )
+        .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["guardrailConfig"]["guardrailIdentifier"], "gr-abc");
+        assert_eq!(v["messages"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn operator_wins_over_caller_value_by_default() {
+        let out = inject_into_body(
+            br#"{"guardrailConfig":{"guardrailIdentifier":"evil"}}"#,
+            &[f("guardrailConfig.guardrailIdentifier", "gr-abc", false)],
+        )
+        .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["guardrailConfig"]["guardrailIdentifier"], "gr-abc");
+    }
+
+    #[test]
+    fn if_absent_leaves_an_existing_value_untouched() {
+        let out = inject_into_body(
+            br#"{"guardrailConfig":{"guardrailIdentifier":"theirs"}}"#,
+            &[f("guardrailConfig.guardrailIdentifier", "gr-abc", true)],
+        )
+        .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["guardrailConfig"]["guardrailIdentifier"], "theirs");
+    }
+
+    #[test]
+    fn if_absent_applies_when_missing() {
+        let out =
+            inject_into_body(br#"{}"#, &[f("guardrailConfig.guardrailVersion", "1", true)])
+                .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["guardrailConfig"]["guardrailVersion"], "1");
+    }
+
+    #[test]
+    fn malformed_intermediate_is_replaced_not_blocking() {
+        // A caller sent guardrailConfig as a string: operator policy still
+        // lands (same posture as merge_into_body's malformed labels).
+        let out = inject_into_body(
+            br#"{"guardrailConfig":"nope"}"#,
+            &[f("guardrailConfig.guardrailIdentifier", "gr-abc", false)],
+        )
+        .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["guardrailConfig"]["guardrailIdentifier"], "gr-abc");
+    }
+
+    #[test]
+    fn non_object_body_is_refused() {
+        assert!(inject_into_body(br#"[1,2]"#, &[f("a", "b", false)]).is_err());
+        assert!(inject_into_body(br#"not json"#, &[f("a", "b", false)]).is_err());
+    }
+
+    #[test]
+    fn empty_field_set_passes_body_through() {
+        let body = br#"{"x":1}"#;
+        assert_eq!(inject_into_body(body, &[]).unwrap(), body.to_vec());
     }
 }

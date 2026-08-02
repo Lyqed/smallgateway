@@ -131,7 +131,12 @@ pub struct ReqCtx {
     tags: Vec<Tag>,
     /// GB-8: resolved operator labels to merge into the request body.
     vertex_labels: Option<Vec<(String, String)>>,
-    /// GB-8: request-body accumulator (labeled vertex routes only).
+    /// Operator-forced injection (guardrails and friends), resolved per
+    /// request: headers applied (and SIGNED, on signing providers) in
+    /// `upstream_request_filter`; body fields merged in the buffered path.
+    forced: Option<crate::proxy_support::ResolvedInjection>,
+    /// Request-body accumulator (labeled vertex routes and forced-body
+    /// routes only).
     body_buf: Vec<u8>,
     /// GB-7: credentials + region for SigV4 signing.
     aws: Option<AwsSigning>,
@@ -179,6 +184,7 @@ impl ReqCtx {
             meter: Meter::new(),
             tags: Vec::new(),
             vertex_labels: None,
+            forced: None,
             body_buf: Vec::new(),
             aws: None,
             body_bytes: 0,
@@ -436,6 +442,36 @@ impl ProxyHttp for Gateway {
             }
         }
 
+        // Operator-forced injection: resolve now, fail closed BEFORE the
+        // upstream sees anything. A caller can never pick the values (no
+        // allow-gate here; guardrails are pure operator policy).
+        if let Some(inject) = &cfg.providers[&route.provider].inject {
+            match crate::proxy_support::resolve_injection(inject, &tags) {
+                Ok(resolved) => {
+                    info!(
+                        "[inject {}] {} header(s), {} body field(s) cfg=v{v}",
+                        route.prefix,
+                        resolved.headers.len(),
+                        resolved.body.len(),
+                    );
+                    ctx.forced = Some(resolved);
+                }
+                Err((key, reason)) => {
+                    info!(
+                        "[req] {method} {path} -> route={} (rejecting: injection: {reason}) cfg=v{v}",
+                        route.prefix
+                    );
+                    respond_rejection(
+                        session,
+                        &policy.missing_attribution,
+                        &[("key", key.as_str()), ("route", route.prefix.as_str())],
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+            }
+        }
+
         info!(
             "[req] {method} {path} -> route={} provider={}({}) cfg=v{v}",
             route.prefix,
@@ -544,18 +580,46 @@ impl ProxyHttp for Gateway {
             &ctx.wasm_header_remove,
         )?;
 
-        // GB-8: the body will be rewritten in request_body_filter, so its
-        // length changes — switch the upstream leg to chunked framing.
-        if ctx.vertex_labels.is_some() {
+        // Operator-forced headers: applied BEFORE signing so the signature
+        // covers them (operator wins over any caller value: insert_header
+        // overrides).
+        if let Some(forced) = &ctx.forced {
+            for (name, value) in &forced.headers {
+                upstream_request.insert_header(name.clone(), value.clone())?;
+            }
+        }
+
+        // GB-8 labels / forced body fields: the body will be rewritten in
+        // request_body_filter, so its length changes — switch the upstream
+        // leg to chunked framing. (Composes with UNSIGNED-PAYLOAD signing
+        // only; a signed-payload Bedrock follow-up must move body injection
+        // before the Authorization computation.)
+        let rewrites_body = ctx.vertex_labels.is_some()
+            || ctx.forced.as_ref().is_some_and(|f| !f.body.is_empty());
+        if rewrites_body {
             upstream_request.remove_header("content-length");
             upstream_request.insert_header("transfer-encoding", "chunked")?;
         }
 
-        // GB-7: SigV4 with the session-tagged credentials.
+        // GB-7: SigV4 with the session-tagged credentials. Forced headers
+        // enter the SIGNED set: a stripped or altered guardrail header
+        // fails verification instead of silently passing unsigned.
         if let Some(aws) = &ctx.aws {
             let binding = ctx.route.as_ref().expect("route bound in request_filter");
             let up = &ctx.snapshot.config.providers[&binding.provider].upstream;
-            aws_auth::sign_bedrock_request(upstream_request, up, &aws.region, &aws.creds, now_unix())?;
+            let extra_signed: &[(String, String)] = ctx
+                .forced
+                .as_ref()
+                .map(|f| f.headers.as_slice())
+                .unwrap_or(&[]);
+            aws_auth::sign_bedrock_request(
+                upstream_request,
+                up,
+                &aws.region,
+                &aws.creds,
+                now_unix(),
+                extra_signed,
+            )?;
         }
         Ok(())
     }
@@ -573,22 +637,36 @@ impl ProxyHttp for Gateway {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
-        let Some(operator_labels) = &ctx.vertex_labels else {
-            return Ok(()); // not a labeled vertex route: pass through
-        };
+        let has_labels = ctx.vertex_labels.is_some();
+        let forced_body = ctx
+            .forced
+            .as_ref()
+            .map(|f| f.body.as_slice())
+            .unwrap_or(&[]);
+        if !has_labels && forced_body.is_empty() {
+            return Ok(()); // no body rewrite on this route: pass through
+        }
         if let Some(chunk) = body.take() {
             ctx.body_buf.extend_from_slice(&chunk);
         }
         if !end_of_stream {
             return Ok(());
         }
-        match labels::merge_into_body(&ctx.body_buf, operator_labels) {
+        // GB-8 labels first, then operator-forced fields (injection is
+        // provider-level policy and applies last, so it wins on overlap).
+        let result = match &ctx.vertex_labels {
+            Some(operator_labels) => labels::merge_into_body(&ctx.body_buf, operator_labels),
+            None => Ok(ctx.body_buf.clone()),
+        }
+        .and_then(|merged| labels::inject_into_body(&merged, forced_body));
+        match result {
             Ok(merged) => {
                 let binding = ctx.route.as_ref().expect("route bound");
                 info!(
-                    "[gb8 {}] merged {} operator label(s) into request body ({} -> {} bytes)",
+                    "[inject {}] rewrote request body: {} label(s), {} forced field(s) ({} -> {} bytes)",
                     binding.prefix,
-                    operator_labels.len(),
+                    ctx.vertex_labels.as_ref().map(Vec::len).unwrap_or(0),
+                    forced_body.len(),
                     ctx.body_buf.len(),
                     merged.len(),
                 );
@@ -597,10 +675,10 @@ impl ProxyHttp for Gateway {
                 Ok(())
             }
             Err(e) => {
-                error!("[gb8] request body rejected: {e}");
+                error!("[inject] request body rejected: {e}");
                 Err(Error::explain(
                     HTTPStatus(400),
-                    format!("vertex request body must be a JSON object: {e}"),
+                    format!("request body must be a JSON object: {e}"),
                 ))
             }
         }

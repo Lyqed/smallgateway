@@ -477,3 +477,73 @@ fn sts_base_token_source_is_exactly_one_of() {
         "{errs:?}"
     );
 }
+
+// ---- Operator-forced injection (guardrails) ----
+
+fn inject_yaml(inject_body: &str) -> String {
+    base_yaml().replace(
+        "    upstream: { host: 127.0.0.1, port: 6190 }",
+        &format!("    upstream: {{ host: 127.0.0.1, port: 6190 }}\n    inject:\n{inject_body}"),
+    )
+}
+
+#[test]
+fn inject_static_and_established_template_values_are_accepted() {
+    let yaml = inject_yaml(concat!(
+        "      headers:\n",
+        "        - { name: x-amzn-bedrock-guardrailidentifier, value: gr-abc }\n",
+        "        - { name: x-policy-env, value: 'env-{{env}}' }\n",
+        "      body:\n",
+        "        - { path: guardrailConfig.guardrailIdentifier, value: gr-abc, if_absent: true }",
+    ));
+    Config::from_yaml(&yaml).unwrap();
+}
+
+#[test]
+fn inject_template_on_caller_key_is_rejected() {
+    // `team` is required-only (caller-asserted): a guardrail value derived
+    // from it would let the caller pick the guardrail. No allow exception.
+    let yaml = inject_yaml(concat!(
+        "      headers:\n",
+        "        - { name: x-guardrail, value: 'gr-{{team}}' }",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter().any(|e| e.contains("never caller-steerable")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn inject_template_on_unknown_key_is_rejected() {
+    let yaml = inject_yaml(concat!(
+        "      body:\n",
+        "        - { path: a.b, value: '{{ghost}}' }",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("could never resolve")), "{errs:?}");
+}
+
+#[test]
+fn inject_reserved_headers_are_rejected() {
+    for name in ["authorization", "Host", "x-amz-date", "content-length"] {
+        let yaml = inject_yaml(&format!(
+            "      headers:\n        - {{ name: {name}, value: v }}"
+        ));
+        let errs = errors_of(&yaml);
+        assert!(
+            errs.iter().any(|e| e.contains("owned by signing/transport")),
+            "{name}: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn inject_empty_path_segment_is_rejected() {
+    let yaml = inject_yaml(concat!(
+        "      body:\n",
+        "        - { path: 'a..b', value: v }",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(errs.iter().any(|e| e.contains("dotted segments")), "{errs:?}");
+}

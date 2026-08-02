@@ -747,5 +747,50 @@ fn gb7_unsigned_chain_is_refused_by_signed_sts() {
     });
 }
 
+// ------------------------------------- operator-forced injection (guardrails)
+
+#[test]
+fn forced_guardrail_headers_are_signed_and_operator_wins() {
+    check("INJECT", "forced_guardrail_headers_are_signed_and_operator_wins", || {
+        // The gb7 config + an inject block forcing two guardrail headers.
+        // The caller sends a FORGED guardrail identifier. The mock Bedrock
+        // verifies SigV4 over the received SignedHeaders, so a 200 proves
+        // three things at once: the forced headers ARRIVED, the operator's
+        // values OVERRODE the caller's (a surviving forged value would
+        // change the recomputed signature -> 403), and they were IN the
+        // signed set (they are listed in SignedHeaders; absence -> "signed
+        // header missing" -> 403).
+        let p = ports(3);
+        let cfg = gb7_cfg(p[0], p[1]).replace(
+            "    sts:",
+            concat!(
+                "    inject:\n",
+                "      headers:\n",
+                "        - { name: x-amzn-bedrock-guardrailidentifier, value: gr-abc123 }\n",
+                "        - { name: x-amzn-bedrock-guardrailversion, value: '7' }\n",
+                "    sts:",
+            ),
+        );
+        let _sts = spawn_sts(p[1]);
+        let _mock = spawn_mock(p[0], &spike_fixture("bedrock.jsonl"), "bedrock", true);
+        let _gw = spawn_gatewayd(&cfg, p[2], "inject1");
+        let token = mint_jwt(serde_json::json!({"sub": "alice", "exp": 4102444800u64}));
+        let auth = format!("Bearer {token}");
+        let resp = http(
+            p[2],
+            "POST",
+            "/bedrock/model/anthropic.claude/converse-stream",
+            &[
+                ("authorization", auth.as_str()),
+                // The forged value the operator must overwrite.
+                ("x-amzn-bedrock-guardrailidentifier", "gr-evil"),
+            ],
+            b"{}",
+        );
+        assert_eq!(resp.status, 200, "body: {}", resp.body_text());
+        assert_eq!(resp.header("x-echo-session-tag-user"), Some("alice"));
+    });
+}
+
 // GB-5 / GB-6 conformance lives in its own file (size budget).
 mod gb5;

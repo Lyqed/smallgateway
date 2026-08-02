@@ -146,6 +146,47 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
                 }
             }
         }
+        if let Some(inject) = &p.inject {
+            let ictx = format!("provider {name:?}: inject");
+            for h in &inject.headers {
+                let hctx = format!("{ictx}: header {:?}", h.name);
+                if h.name.trim().is_empty() || h.name.contains(char::is_whitespace) {
+                    errs.push(format!("{hctx}: header name must be a non-empty token"));
+                }
+                // Signing/transport-owned headers: forcing these would
+                // corrupt SigV4 or HTTP framing, never express policy.
+                const RESERVED: [&str; 7] = [
+                    "host",
+                    "authorization",
+                    "content-length",
+                    "transfer-encoding",
+                    "x-amz-date",
+                    "x-amz-security-token",
+                    "x-amz-content-sha256",
+                ];
+                if RESERVED.contains(&h.name.to_ascii_lowercase().as_str()) {
+                    errs.push(format!(
+                        "{hctx}: this header is owned by signing/transport and \
+                         cannot be operator-forced"
+                    ));
+                }
+                validate_operator_value(&h.value, &hctx, errs, |t| {
+                    if t.is_empty() {
+                        return Err("must not be empty".to_string());
+                    }
+                    Ok(())
+                });
+            }
+            for f in &inject.body {
+                let fctx = format!("{ictx}: body {:?}", f.path);
+                if f.path.trim().is_empty() || f.path.split('.').any(|s| s.trim().is_empty()) {
+                    errs.push(format!(
+                        "{fctx}: path must be non-empty dotted segments (a.b.c)"
+                    ));
+                }
+                validate_operator_value(&f.value, &fctx, errs, |_| Ok(()));
+            }
+        }
     }
 }
 

@@ -298,7 +298,14 @@ pub fn finalize(cfg: &mut Config) -> Result<(), Vec<String>> {
                 errs.push(format!("{ctx_name}: from_claims requires auth.jwt to be configured"));
             }
             if let Some(p) = provider {
-                validate_effective_for_provider(&ctx_name, policy, p.kind, p.sts.as_ref(), &mut errs);
+                validate_effective_for_provider(
+                    &ctx_name,
+                    policy,
+                    p.kind,
+                    p.sts.as_ref(),
+                    p.inject.as_ref(),
+                    &mut errs,
+                );
             }
         }
         if !route.labels.is_empty()
@@ -346,8 +353,45 @@ fn validate_effective_for_provider(
     policy: &EffectivePolicy,
     kind: ProviderKind,
     sts: Option<&StsConfig>,
+    inject: Option<&crate::config::Injection>,
     errs: &mut Vec<String>,
 ) {
+    // Operator-forced injection templates: referenced keys must exist on
+    // the chain AND be gateway-established. No allow-list exception here —
+    // a guardrail identifier is pure operator policy; a caller must never
+    // pick which guardrail applies.
+    if let Some(inject) = inject {
+        let universe = policy.key_universe();
+        let specs = inject
+            .headers
+            .iter()
+            .map(|h| (format!("inject header {:?}", h.name), &h.value))
+            .chain(inject.body.iter().map(|f| (format!("inject body {:?}", f.path), &f.value)));
+        for (what, spec) in specs {
+            let Some(template) = spec.as_template() else { continue };
+            let Ok(keys) = crate::template::placeholders(&template) else { continue };
+            for key in keys {
+                if !universe.contains(key.as_str()) {
+                    errs.push(format!(
+                        "{ctx_name}: {what} references attribution key {key:?}, which \
+                         the composed chain never requires, pins, claim-maps, or \
+                         derives — it could never resolve"
+                    ));
+                    continue;
+                }
+                let gateway_established = policy.pinned.contains_key(&key)
+                    || policy.from_claims.contains_key(&key)
+                    || policy.derived.contains_key(&key);
+                if !gateway_established {
+                    errs.push(format!(
+                        "{ctx_name}: {what} references attribution key {key:?}, which \
+                         is caller-asserted (not pinned, claim-mapped, or derived) — \
+                         forced injection is operator policy, never caller-steerable"
+                    ));
+                }
+            }
+        }
+    }
     if kind == ProviderKind::Vertex {
         for l in &policy.labels {
             if let LabelValue::FromAttribution(key) = &l.value {
