@@ -298,11 +298,17 @@ control plane's own Git-as-truth model one layer up: the merge is the deploy,
 - **Data-plane failure-domain labels:** `dataPlanes.labels` are accepted in the
   spec; wiring them through per-pod label-tokens so wave plans / GatewaySets
   select on them is a follow-up.
-- **GB-2 JWT auth:** project-deferred and **not built**. v1alpha1 exposes no
-  `spec.auth` (a set one is pruned, not reconciled) and no `auth.yaml` is
-  rendered. When it lands, it will resolve the referenced Secret into the
-  gatewayctl repo mount (never into the CR) and be verified end to end before
-  the field is exposed.
+- **GB-2 auth in the CRD (the k8s surface only):** the GATEWAY half is now
+  built — HS256 for fleet-minted tokens, RS256 against an inline JWKS (key
+  rotation rides the same GB-9 hot-swap as every rule), and verified claims
+  reach required keys, pins, session tags, RoleSessionName templates, and
+  guardrail values (see crates/gatewayd/README.md "A note on GB-2"). What
+  remains is only the Kubernetes field: `spec.auth` with a Secret reference
+  the operator resolves into the rendered `auth:` block (the secret lands in
+  the config the control plane distributes, never in the CR). v1alpha1 still
+  exposes no `spec.auth` — a set one is pruned, not silently ignored — and
+  the field appears only together with working Secret resolution, verified
+  end to end. Turning GB-2 on remains a per-fleet judgment call either way.
 - **`renderedConfigHash` reported as Ready before fleet commit (rollout window):**
   On a CR edit the operator rolls the gatewayctl Deployment (config-hash
   annotation change). For the ~60-90s the new gatewayctl pod is starting, the
