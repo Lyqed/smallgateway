@@ -20,3 +20,10 @@ base64 = "0.22"
 # already in the tree transitively via cel's default features.
 cel = "0.14"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# GB-2 RS256: RSASSA-PKCS1-v1_5 verification for real-IdP JWKS. Pure Rust,
+# verify-only in production code (tests also sign).
+rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
+
+[dev-dependencies]
+# RS256 test-side signing (key generation) for the JWKS tests.
+rand = "0.8"

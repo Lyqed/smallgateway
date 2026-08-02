@@ -348,6 +348,15 @@ pub fn finalize(cfg: &mut Config) -> Result<(), Vec<String>> {
         for (route, c) in cfg.routes.iter_mut().zip(compiled) {
             route.compiled = Some(c);
         }
+        // GB-2 RS256: the JWKS parses at LOAD (validate_auth reported any
+        // error above, so this parse cannot fail here) — key rotation is a
+        // config change, distributed by the same hot-swap as every rule.
+        if let Some(auth) = &mut cfg.auth {
+            if let Some(jwks) = &auth.jwt.jwks {
+                auth.jwt.compiled_jwks =
+                    Some(crate::jwt::Jwks::parse(jwks).expect("validated above"));
+            }
+        }
         Ok(())
     } else {
         Err(errs)

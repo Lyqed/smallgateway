@@ -661,3 +661,17 @@ fn locations_on_non_vertex_provider_is_rejected() {
         "{errs:?}"
     );
 }
+
+// ---- GB-2 auth sources ----
+
+#[test]
+fn auth_requires_exactly_one_of_secret_or_jwks() {
+    let both = base_yaml()
+        + "auth:\n  jwt:\n    hs256_secret: s\n    jwks: '{\"keys\":[]}'\n";
+    let errs = errors_of(&both);
+    assert!(errs.iter().any(|e| e.contains("exactly one of 'hs256_secret'")), "{errs:?}");
+
+    let bad_jwks = base_yaml() + "auth:\n  jwt:\n    jwks: 'not json'\n";
+    let errs = errors_of(&bad_jwks);
+    assert!(errs.iter().any(|e| e.contains("jwks is not JSON")), "{errs:?}");
+}

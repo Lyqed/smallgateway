@@ -674,12 +674,24 @@ pub struct Auth {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JwtAuth {
-    /// Shared secret for HS256 verification. Demo/dev shape; asymmetric
-    /// algs are a later phase.
-    pub hs256_secret: String,
+    /// Shared secret for HS256 verification: the fleet-minted-token shape
+    /// (a fleet that issues its own tokens). Exactly one of this or `jwks`.
+    #[serde(default)]
+    pub hs256_secret: Option<String>,
+    /// INLINE JWKS document (the RS256 / real-IdP shape): the JSON is part
+    /// of the config, so key ROTATION is a config change — Git-reviewed and
+    /// distributed by the same GB-9 hot-swap as every other rule. No file
+    /// watcher, no fetcher, no phone-home; a sidecar or CI job that syncs
+    /// the IdP's JWKS into the repo owns freshness. Parsed and validated at
+    /// config load into `compiled_jwks`.
+    #[serde(default)]
+    pub jwks: Option<String>,
     /// Request header carrying `Bearer <token>`.
     #[serde(default = "default_jwt_header")]
     pub header: String,
+    /// The parsed `jwks`, populated at load. Never deserialized.
+    #[serde(skip)]
+    pub compiled_jwks: Option<crate::jwt::Jwks>,
 }
 
 fn default_jwt_header() -> String {

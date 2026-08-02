@@ -261,8 +261,22 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
 
 pub(crate) fn validate_auth(cfg: &Config, errs: &mut Vec<String>) {
     if let Some(auth) = &cfg.auth {
-        if auth.jwt.hs256_secret.is_empty() {
-            errs.push("auth.jwt.hs256_secret must not be empty".to_string());
+        match (&auth.jwt.hs256_secret, &auth.jwt.jwks) {
+            (Some(s), None) => {
+                if s.is_empty() {
+                    errs.push("auth.jwt.hs256_secret must not be empty".to_string());
+                }
+            }
+            (None, Some(jwks)) => {
+                if let Err(e) = crate::jwt::Jwks::parse(jwks) {
+                    errs.push(format!("auth.jwt.jwks: {e}"));
+                }
+            }
+            _ => errs.push(
+                "auth.jwt: exactly one of 'hs256_secret' (fleet-minted tokens) or \
+                 'jwks' (RS256, real IdP) must be set"
+                    .to_string(),
+            ),
         }
         if auth.jwt.header.trim().is_empty() {
             errs.push("auth.jwt.header must not be empty".to_string());

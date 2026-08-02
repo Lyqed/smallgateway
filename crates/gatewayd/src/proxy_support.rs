@@ -110,7 +110,12 @@ pub(crate) fn verified_claims(
         .strip_prefix("Bearer ")
         .or_else(|| raw.strip_prefix("bearer "))?
         .trim();
-    match jwt::verify_hs256(token, auth.jwt.hs256_secret.as_bytes(), now_unix()) {
+    let verified = match (&auth.jwt.hs256_secret, &auth.jwt.compiled_jwks) {
+        (Some(secret), _) => jwt::verify_hs256(token, secret.as_bytes(), now_unix()),
+        (None, Some(jwks)) => jwt::verify_rs256(token, jwks, now_unix()),
+        _ => return None, // unreachable: validation enforces exactly-one-of
+    };
+    match verified {
         Ok(claims) => Some(claims),
         Err(e) => {
             info!("[auth] jwt rejected: {e}");
