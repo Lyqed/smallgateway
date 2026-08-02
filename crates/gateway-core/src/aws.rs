@@ -64,8 +64,28 @@ pub fn assume_role_body(
     body
 }
 
+/// The hop-1 `AssumeRoleWithWebIdentity` Query-API form body. Token-authed:
+/// this call is deliberately UNSIGNED (the web-identity token IS the
+/// credential); only the chained hop-2 `AssumeRole` gets SigV4-signed.
+pub fn assume_role_with_web_identity_body(
+    role_arn: &str,
+    session_name: &str,
+    web_identity_token: &str,
+    duration_secs: u32,
+) -> String {
+    format!(
+        "Action=AssumeRoleWithWebIdentity&Version=2011-06-15&RoleArn={}&RoleSessionName={}&WebIdentityToken={}&DurationSeconds={}",
+        form_encode(role_arn),
+        form_encode(session_name),
+        form_encode(web_identity_token),
+        duration_secs,
+    )
+}
+
 /// Parse the `AssumeRoleResponse` XML (the four credential fields; a
-/// deliberately narrow extractor, not an XML parser).
+/// deliberately narrow extractor, not an XML parser). Also parses the
+/// `AssumeRoleWithWebIdentityResponse` — the credential fields carry the
+/// same tag names in both.
 pub fn parse_assume_role_response(xml: &str) -> Result<Credentials, String> {
     let field = |name: &str| -> Result<String, String> {
         let open = format!("<{name}>");

@@ -438,6 +438,7 @@ mod role_identity_tests {
                 from_attribution: Some("cost_center".into()),
             }],
             allow,
+            base: None,
         }
     }
 

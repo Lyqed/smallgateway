@@ -165,6 +165,52 @@ pub struct StsConfig {
     /// a caller-asserted key into `role_arn`/`session_name` templates.
     #[serde(default)]
     pub allow: Option<AllowList>,
+    /// The optional web-identity BASE hop for the two-hop role chain: hop 1
+    /// exchanges a platform-provided OIDC token for BASE credentials via
+    /// `AssumeRoleWithWebIdentity` (token-authed, unsigned); hop 2 then
+    /// chains into the (possibly per-request) target role with an
+    /// `AssumeRole` call SigV4-SIGNED by those base credentials — which is
+    /// what live STS requires. Absent: today's single unsigned hop against
+    /// the mock pair, byte-for-byte unchanged. Role chaining caps the
+    /// chained session at one hour, so `duration_secs` must be <= 3600
+    /// when a base hop is configured (validated).
+    #[serde(default)]
+    pub base: Option<BaseHop>,
+}
+
+/// The web-identity base hop of the role chain. Both hops talk to the same
+/// [`StsConfig::endpoint`]; this block carries the base identity and the
+/// SigV4 region for the signed hop-2 call.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaseHop {
+    pub web_identity_token: TokenSourceSpec,
+    /// The base role: the PLATFORM's own identity. Static by design — the
+    /// per-request/team selection happens on the chained hop, never here.
+    pub role_arn: String,
+    #[serde(default = "default_base_session_name")]
+    pub session_name: String,
+    /// SigV4 region for the signed hop-2 STS call.
+    #[serde(default = "default_region")]
+    pub sts_region: String,
+}
+
+/// Where the gateway reads its web-identity token: a platform-mounted file
+/// (projected service-account token, managed-identity token file) or an
+/// environment variable. Exactly one (validated). Deliberately NOT a
+/// caller header — the base identity belongs to the platform, never to the
+/// request.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenSourceSpec {
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub env: Option<String>,
+}
+
+fn default_base_session_name() -> String {
+    "gatewayd-base".to_string()
 }
 
 /// A value the operator decides. Either a bare string (also the template

@@ -79,6 +79,33 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
                     }
                 }
             }
+            if let Some(base) = &sts.base {
+                let bctx = format!("{ctx}: base");
+                match (&base.web_identity_token.file, &base.web_identity_token.env) {
+                    (Some(f), None) if !f.trim().is_empty() => {}
+                    (None, Some(v)) if !v.trim().is_empty() => {}
+                    _ => errs.push(format!(
+                        "{bctx}.web_identity_token: exactly one of 'file' or 'env' \
+                         must be set, non-empty"
+                    )),
+                }
+                if !base.role_arn.starts_with("arn:") || !base.role_arn.contains(":role/") {
+                    errs.push(format!(
+                        "{bctx}.role_arn {:?} is not an IAM role ARN (want arn:...:role/...)",
+                        base.role_arn
+                    ));
+                }
+                if let Err(e) = validate_session_name(&base.session_name) {
+                    errs.push(format!("{bctx}.session_name: {e}"));
+                }
+                if sts.duration_secs > 3600 {
+                    errs.push(format!(
+                        "{ctx}: duration_secs must be <= 3600 with a base hop — role \
+                         chaining caps the chained session at one hour (AWS), got {}",
+                        sts.duration_secs
+                    ));
+                }
+            }
             if sts.endpoint.host.trim().is_empty() {
                 errs.push(format!("{ctx}: endpoint.host must not be empty"));
             }

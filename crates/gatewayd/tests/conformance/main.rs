@@ -641,5 +641,111 @@ rejections:
     });
 }
 
+// ---------------------------------------------- GB-7: two-hop role chain
+
+/// Bedrock + STS config with the WEB-IDENTITY BASE HOP and per-request role
+/// identity: role_arn templated on the pinned `env`, RoleSessionName
+/// composed from `env` and the claim-proven `user`. The chained AssumeRole
+/// must be SigV4-signed with the hop-1 base credentials.
+fn gb7_chain_cfg(bedrock_port: u16, sts_port: u16, token_file: &str) -> String {
+    format!(
+        r#"
+providers:
+  bedrock-main:
+    kind: bedrock
+    upstream: {{ host: 127.0.0.1, port: {bedrock_port} }}
+    sts:
+      endpoint: {{ host: 127.0.0.1, port: {sts_port} }}
+      role_arn: arn:aws:iam::000000000000:role/bedrock-{{{{env}}}}
+      session_name: '{{{{env}}}}-{{{{user}}}}'
+      region: us-east-1
+      base:
+        web_identity_token: {{ file: {token_file} }}
+        role_arn: arn:aws:iam::000000000000:role/gatewayd-base
+        sts_region: us-east-1
+      tags:
+        - {{ key: user, from_attribution: user }}
+        - {{ key: env, from_attribution: env }}
+routes:
+  - prefix: /bedrock
+    provider: bedrock-main
+    attribution:
+      required_keys: [user]
+      pinned: {{ env: prod }}
+      from_claims: {{ user: sub }}
+auth:
+  jwt:
+    hs256_secret: conformance-secret
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{{"error":"unknown_route","path":"{{{{route}}}}"}}'
+"#
+    )
+}
+
+#[test]
+fn gb7_two_hop_chain_signs_the_assume_role_call() {
+    check("GB-7", "gb7_two_hop_chain_signs_the_assume_role_call", || {
+        let p = ports(3);
+        let token_file = std::env::temp_dir().join(format!("gb7-web-identity-{}.jwt", p[1]));
+        std::fs::write(&token_file, "mock-oidc-token\n").expect("write token file");
+        // --require-signed-chain: an unsigned chained AssumeRole would 403,
+        // so a 200 end-to-end PROVES hop 1 minted base creds from the token
+        // file and hop 2 arrived correctly SigV4-signed by them, with the
+        // per-request role (bedrock-prod) and session name (prod-alice).
+        let _sts = spawn_sts_signed(p[1]);
+        let _mock = spawn_mock(p[0], &spike_fixture("bedrock.jsonl"), "bedrock", true);
+        let _gw = spawn_gatewayd(
+            &gb7_chain_cfg(p[0], p[1], token_file.to_str().unwrap()),
+            p[2],
+            "gb7chain",
+        );
+        let token = mint_jwt(serde_json::json!({"sub": "alice", "exp": 4102444800u64}));
+        let auth = format!("Bearer {token}");
+        let resp = http(
+            p[2],
+            "POST",
+            "/bedrock/model/anthropic.claude/converse-stream",
+            &[("authorization", auth.as_str())],
+            b"{}",
+        );
+        assert_eq!(resp.status, 200, "body: {}", resp.body_text());
+        // The tags still ride the TEAM credentials to the mock Bedrock.
+        assert_eq!(resp.header("x-echo-session-tag-user"), Some("alice"));
+        assert_eq!(resp.header("x-echo-session-tag-env"), Some("prod"));
+        let _ = std::fs::remove_file(&token_file);
+    });
+}
+
+#[test]
+fn gb7_unsigned_chain_is_refused_by_signed_sts() {
+    check("GB-7", "gb7_unsigned_chain_is_refused_by_signed_sts", || {
+        // The vacuity guard for the test above: the SAME signed-mode mock
+        // STS refuses a single-hop config's unsigned AssumeRole, so the
+        // two-hop 200 cannot be explained by the mock not checking.
+        let p = ports(3);
+        let _sts = spawn_sts_signed(p[1]);
+        let _mock = spawn_mock(p[0], &spike_fixture("bedrock.jsonl"), "bedrock", true);
+        let _gw = spawn_gatewayd(&gb7_cfg(p[0], p[1]), p[2], "gb7unsigned");
+        let token = mint_jwt(serde_json::json!({"sub": "alice", "exp": 4102444800u64}));
+        let auth = format!("Bearer {token}");
+        let resp = http(
+            p[2],
+            "POST",
+            "/bedrock/model/anthropic.claude/converse-stream",
+            &[("authorization", auth.as_str())],
+            b"{}",
+        );
+        // The exchange fails (STS 403) -> gatewayd surfaces a 502, loudly.
+        assert_eq!(resp.status, 502, "body: {}", resp.body_text());
+    });
+}
+
 // GB-5 / GB-6 conformance lives in its own file (size budget).
 mod gb5;

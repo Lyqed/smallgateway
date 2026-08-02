@@ -439,3 +439,41 @@ fn sts_operator_value_with_both_sources_is_rejected() {
     let errs = errors_of(&yaml);
     assert!(errs.iter().any(|e| e.contains("exactly one of")), "{errs:?}");
 }
+
+#[test]
+fn sts_base_hop_caps_duration_at_one_hour() {
+    // Role chaining: AWS caps a chained session at 3600s. A base hop with a
+    // longer requested duration is a guaranteed live-STS ValidationError,
+    // refused at config load instead.
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/gw\n",
+        "      duration_secs: 7200\n",
+        "      base:\n",
+        "        web_identity_token: { env: GW_TOKEN }\n",
+        "        role_arn: arn:aws:iam::1:role/gw-base\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter().any(|e| e.contains("role") && e.contains("one hour")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn sts_base_token_source_is_exactly_one_of() {
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: 127.0.0.1, port: 6199 }\n",
+        "      role_arn: arn:aws:iam::1:role/gw\n",
+        "      base:\n",
+        "        web_identity_token: { file: /run/token, env: GW_TOKEN }\n",
+        "        role_arn: arn:aws:iam::1:role/gw-base\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter().any(|e| e.contains("exactly one of 'file' or 'env'")),
+        "{errs:?}"
+    );
+}

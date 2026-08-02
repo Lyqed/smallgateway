@@ -133,6 +133,20 @@ pub fn spawn_sts(port: u16) -> Proc {
     proc
 }
 
+/// Mock STS in `--require-signed-chain` mode: an unsigned (or mis-signed)
+/// chained AssumeRole gets a 403, so a two-hop test cannot pass vacuously.
+pub fn spawn_sts_signed(port: u16) -> Proc {
+    let child = Command::new(env!("CARGO_BIN_EXE_mock_sts"))
+        .args(["--port", &port.to_string(), "--require-signed-chain"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mock_sts (signed chain)");
+    let proc = Proc { child };
+    wait_for_port(port, "mock_sts");
+    proc
+}
+
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
