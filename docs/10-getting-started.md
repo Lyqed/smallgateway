@@ -193,7 +193,7 @@ where the credential is.
 
 # Real-world gateways, complete
 
-Three production-shaped configs — the full policy surface, nothing elided.
+Four production-shaped configs — the full policy surface, nothing elided.
 These are NATIVE gateway configs (file mode, or the flat config a control
 plane renders from a fleet repo): the advanced provider blocks below (the
 STS role chain, the Vertex WIF auth, injection, locations, telemetry,
@@ -520,6 +520,71 @@ alerts:
     endpoint: { host: hooks.internal, port: 443, tls: true }
     path: /clinical-fleet/gb6
 ```
+
+## Azure OpenAI and Foundry — no `azure` kind, on purpose
+
+There is no `azure` provider kind, and as of mid-2026 Azure itself is
+the reason that is not a gap: Microsoft's target surface is
+OpenAI-dialect. A Foundry (or Azure OpenAI) resource serves everything
+at `{resource}.services.ai.azure.com/openai/v1/*` — GA, no
+`api-version` parameter, the body `model` field (the DEPLOYMENT name)
+routes the request — and "everything" includes the non-OpenAI catalog
+(DeepSeek, Grok, Llama, Mistral, Microsoft MAI) and
+`/openai/v1/embeddings`. The caller's credential — `api-key` header or
+`Authorization: Bearer`, key or Entra token — forwards untouched. That
+is exactly the `openai` kind in the pass-through shape:
+
+```yaml
+# gateway.yaml — Azure Foundry behind the openai kind
+providers:
+  foundry:
+    kind: openai
+    upstream: { host: myresource.services.ai.azure.com, port: 443, tls: true }
+
+fleet:
+  attribution:
+    required_keys: [team]
+    pinned: { env: prod }
+    # Azure's body `model` is the customer-chosen DEPLOYMENT alias, so
+    # the gate is a closed list of names your org already controls.
+    models: [gpt-4o-prod, deepseek-v3-prod, embed-3-large]
+
+routes:
+  - prefix: /azure
+    provider: foundry
+
+rejections:
+  missing_attribution:
+    status: 428
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'
+```
+
+**Recommended: the v1 surface.** The classic deployment-scoped surface
+(`/openai/deployments/{id}/...?api-version=...`) still exists, but it
+carries the deployment in the PATH and no `model` in the body — with a
+`models:` gate configured the gateway fails closed on those requests
+(no model to read is a refusal, not a shrug). Point clients at
+`/openai/v1/*` and the gate, the caps, the spans all work exactly as on
+any openai-kind route.
+
+What does not exist yet: an Entra credential chain — the Azure sibling
+of the STS role chain and the WIF exchange, where the gateway mints the
+token and callers hold nothing. On Azure, callers keep their own
+credentials and the gateway enforces. Built when pulled, not before.
+
+And the Azure-specific honesty, which is really a thesis point: Azure
+has NO per-request billing dimension — no session tags, no billing
+labels. First-party attribution stops at the resource, the deployment,
+and (in preview) the Foundry project. Below that grain, the gateway's
+token ledger — the spans and logs, per attribution key — is not a
+complement to the invoice join; it is the ONLY per-request record that
+exists. Azure's own alternative is a deployment or project per team,
+which the `models:` gate composes with naturally.
 
 ## Local models, where there is no invoice at all
 
