@@ -264,7 +264,7 @@ template, which yields three honest shapes:
 |---|---|---|
 | Pass-through — no `sts:` | Every caller keeps its own | Only what callers' own roles and tags already do |
 | One static role + session tags | The gateway; ONE role | Gateway-guaranteed: tags → CUR and CloudTrail |
-| Templated role chain (above) | The gateway; a role PER team | Tags, plus IAM-level separation per team |
+| Templated role chain (above) | The gateway; one role for each value the template names (cost center, entity, team…) | Tags, plus IAM-level separation along that same line |
 
 **Pass-through.** Delete the `sts:` block and the caller's own SigV4
 signature forwards unchanged:
@@ -310,10 +310,11 @@ CloudTrail regardless. The one boundary is shared — any admitted caller
 can invoke whatever the one role can — and the moment that stops being
 acceptable is the reason the templated chain exists.
 
-**The templated chain** (the full config above). Choose it when teams
-need DIFFERENT PERMISSIONS at the IAM level — which models, which
-guardrail policies, which regions — not just different lines on the
-bill. Each step up this ladder is a provider-block diff, so starting at
+**The templated chain** (the full config above). Choose it when the
+units behind the templating key — cost centers, entities, teams,
+whatever the org attributes by — need DIFFERENT PERMISSIONS at the IAM
+level: which models, which guardrail policies, which regions. Not just
+different lines on the bill. Each step up this ladder is a provider-block diff, so starting at
 pass-through and ending at the chain is a migration measured in merge
 requests, not a redesign.
 
