@@ -73,6 +73,7 @@ pub mod render;
 pub mod rollout;
 pub mod server;
 pub mod source;
+pub mod status_http;
 pub mod store;
 pub mod telemetry;
 pub mod token;

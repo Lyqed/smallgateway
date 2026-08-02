@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -90,4 +92,74 @@ func setCondition(st *gwv1.LLMGatewayStatus, condType string, status metav1.Cond
 		LastTransitionTime: now,
 		ObservedGeneration: gen,
 	})
+}
+
+// dataPlaneTopology resolves the CR's data-plane replica count and
+// failure-domain labels (defaults: 1 replica, no labels).
+func dataPlaneTopology(gw *gwv1.LLMGateway) (int32, map[string]string) {
+	replicas := int32(1)
+	var labels map[string]string
+	if gw.Spec.DataPlanes != nil {
+		if gw.Spec.DataPlanes.Replicas != nil {
+			replicas = *gw.Spec.DataPlanes.Replicas
+		}
+		labels = gw.Spec.DataPlanes.Labels
+	}
+	if replicas < 1 {
+		replicas = 1
+	}
+	return replicas, labels
+}
+
+// labelTokenSpec renders the CR's failure-domain labels into gatewayctl's
+// --label-token label list ("k=v,k2=v2"; empty for no labels). Label keys
+// and values must stay inside a conservative charset: they ride a shell
+// command line and the token grammar (':' separates labels from secret,
+// ',' separates pairs).
+func labelTokenSpec(labels map[string]string) (string, error) {
+	if len(labels) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := labels[k]
+		for _, s := range []string{k, v} {
+			if s == "" || strings.ContainsAny(s, ",:'\"\\$` \t\n") {
+				return "", fmt.Errorf("label %q=%q contains characters the token grammar does not accept", k, v)
+			}
+		}
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, ","), nil
+}
+
+// ctlCommand builds the gatewayctl invocation: the fleet listener, the
+// status surface, and ONE --label-token per data-plane replica carrying the
+// CR's failure-domain labels — the per-ordinal secrets derive from the one
+// Secret env var with the same suffix scheme tokenSelectScript uses, so the
+// secret itself never appears in the pod spec. With label tokens present,
+// gatewayctl mints NO unlabeled base tokens and no dev default.
+func ctlCommand(gw *gwv1.LLMGateway) string {
+	replicas, labels := dataPlaneTopology(gw)
+	labelSpec, err := labelTokenSpec(labels)
+	if err != nil {
+		// Unreachable: ensureCtl validates before building. Defensive default.
+		labelSpec = ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "exec /usr/local/bin/gatewayctl --repo /repo --listen 0.0.0.0:%d --status-listen 0.0.0.0:%d",
+		ctlListenPort, ctlStatusPort)
+	for i := int32(0); i < replicas; i++ {
+		suffix := ""
+		if i > 0 {
+			suffix = fmt.Sprintf("-%d", i+1)
+		}
+		fmt.Fprintf(&b, " --label-token '%s:'\"$%s\"%s", labelSpec, joinTokenEnvVar, suffix)
+	}
+	return b.String()
 }

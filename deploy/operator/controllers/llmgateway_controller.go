@@ -21,7 +21,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -53,23 +56,24 @@ const (
 	joinTokenKey    = "join-token"
 	joinTokenEnvVar = "GATEWAY_JOIN_TOKEN"
 
-	// maxDataPlanes is the replica cap: gatewayctl mints exactly this many
-	// single-use join tokens (X, X-2, X-3) from one --join-token, and each data
-	// plane must burn a distinct one. Wider fleets are a label-token follow-up.
-	maxDataPlanes = 3
+	// ctlStatusPort is gatewayctl's read-only status surface (GET /status):
+	// per-node ack state + the applied render identity. The operator's Ready
+	// gate reads it, so Ready means "the fleet COMMITTED this config", not
+	// "the pods look healthy".
+	ctlStatusPort = 6186
 )
 
 // tokenSelectScript (POSIX sh) derives the pod's ordinal from its stable
-// StatefulSet name (…-<ordinal>) and picks the matching single-use token that
-// gatewayctl minted: ordinal 0 -> the base token, 1 -> "<base>-2", 2 ->
-// "<base>-3". Exported into $NODE_TOKEN for the gatewayd invocation.
+// StatefulSet name (…-<ordinal>) and picks its single-use LABEL token:
+// ordinal 0 -> the base secret, ordinal N -> "<base>-<N+1>". The operator
+// passes one --label-token per replica to gatewayctl with the same suffix
+// scheme, so any replica count gets a distinct token — no cap.
 const tokenSelectScript = `ORD="${POD_NAME##*-}"
-case "$ORD" in
-  0) NODE_TOKEN="$GATEWAY_JOIN_TOKEN" ;;
-  1) NODE_TOKEN="${GATEWAY_JOIN_TOKEN}-2" ;;
-  2) NODE_TOKEN="${GATEWAY_JOIN_TOKEN}-3" ;;
-  *) echo "no join token minted for ordinal $ORD (max 3 data planes)"; exit 1 ;;
-esac
+if [ "$ORD" = "0" ]; then
+  NODE_TOKEN="$GATEWAY_JOIN_TOKEN"
+else
+  NODE_TOKEN="${GATEWAY_JOIN_TOKEN}-$((ORD + 1))"
+fi
 export NODE_TOKEN`
 
 // Reconciler reconciles LLMGateway objects.
@@ -146,17 +150,40 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	gw.Status.ControlPlaneReady = ctlReady
 	gw.Status.DataPlanes = fmt.Sprintf("%d/%d", dpReady, dpDesired)
 
-	ready := ctlReady && dpReady >= 1 && dpReady == dpDesired
+	// 7) The fleet-commit gate: query gatewayctl's status surface for what
+	// each node ACTUALLY acked. Ready no longer means "the pods look
+	// healthy" — it means every desired node acked the control plane's
+	// currently-applied render. This closes the documented rollout window
+	// where renderedConfigHash showed a new input hash while the fleet
+	// still served the old config.
+	childrenReady := ctlReady && dpReady >= 1 && dpReady == dpDesired
+	fleetCommitted := false
+	fleetMsg := ""
+	if childrenReady {
+		fs, err := r.queryFleetStatus(ctx, gw.Namespace, names.ctlService)
+		if err != nil {
+			fleetMsg = fmt.Sprintf("fleet status unavailable: %v", err)
+			gw.Status.Nodes = nil
+		} else {
+			gw.Status.Nodes = fs.nodeStatuses()
+			fleetCommitted, fleetMsg = fs.committed(dpDesired)
+		}
+	}
+
+	ready := childrenReady && fleetCommitted
 	if ready {
-		setCondition(&gw.Status, "Ready", metav1.ConditionTrue, "AllChildrenReady",
-			"control plane and all data planes are Ready", gw.Generation)
+		setCondition(&gw.Status, "Ready", metav1.ConditionTrue, "FleetCommitted",
+			fmt.Sprintf("all %d data plane(s) acked the applied render", dpDesired), gw.Generation)
 		setCondition(&gw.Status, "Degraded", metav1.ConditionFalse, "Healthy", "", gw.Generation)
 	} else {
 		reason := "ControlPlaneNotReady"
 		msg := "waiting for gatewayctl to become Ready"
-		if ctlReady {
+		if ctlReady && !childrenReady {
 			reason = "DataPlanesNotReady"
 			msg = fmt.Sprintf("waiting for data planes (%d/%d Ready)", dpReady, dpDesired)
+		} else if childrenReady {
+			reason = "AwaitingFleetCommit"
+			msg = fleetMsg
 		}
 		setCondition(&gw.Status, "Ready", metav1.ConditionFalse, reason, msg, gw.Generation)
 	}
@@ -271,10 +298,7 @@ func (r *Reconciler) ensureControlPlane(ctx context.Context, gw *gwv1.LLMGateway
 			Name:    "gatewayctl",
 			Image:   image,
 			Command: []string{"/bin/sh", "-c"},
-			Args: []string{
-				fmt.Sprintf("exec /usr/local/bin/gatewayctl --repo /repo --listen 0.0.0.0:%d --join-token \"$%s\"",
-					ctlListenPort, joinTokenEnvVar),
-			},
+			Args:    []string{ctlCommand(gw)},
 			Env: []corev1.EnvVar{{
 				Name: joinTokenEnvVar,
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
@@ -282,7 +306,10 @@ func (r *Reconciler) ensureControlPlane(ctx context.Context, gw *gwv1.LLMGateway
 					Key:                  joinTokenKey,
 				}},
 			}},
-			Ports:          []corev1.ContainerPort{{Name: "fleet", ContainerPort: ctlListenPort}},
+			Ports: []corev1.ContainerPort{
+				{Name: "fleet", ContainerPort: ctlListenPort},
+				{Name: "status", ContainerPort: ctlStatusPort},
+			},
 			VolumeMounts:   []corev1.VolumeMount{{Name: "repo", MountPath: "/repo"}},
 			LivenessProbe:  tcpProbe("fleet", 5, 10),
 			ReadinessProbe: tcpProbe("fleet", 3, 5),
@@ -303,6 +330,8 @@ func (r *Reconciler) ensureControlPlane(ctx context.Context, gw *gwv1.LLMGateway
 		applyLabels(&svc.ObjectMeta, gw.Name, "control-plane")
 		svc.Spec.Selector = selectorLabels(gw.Name, "control-plane")
 		svc.Spec.Ports = []corev1.ServicePort{{
+			Name: "status", Port: ctlStatusPort, TargetPort: intstr.FromString("status"), Protocol: corev1.ProtocolTCP,
+		}, {
 			Name: "fleet", Port: ctlListenPort, TargetPort: intstr.FromString("fleet"), Protocol: corev1.ProtocolTCP,
 		}}
 		return nil
@@ -312,28 +341,22 @@ func (r *Reconciler) ensureControlPlane(ctx context.Context, gw *gwv1.LLMGateway
 
 func (r *Reconciler) ensureDataPlanes(ctx context.Context, gw *gwv1.LLMGateway, n childNameSet) error {
 	image := r.DefaultGatewaydImage
-	replicas := int32(1)
 	listen := int32(8080)
-	var labels map[string]string
 	if gw.Spec.DataPlanes != nil {
 		if gw.Spec.DataPlanes.Image != "" {
 			image = gw.Spec.DataPlanes.Image
 		}
-		if gw.Spec.DataPlanes.Replicas != nil {
-			replicas = *gw.Spec.DataPlanes.Replicas
-		}
 		if gw.Spec.DataPlanes.ListenPort != nil {
 			listen = *gw.Spec.DataPlanes.ListenPort
 		}
-		labels = gw.Spec.DataPlanes.Labels
 	}
-	if replicas > maxDataPlanes {
-		// gatewayctl mints exactly maxDataPlanes single-use join tokens from one
-		// --join-token, and each node must burn a DISTINCT token. Cap replicas
-		// so the operator never provisions a pod that cannot get a token. Wider
-		// fleets need per-node label-tokens (a follow-up).
-		replicas = maxDataPlanes
-	}
+	// Replicas + labels come from the shared topology resolver: gatewayctl
+	// is handed one --label-token per replica (same suffix scheme as
+	// tokenSelectScript), so ANY replica count gets a distinct token — the
+	// old 3-token cap is gone, and the CR's failure-domain labels ride the
+	// tokens to the fleet, where wave plans and GatewaySets select on them.
+	replicas, labels := dataPlaneTopology(gw)
+	_ = labels // carried by the join tokens; pods need no label knowledge
 	// gatewayd dials the control plane with tonic, which requires an explicit
 	// scheme on the endpoint URI (the http:// the standalone fleet demo uses);
 	// a schemeless host:port fails the HTTP/2 handshake with a transport error.
@@ -498,3 +521,90 @@ for f in /repo-src/*; do
   cp "$f" "$dst"
 done
 echo "unpacked repo:"; find /repo -type f | sort`
+
+// --- the fleet-commit gate: gatewayctl's status surface ---------------------
+
+// fleetStatus is the JSON gatewayctl serves on GET /status: the applied
+// render identity plus every node's last-said state, verbatim.
+type fleetStatus struct {
+	Applied struct {
+		RenderHash   string `json:"render_hash"`
+		SourceCommit string `json:"source_commit"`
+	} `json:"applied"`
+	CommittedVersion int64 `json:"committed_version"`
+	Nodes            []struct {
+		NodeID       string            `json:"node_id"`
+		Labels       map[string]string `json:"labels"`
+		Connected    bool              `json:"connected"`
+		AckedVersion *int64            `json:"acked_version"`
+		AckedHash    *string           `json:"acked_hash"`
+	} `json:"nodes"`
+}
+
+// queryFleetStatus reads gatewayctl's read-only status endpoint through the
+// control-plane Service. A short timeout: a slow or absent answer keeps
+// Ready false with a precise reason; it never blocks the reconcile loop.
+func (r *Reconciler) queryFleetStatus(ctx context.Context, namespace, ctlService string) (*fleetStatus, error) {
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/status", ctlService, namespace, ctlStatusPort)
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status endpoint returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	var fs fleetStatus
+	if err := json.Unmarshal(body, &fs); err != nil {
+		return nil, fmt.Errorf("status endpoint returned unparseable JSON: %w", err)
+	}
+	return &fs, nil
+}
+
+// nodeStatuses maps the fleet's answer onto the CR's status.nodes. Healthy
+// means connected AND acked exactly the currently-applied render.
+func (fs *fleetStatus) nodeStatuses() []gwv1.NodeStatus {
+	out := make([]gwv1.NodeStatus, 0, len(fs.Nodes))
+	for _, n := range fs.Nodes {
+		ns := gwv1.NodeStatus{NodeID: n.NodeID}
+		if n.AckedVersion != nil {
+			ns.AckedVersion = *n.AckedVersion
+		}
+		if n.AckedHash != nil {
+			ns.AckedHash = *n.AckedHash
+		}
+		ns.Healthy = n.Connected && n.AckedHash != nil && *n.AckedHash == fs.Applied.RenderHash
+		out = append(out, ns)
+	}
+	return out
+}
+
+// committed reports whether the fleet has COMMITTED the applied render:
+// exactly the desired number of nodes, every one connected and acking the
+// applied render_hash. The message names what is still missing.
+func (fs *fleetStatus) committed(desired int32) (bool, string) {
+	acked := 0
+	for _, n := range fs.Nodes {
+		if n.Connected && n.AckedHash != nil && *n.AckedHash == fs.Applied.RenderHash {
+			acked++
+		}
+	}
+	if int32(len(fs.Nodes)) < desired {
+		return false, fmt.Sprintf("%d/%d data plane(s) joined the fleet", len(fs.Nodes), desired)
+	}
+	if int32(acked) < desired {
+		return false, fmt.Sprintf("%d/%d data plane(s) acked the applied render %.12s",
+			acked, desired, fs.Applied.RenderHash)
+	}
+	return true, ""
+}

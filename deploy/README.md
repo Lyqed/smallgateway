@@ -113,17 +113,21 @@ Reflects the real reconciled cluster state:
 | `renderedConfigHash`       | SHA-256 over the rendered repo fragments — the operator's **config-input identity** (changes iff the desired config changes). See the honesty note below. |
 | `dataPlanes`               | Ready/desired data-plane pods, e.g. `2/2`. |
 | `controlPlaneReady`        | gatewayctl Deployment Ready. |
-| `nodes[]`                  | Per-node ack state, when an ack-query path is available (see follow-ups). |
+| `nodes[]`                  | Per-node ack state from the gatewayctl status surface: acked version/hash; healthy = connected AND acked the applied render. |
 
-**Honesty note on `renderedConfigHash`.** gatewayctl computes its own
-`render_hash` over the *composed flat* config bytes it distributes; the operator
-does not read that internal value (the fleet gRPC stream exposes no operator
-status query in M1). `renderedConfigHash` is therefore the operator's hash over
-the repo fragments it wrote — the config *input* identity — not a claim to have
-read gatewayctl's per-node ack hash. `Ready` is derived level-triggered from
-child Deployment readiness (gatewayctl Ready **and** all gatewayd replicas
-Ready), which is real cluster truth. Surfacing gatewayctl's per-node acks under
-`.nodes` needs a gatewayctl status query surface — a documented follow-up.
+**How `Ready` and the two hashes relate.** `renderedConfigHash` remains the
+operator's hash over the repo fragments it wrote — the config *input*
+identity. gatewayctl computes its own `render_hash` over the composed flat
+bytes it distributes, and now EXPOSES it, with every node's ack state, on a
+read-only status surface (`GET /status` on port 6186, through the
+control-plane Service). The operator reads it each reconcile: `.status.nodes`
+carries each node's acked version/hash (healthy = connected AND acked the
+currently-applied render), and **`Ready` requires the fleet COMMIT** — child
+Deployments ready AND every desired data plane connected and acking the
+applied `render_hash`. During a config rollout the CR therefore reports
+`Ready: False / AwaitingFleetCommit` (with a who-is-missing message) until
+the fleet actually swapped, closing the old window where status showed a new
+input hash while nodes still served the previous config.
 
 ## Gateway API alignment (what is standard vs native-CRD)
 
@@ -183,14 +187,16 @@ The fleet join model makes this a hard requirement:
   token under a new identity and be refused as a replay. A StatefulSet gives
   each pod a stable name (`<name>-gatewayd-<ordinal>`) that survives restart, so
   reconnect works.
-- **Distinct single-use token per node.** gatewayctl mints single-use tokens
-  `X`, `X-2`, `X-3` from one `--join-token X`. Each pod derives its ordinal from
-  its stable name and selects the matching token (`0→X`, `1→X-2`, `2→X-3`), so
-  every node burns a different token and a restart re-presents the same one.
-
-Because gatewayctl mints exactly three tokens, `dataPlanes.replicas` is capped
-at **3** in this milestone; wider fleets need per-node label-tokens (a
-follow-up).
+- **Distinct single-use LABEL token per node.** The operator passes gatewayctl
+  one `--label-token <labels>:<secret>` per replica (secrets derive from the
+  one Secret env var: ordinal `0` → the base, ordinal `N` → `<base>-<N+1>`,
+  the same scheme the pod-side selection script uses, so the secret never
+  appears in the pod spec). Every node burns a different token, a restart
+  re-presents the same one, and — because the tokens carry the CR's
+  `dataPlanes.labels` — every joined node lands in the fleet WITH its
+  failure-domain labels, which wave plans and GatewaySets select on. Any
+  replica count works; the old three-token cap is gone. With label tokens
+  present, gatewayctl mints no unlabeled base tokens and no dev default.
 
 ### Reconcile discipline
 
@@ -290,14 +296,8 @@ control plane's own Git-as-truth model one layer up: the merge is the deploy,
 - **Full upstream Gateway API conformance:** the `GatewayClass` claim +
   `Gateway`/`HTTPRoute` translation described above is an adapter seam in M1;
   full conformance (and the conformance test suite) is a follow-up.
-- **gatewayctl status query surface:** a read path so the operator can surface
-  gatewayctl's real per-node ack version/hash under `status.nodes` (today
-  readiness is derived from Deployment status).
 - **HA control plane:** `controlPlane.replicas` is pinned to 1 in v1alpha1
   (the runtime store — acks, budgets — is in-memory single-authority).
-- **Data-plane failure-domain labels:** `dataPlanes.labels` are accepted in the
-  spec; wiring them through per-pod label-tokens so wave plans / GatewaySets
-  select on them is a follow-up.
 - **GB-2 auth in the CRD (the k8s surface only):** the GATEWAY half is now
   built — HS256 for fleet-minted tokens, RS256 against an inline JWKS (key
   rotation rides the same GB-9 hot-swap as every rule), and verified claims
@@ -309,16 +309,3 @@ control plane's own Git-as-truth model one layer up: the merge is the deploy,
   exposes no `spec.auth` — a set one is pruned, not silently ignored — and
   the field appears only together with working Secret resolution, verified
   end to end. Turning GB-2 on remains a per-fleet judgment call either way.
-- **`renderedConfigHash` reported as Ready before fleet commit (rollout window):**
-  On a CR edit the operator rolls the gatewayctl Deployment (config-hash
-  annotation change). For the ~60-90s the new gatewayctl pod is starting, the
-  data plane stays connected to the old gatewayctl instance and keeps serving
-  the **previous** config version, while `status.renderedConfigHash` already
-  shows the **new** input hash. It converges once the new gatewayctl comes up
-  and re-distributes (observed: data plane swaps cfg and enforces the new rule).
-  This is eventual consistency during rollout, not permanent drift, but status
-  momentarily reports the new hash before the fleet has committed it. Gating
-  `Ready` on an observed fleet-commit version (rather than only child Deployment
-  readiness) needs the gatewayctl status query surface above and is a follow-up;
-  until then `renderedConfigHash` is documented as the config **input** identity,
-  not proof of fleet-wide commit.

@@ -55,11 +55,18 @@ const DEFAULT_POLL_SECS: u64 = 3;
 const DEFAULT_RECONCILE_SECS: u64 = 5;
 const DEFAULT_TOKEN_TTL_SECS: u64 = 300;
 const DEFAULT_JOIN_TOKEN: &str = "dev-join-token";
+const DEFAULT_STATUS_LISTEN: &str = "127.0.0.1:6186";
 const DEFAULT_GIT_REF: &str = "HEAD";
 
 struct Cli {
     listen: String,
-    join_token: String,
+    /// The read-only status endpoint (GET /status): per-node ack state +
+    /// the applied render identity. The operator's Ready gate reads this.
+    status_listen: String,
+    /// Explicitly-provided base join token, if any. The well-known dev
+    /// default is minted ONLY when no token of any kind was configured —
+    /// a label-token deployment never carries a guessable backdoor token.
+    join_token: Option<String>,
     token_ttl: u64,
     poll_interval: Duration,
     reconcile_interval: Duration,
@@ -87,6 +94,7 @@ struct Flags {
     git_repo: Option<PathBuf>,
     git_ref: Option<String>,
     listen: Option<String>,
+    status_listen: Option<String>,
     join_token: Option<String>,
     token_ttl: Option<u64>,
     poll_secs: Option<u64>,
@@ -107,6 +115,7 @@ impl Flags {
                 "--git-repo" => f.git_repo = Some(PathBuf::from(&args[i + 1])),
                 "--git-ref" => f.git_ref = Some(args[i + 1].clone()),
                 "--listen" => f.listen = Some(args[i + 1].clone()),
+                "--status-listen" => f.status_listen = Some(args[i + 1].clone()),
                 "--join-token" => f.join_token = Some(args[i + 1].clone()),
                 "--push-raw" => f.push_raw = Some(PathBuf::from(&args[i + 1])),
                 "--break-glass-file" => f.break_glass_file = Some(PathBuf::from(&args[i + 1])),
@@ -166,10 +175,13 @@ impl Cli {
                 .listen
                 .or_else(|| std::env::var("GATEWAYCTL_LISTEN").ok())
                 .unwrap_or_else(|| DEFAULT_LISTEN.into()),
+            status_listen: f
+                .status_listen
+                .or_else(|| std::env::var("GATEWAYCTL_STATUS_LISTEN").ok())
+                .unwrap_or_else(|| DEFAULT_STATUS_LISTEN.into()),
             join_token: f
                 .join_token
-                .or_else(|| std::env::var("GATEWAYCTL_JOIN_TOKEN").ok())
-                .unwrap_or_else(|| DEFAULT_JOIN_TOKEN.into()),
+                .or_else(|| std::env::var("GATEWAYCTL_JOIN_TOKEN").ok()),
             token_ttl: f.token_ttl.unwrap_or(DEFAULT_TOKEN_TTL_SECS),
             poll_interval: Duration::from_secs(f.poll_secs.unwrap_or(DEFAULT_POLL_SECS)),
             reconcile_interval: Duration::from_secs(f.reconcile_secs.unwrap_or(DEFAULT_RECONCILE_SECS)),
@@ -308,10 +320,27 @@ fn run_serve(cli: Cli) -> ! {
     fleet.set_canary_policy(canary_policy);
     let store = Arc::new(RuntimeStore::new());
     let tokens = Arc::new(JoinTokens::new(cli.token_ttl));
-    // Mint the operator-supplied join token(s) so joining nodes can bootstrap.
-    tokens.mint(&cli.join_token, Default::default());
-    tokens.mint(&format!("{}-2", cli.join_token), Default::default());
-    tokens.mint(&format!("{}-3", cli.join_token), Default::default());
+    // Mint join tokens. An explicit --join-token mints the base + two derived
+    // (the original three-node bootstrap). With ONLY --label-token flags, no
+    // unlabeled base tokens exist at all; and the well-known dev default is
+    // minted only when nothing was configured — a labeled deployment never
+    // carries a guessable backdoor token.
+    let mut unlabeled = 0usize;
+    match &cli.join_token {
+        Some(base) => {
+            tokens.mint(base, Default::default());
+            tokens.mint(&format!("{base}-2"), Default::default());
+            tokens.mint(&format!("{base}-3"), Default::default());
+            unlabeled = 3;
+        }
+        None if cli.label_tokens.is_empty() => {
+            tokens.mint(DEFAULT_JOIN_TOKEN, Default::default());
+            tokens.mint(&format!("{DEFAULT_JOIN_TOKEN}-2"), Default::default());
+            tokens.mint(&format!("{DEFAULT_JOIN_TOKEN}-3"), Default::default());
+            unlabeled = 3;
+        }
+        None => {}
+    }
     // Labeled tokens: a node presenting one joins carrying its failure-domain
     // labels, which the wave plan and GatewaySets select on.
     for (labels, secret) in &cli.label_tokens {
@@ -319,10 +348,19 @@ fn run_serve(cli: Cli) -> ! {
     }
     info!(
         "gatewayctl minted {} join token(s) ({} labeled; ttl={}s); nodes present --join-token to bootstrap",
-        3 + cli.label_tokens.len(),
+        unlabeled + cli.label_tokens.len(),
         cli.label_tokens.len(),
         cli.token_ttl
     );
+
+    // The read-only status surface (GET /status): per-node ack state + the
+    // applied render identity. Bind failure is fatal at startup, not a
+    // surprise on the operator's first query.
+    if let Err(e) = gatewayctl::status_http::spawn(&cli.status_listen, fleet.clone(), store.clone())
+    {
+        eprintln!("gatewayctl: cannot bind status listener {}: {e}", cli.status_listen);
+        std::process::exit(1);
+    }
 
     let cp = ControlPlane::new(fleet, store, tokens);
     let source = cli.source.clone();
