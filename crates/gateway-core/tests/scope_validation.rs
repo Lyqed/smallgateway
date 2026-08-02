@@ -726,3 +726,32 @@ fn models_list_composes_by_replacement_and_validates() {
     let errs = errors_of(&bad);
     assert!(errs.iter().any(|e| e.contains("trailing-* family pattern")), "{errs:?}");
 }
+
+// ---- The Getting Started examples must never rot ----
+
+/// Extract the full `gateway.yaml` fenced blocks from the doc (the ones
+/// whose first line is a `# gateway.yaml` comment) and load-validate each
+/// through the real pipeline. A doc example a reader cannot paste and run
+/// is worse than no example.
+#[test]
+fn getting_started_examples_load_and_validate() {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/10-getting-started.md"),
+    )
+    .expect("read docs/10-getting-started.md");
+    let mut found = 0;
+    for block in doc.split("```yaml").skip(1) {
+        let yaml = block.split("```").next().unwrap_or("");
+        // Native flat configs only: the k8s CR example also carries a
+        // `# gateway.yaml` comment but is an apiVersion'd manifest the
+        // operator (not Config::from_yaml) consumes.
+        if !yaml.trim_start().starts_with("# gateway.yaml") || yaml.contains("apiVersion:") {
+            continue;
+        }
+        found += 1;
+        if let Err(e) = Config::from_yaml(yaml) {
+            panic!("getting-started example {found} does not validate: {e:?}");
+        }
+    }
+    assert!(found >= 2, "expected the Bedrock and Vertex examples, found {found}");
+}
