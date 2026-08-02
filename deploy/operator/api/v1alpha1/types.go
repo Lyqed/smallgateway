@@ -127,10 +127,14 @@ type SpendCaps struct {
 
 // SpendCap is one attributed-spend ceiling.
 type SpendCap struct {
-	Key      string `json:"key"`
-	Value    string `json:"value"`
-	LimitUsd string `json:"limitUsd"`
-	Window   string `json:"window,omitempty"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	// The ceiling in TOKENS. The gateway meters tokens (its authoritative
+	// quantity); dollars are the cloud invoice's meter, not ours.
+	LimitTokens int64  `json:"limitTokens"`
+	Window      string `json:"window,omitempty"`
+	// GB-6 alert threshold in percent (1-100); alert at N, enforce at 100.
+	AlertAt int32 `json:"alertAt,omitempty"`
 }
 
 // ControlPlaneSpec is the gatewayctl topology.

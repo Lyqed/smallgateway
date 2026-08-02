@@ -7,7 +7,7 @@ use bytes::Bytes;
 use log::{error, info};
 
 use gateway_core::attribution::Tag;
-use gateway_core::budget::{CapId, Verdict};
+use gateway_core::budget::{CapId, CapTerms, Verdict};
 use gateway_core::config::StreamingRejection;
 use gateway_core::metering::MeterReport;
 use gateway_core::scope::EffectivePolicy;
@@ -34,14 +34,15 @@ pub(crate) fn admit_caps(
     tags: &[Tag],
     route_prefix: &str,
     cfg_version: u64,
-) -> Result<Vec<(CapId, u64)>, CapDenial> {
+    now_unix: u64,
+) -> Result<Vec<(CapId, CapTerms)>, CapDenial> {
     let mut caps = Vec::new();
     for tag in tags {
-        let Some(cap) = policy.cap_for(&tag.key, &tag.value) else {
+        let Some(terms) = policy.terms_for(&tag.key, &tag.value) else {
             continue;
         };
         let id = CapId::new(&tag.key, &tag.value);
-        match budgets.admit(&id, Some(cap)) {
+        match budgets.admit(&id, Some(&terms), now_unix) {
             Verdict::Deny { cap } => {
                 let spent = budgets.snapshot(&id).map(|(_, _, s)| s).unwrap_or(cap);
                 return Err(CapDenial { id, cap, spent });
@@ -51,9 +52,9 @@ pub(crate) fn admit_caps(
                     "[gb5 {route_prefix}] {id} at/above ~90% of local share; will escalate \
                      cfg=v{cfg_version}"
                 );
-                caps.push((id, cap));
+                caps.push((id, terms));
             }
-            Verdict::Allow => caps.push((id, cap)),
+            Verdict::Allow => caps.push((id, terms)),
         }
     }
     Ok(caps)
@@ -100,17 +101,18 @@ pub(crate) fn log_meter_report(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn charge_caps_and_cut(
     budgets: &NodeBudgets,
-    caps: &[(CapId, u64)],
+    caps: &[(CapId, CapTerms)],
     delta: u64,
     streaming: Option<&StreamingRejection>,
     route_prefix: &str,
     cfg_version: u64,
+    now_unix: u64,
 ) -> Option<Bytes> {
     if delta == 0 {
         return None;
     }
-    for (id, cap) in caps {
-        if let MeterOutcome::Cut { id, cap } = budgets.meter(id, Some(*cap), delta) {
+    for (id, terms) in caps {
+        if let MeterOutcome::Cut { id, cap } = budgets.meter(id, Some(terms), delta, now_unix) {
             let spent = budgets.snapshot(&id).map(|(_, _, s)| s).unwrap_or(cap);
             error!(
                 "[gb5 {route_prefix}] {id} EXCEEDED mid-stream: spent {spent}/{cap} tokens; \

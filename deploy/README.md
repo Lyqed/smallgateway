@@ -86,7 +86,7 @@ distribute.
 | `spec.projects.<p>.attribution`   | —        | `projects/<p>/base.chain.yaml`                |
 | `spec.routes[]`                   | —        | `routes/<name>.route.yaml` (one per route)    |
 | `spec.rejections.missingAttribution` / `unknownRoute` | GB-4 | `rejections.yaml` (operator-owned bodies) |
-| `spec.spendCaps.caps[]`           | GB-5     | `budget.yaml`                                 |
+| `spec.spendCaps.caps[]`           | GB-5     | `fleet/base.chain.yaml` → `attribution.spend_caps` (token ceilings + window + alertAt) |
 | `spec.controlPlane`               | —        | gatewayctl Deployment topology                |
 | `spec.dataPlanes`                 | —        | gatewayd Deployment topology (replicas, labels, port) |
 

@@ -32,13 +32,55 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use gateway_core::budget::{
-    Alert, AlertLatch, AlertSink, CapId, LocalBudget, Verdict, ESCALATION_FRACTION,
+    Alert, AlertLatch, AlertSink, CapId, CapTerms, LocalBudget, Verdict, Window,
+    ESCALATION_FRACTION,
 };
 
 /// One capped spender's node-local state: the counter, its GB-6 alert latch.
 struct Entry {
     budget: LocalBudget,
     latch: AlertLatch,
+    /// The billing window this cap rolls on, from the last-seen config
+    /// terms (`None` → lifetime, never resets).
+    window: Option<Window>,
+    /// The window id the counters currently belong to (0 for lifetime).
+    window_id: u64,
+    /// The GB-6 soft-alert fraction from the last-seen terms.
+    alert_fraction: f64,
+}
+
+impl Entry {
+    /// Lazy rollover: if the wall clock left the window the counters belong
+    /// to, the spend starts over and the alert latch re-arms. Lazy (checked
+    /// on every touch) instead of scheduled: it needs no timers, survives
+    /// restarts, and every node computes the same UTC-aligned window id
+    /// from its own clock — residual error is bounded by clock skew.
+    fn roll(&mut self, now_unix: u64) {
+        let Some(window) = self.window else { return };
+        let id = window.id_at(now_unix);
+        if id != self.window_id {
+            self.budget.reset_window_spend();
+            self.latch = AlertLatch::new();
+            self.window_id = id;
+        }
+    }
+
+    /// Adopt the request's composed terms (config may have hot-swapped), then
+    /// roll. A CHANGED window kind resets the counters: yesterday's spend has
+    /// no meaning against a new window shape.
+    fn sync_terms(&mut self, terms: Option<&CapTerms>, now_unix: u64) {
+        if let Some(t) = terms {
+            self.alert_fraction = t.alert_fraction;
+            if self.window != t.window {
+                self.window = t.window;
+                self.window_id = t.window.map(|w| w.id_at(now_unix)).unwrap_or(0);
+                self.budget.reset_window_spend();
+                self.latch = AlertLatch::new();
+                return;
+            }
+        }
+        self.roll(now_unix);
+    }
 }
 
 /// The node's whole GB-5 state: a [`LocalBudget`] + alert latch per capped
@@ -97,17 +139,21 @@ impl NodeBudgets {
             // safe ceiling until the control plane grants a fleet-aware slice.
             budget: LocalBudget::new(id.clone(), cap, cap.unwrap_or(0)),
             latch: AlertLatch::new(),
+            window: None,
+            window_id: 0,
+            alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION,
         })
     }
 
     /// Admit (or refuse) a request for a capped `key=value` BEFORE it reaches
-    /// the upstream. `cap` is the composed cap for this value from the request's
-    /// policy (`None` → uncapped, always allowed). Returns the verdict; the
-    /// proxy rejects with the GB-4 template on `Deny`. Does not record spend —
-    /// that happens as the stream meters.
-    pub fn admit(&self, id: &CapId, cap: Option<u64>) -> Verdict {
+    /// the upstream. `terms` is the composed cap+window+alert for this value
+    /// from the request's policy (`None` → uncapped, always allowed). Returns
+    /// the verdict; the proxy rejects with the GB-4 template on `Deny`. Does
+    /// not record spend — that happens as the stream meters.
+    pub fn admit(&self, id: &CapId, terms: Option<&CapTerms>, now_unix: u64) -> Verdict {
         let mut inner = self.inner.lock().expect("budget lock");
-        let entry = Self::ensure(&mut inner, id, cap);
+        let entry = Self::ensure(&mut inner, id, terms.map(|t| t.cap));
+        entry.sync_terms(terms, now_unix);
         // Probe with one token: a request that reaches the upstream will spend
         // at least something, so a value already AT its cap (no room for even
         // one token) denies. Below the cap the probe reports Allow/Escalate
@@ -121,18 +167,27 @@ impl NodeBudgets {
 
     /// Record `tokens` of live-metered spend for a capped value mid-stream and
     /// decide whether the stream must be cut. Fires GB-6 alerts (soft/hard) at
-    /// this enforcement point. Returns [`MeterOutcome::Cut`] when the running
-    /// tally crosses the bound (the cap, or — partitioned — the held share).
-    pub fn meter(&self, id: &CapId, cap: Option<u64>, tokens: u64) -> MeterOutcome {
+    /// this enforcement point, at the operator's alert_at threshold. Returns
+    /// [`MeterOutcome::Cut`] when the running tally crosses the bound (the
+    /// cap, or — partitioned — the held share).
+    pub fn meter(
+        &self,
+        id: &CapId,
+        terms: Option<&CapTerms>,
+        tokens: u64,
+        now_unix: u64,
+    ) -> MeterOutcome {
         let mut inner = self.inner.lock().expect("budget lock");
-        let entry = Self::ensure(&mut inner, id, cap);
+        let entry = Self::ensure(&mut inner, id, terms.map(|t| t.cap));
+        entry.sync_terms(terms, now_unix);
         entry.budget.commit(tokens);
 
         // GB-6: fire soft/hard alerts from the enforcement layer itself.
-        if let Some(cap) = cap {
+        if let Some(t) = terms {
+            let fraction = entry.alert_fraction;
             for alert in entry
                 .latch
-                .cross(id, cap, entry.budget.spent(), &self.node_id)
+                .cross(id, t.cap, entry.budget.spent(), &self.node_id, fraction)
             {
                 self.alerts.emit(&alert);
             }
@@ -140,7 +195,7 @@ impl NodeBudgets {
 
         // The bound: the cap when connected, the held share when partitioned
         // (bounded overspend — a partitioned node cannot grow its share).
-        let Some(cap) = cap else {
+        let Some(cap) = terms.map(|t| t.cap) else {
             return MeterOutcome::Continue; // uncapped
         };
         let bound = if self.is_partitioned() {
@@ -174,9 +229,14 @@ impl NodeBudgets {
 
     /// Reconcile a stream's live estimate to the provider's authoritative
     /// terminal usage frame at stream end (docs/01 Q3). No-op when they agree.
-    pub fn settle(&self, id: &CapId, estimated: u64, authoritative: u64) {
+    /// Rolls the window first: a stream that started in window N and settles
+    /// in N+1 reconciles into the NEW window's counter (saturating), a
+    /// boundary fuzz bounded by one stream's tokens — the same honesty class
+    /// as clock skew.
+    pub fn settle(&self, id: &CapId, estimated: u64, authoritative: u64, now_unix: u64) {
         let mut inner = self.inner.lock().expect("budget lock");
         if let Some(e) = inner.get_mut(id) {
+            e.roll(now_unix);
             e.budget.reconcile(estimated, authoritative);
         }
     }
@@ -186,19 +246,22 @@ impl NodeBudgets {
     /// (docs/01 Q3) when one landed, then log its post-reconcile state. When no
     /// usage frame arrived the estimate stands as the charge (its error bound is
     /// the published Q3 number). `caps` is the request's `(CapId, cap)` list.
+    #[allow(clippy::too_many_arguments)] // one call site; a params struct adds noise
     pub fn settle_and_log(
         &self,
-        caps: &[(CapId, u64)],
+        caps: &[(CapId, CapTerms)],
         estimated: u64,
         authoritative: Option<u64>,
         route: &str,
         version: u64,
         cut: bool,
+        now_unix: u64,
     ) {
         let cut_note = if cut { " [CUT]" } else { "" };
-        for (id, cap) in caps {
+        for (id, terms) in caps {
+            let cap = terms.cap;
             if let Some(auth) = authoritative {
-                self.settle(id, estimated, auth);
+                self.settle(id, estimated, auth, now_unix);
                 if let Some((_, share, spent)) = self.snapshot(id) {
                     log::info!(
                         "[budget {route}] {id} reconciled est={estimated}->auth={auth}; \
@@ -225,14 +288,18 @@ impl NodeBudgets {
         }
     }
 
-    /// The observed cumulative spend to report up the stream: `(id, cap, spent)`
-    /// for every capped value with nonzero spend. The control plane rebalances
-    /// shares from this telemetry.
-    pub fn spend_report(&self) -> Vec<(CapId, u64, u64)> {
-        let inner = self.inner.lock().expect("budget lock");
+    /// The observed spend to report up the stream: `(id, cap, spent)` for
+    /// every capped value with nonzero spend in the CURRENT window (entries
+    /// roll lazily first). The control plane rebalances shares from this
+    /// telemetry; because its ledger OVERWRITES per-node spend, a node's
+    /// post-rollover (smaller) report propagates the new window fleet-wide
+    /// with no extra protocol.
+    pub fn spend_report(&self, now_unix: u64) -> Vec<(CapId, u64, u64)> {
+        let mut inner = self.inner.lock().expect("budget lock");
         inner
-            .iter()
+            .iter_mut()
             .filter_map(|(id, e)| {
+                e.roll(now_unix);
                 let cap = e.budget.cap()?;
                 if e.budget.spent() == 0 {
                     return None;
@@ -243,12 +310,14 @@ impl NodeBudgets {
     }
 
     /// The set of capped values at/above the escalation band — the spenders a
-    /// synchronous `SyncCheck` should carry.
-    pub fn escalating(&self) -> Vec<(CapId, u64, u64)> {
-        let inner = self.inner.lock().expect("budget lock");
+    /// synchronous `SyncCheck` should carry. Rolls lazily first, so a spender
+    /// that crossed into a new window stops escalating.
+    pub fn escalating(&self, now_unix: u64) -> Vec<(CapId, u64, u64)> {
+        let mut inner = self.inner.lock().expect("budget lock");
         inner
-            .iter()
+            .iter_mut()
             .filter_map(|(id, e)| {
+                e.roll(now_unix);
                 let cap = e.budget.cap()?;
                 if e.budget.consumed_fraction() >= ESCALATION_FRACTION {
                     Some((id.clone(), cap, e.budget.spent()))
@@ -339,21 +408,23 @@ mod tests {
     #[test]
     fn admit_allows_under_cap_and_denies_when_exhausted() {
         let (b, _) = budgets();
-        let cap = Some(100_000);
-        assert_eq!(b.admit(&id(), cap), Verdict::Allow);
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let cap = Some(&terms);
+        assert_eq!(b.admit(&id(), cap, 0), Verdict::Allow);
         // Spend it to the cap via metering.
-        assert_eq!(b.meter(&id(), cap, 100_000), MeterOutcome::Continue);
+        assert_eq!(b.meter(&id(), cap, 100_000, 0), MeterOutcome::Continue);
         // A new request for the same value is now denied at admission.
-        assert_eq!(b.admit(&id(), cap), Verdict::Deny { cap: 100_000 });
+        assert_eq!(b.admit(&id(), cap, 0), Verdict::Deny { cap: 100_000 });
     }
 
     #[test]
     fn meter_cuts_the_stream_when_the_running_tally_crosses_the_cap() {
         let (b, _) = budgets();
-        let cap = Some(100_000);
-        assert_eq!(b.meter(&id(), cap, 90_000), MeterOutcome::Continue);
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let cap = Some(&terms);
+        assert_eq!(b.meter(&id(), cap, 90_000, 0), MeterOutcome::Continue);
         // The next chunk crosses the cap -> cut.
-        match b.meter(&id(), cap, 20_000) {
+        match b.meter(&id(), cap, 20_000, 0) {
             MeterOutcome::Cut { id: cid, cap: c } => {
                 assert_eq!(cid, id());
                 assert_eq!(c, 100_000);
@@ -365,29 +436,31 @@ mod tests {
     #[test]
     fn alerts_fire_from_the_meter_at_soft_then_hard() {
         let (b, sink) = budgets();
-        let cap = Some(100_000);
-        b.meter(&id(), cap, 79_000); // below soft
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let cap = Some(&terms);
+        b.meter(&id(), cap, 79_000, 0); // below soft
         assert!(sink.alerts().is_empty());
-        b.meter(&id(), cap, 5_000); // crosses 80% (84k)
+        b.meter(&id(), cap, 5_000, 0); // crosses 80% (84k)
         assert_eq!(sink.alerts().len(), 1);
         assert!(matches!(sink.alerts()[0].kind, AlertKind::SoftThreshold { .. }));
-        b.meter(&id(), cap, 20_000); // crosses cap (104k)
+        b.meter(&id(), cap, 20_000, 0); // crosses cap (104k)
         assert!(sink.alerts().iter().any(|a| a.kind == AlertKind::HardCap));
     }
 
     #[test]
     fn uncapped_value_never_cuts_or_alerts() {
         let (b, sink) = budgets();
-        assert_eq!(b.admit(&id(), None), Verdict::Allow);
-        assert_eq!(b.meter(&id(), None, 10_000_000), MeterOutcome::Continue);
+        assert_eq!(b.admit(&id(), None, 0), Verdict::Allow);
+        assert_eq!(b.meter(&id(), None, 10_000_000, 0), MeterOutcome::Continue);
         assert!(sink.alerts().is_empty());
     }
 
     #[test]
     fn a_share_grant_shrinks_the_share_without_losing_spend() {
         let (b, _) = budgets();
-        let cap = Some(100_000);
-        b.meter(&id(), cap, 30_000);
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let cap = Some(&terms);
+        b.meter(&id(), cap, 30_000, 0);
         // The control plane grants this node a 40k slice (it is not the only
         // node). Spend is preserved; escalation now measures against 40k.
         b.apply_shares(&[(id(), 100_000, 40_000)]);
@@ -396,7 +469,7 @@ mod tests {
         assert_eq!(share, 40_000);
         assert_eq!(spent, 30_000);
         assert!(!b.should_escalate(&id())); // 30k of 40k = 75% < 90%
-        b.meter(&id(), cap, 8_000); // 38k of 40k = 95%
+        b.meter(&id(), cap, 8_000, 0); // 38k of 40k = 95%
         assert!(b.should_escalate(&id()));
     }
 
@@ -405,32 +478,34 @@ mod tests {
     #[test]
     fn under_partition_a_stream_is_cut_at_the_held_share_and_overspend_is_measured() {
         let (b, _) = budgets();
-        let cap = Some(100_000);
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let cap = Some(&terms);
         // The control plane granted a 40k slice, then the stream partitions.
         b.apply_shares(&[(id(), 100_000, 40_000)]);
         b.set_partitioned(true);
         // A new stream is admitted (room under the 40k share)...
-        assert_eq!(b.admit(&id(), cap), Verdict::Allow);
+        assert_eq!(b.admit(&id(), cap, 0), Verdict::Allow);
         // ...it meters up to and just past the share before the cut fires.
-        assert_eq!(b.meter(&id(), cap, 39_500), MeterOutcome::Continue);
+        assert_eq!(b.meter(&id(), cap, 39_500, 0), MeterOutcome::Continue);
         // The next chunk pushes past the 40k share -> cut (bound is the share,
         // not the 100k cap, because the node cannot reach the control plane).
-        match b.meter(&id(), cap, 1_200) {
+        match b.meter(&id(), cap, 1_200, 0) {
             MeterOutcome::Cut { cap: c, .. } => assert_eq!(c, 100_000),
             other => panic!("expected Cut at the share, got {other:?}"),
         }
         // The MEASURED overspend past the 40k share is the running stream's tail.
         assert_eq!(b.overspend(&id()), 700, "40_700 spent, 40_000 share");
         // And no new stream can start under partition.
-        assert_eq!(b.admit(&id(), cap), Verdict::Deny { cap: 100_000 });
+        assert_eq!(b.admit(&id(), cap, 0), Verdict::Deny { cap: 100_000 });
     }
 
     #[test]
     fn settle_reconciles_the_estimate_to_the_authoritative_frame() {
         let (b, _) = budgets();
-        let cap = Some(100_000);
-        b.meter(&id(), cap, 1_000); // live estimate
-        b.settle(&id(), 1_000, 1_250); // provider frame says 1_250
+        let terms = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let cap = Some(&terms);
+        b.meter(&id(), cap, 1_000, 0); // live estimate
+        b.settle(&id(), 1_000, 1_250, 0); // provider frame says 1_250
         let (_, _, spent) = b.snapshot(&id()).unwrap();
         assert_eq!(spent, 1_250);
     }
@@ -447,13 +522,14 @@ mod tests {
         let (b, _) = budgets();
         let cap: u64 = 100_000;
         let share: u64 = 40_000;
+        let pterms = CapTerms { cap, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
         b.apply_shares(&[(id(), cap, share)]);
         b.set_partitioned(true);
 
         // Admit one last stream just under the share, then let it run past.
-        assert_eq!(b.admit(&id(), Some(cap)), Verdict::Allow);
-        b.meter(&id(), Some(cap), 39_800); // still under the 40k share
-        let outcome = b.meter(&id(), Some(cap), 1_800); // crosses the share -> cut
+        assert_eq!(b.admit(&id(), Some(&pterms), 0), Verdict::Allow);
+        b.meter(&id(), Some(&pterms), 39_800, 0); // still under the 40k share
+        let outcome = b.meter(&id(), Some(&pterms), 1_800, 0); // crosses the share -> cut
         assert!(matches!(outcome, MeterOutcome::Cut { .. }));
 
         let overspend = b.overspend(&id());
@@ -476,12 +552,103 @@ mod tests {
     #[test]
     fn spend_report_carries_only_capped_nonzero_spenders() {
         let (b, _) = budgets();
-        b.meter(&id(), Some(100_000), 5_000);
-        b.meter(&CapId::new("region", "eu"), None, 9_000); // uncapped
-        b.meter(&CapId::new("team", "idle"), Some(50_000), 0); // zero spend
-        let report = b.spend_report();
+        let t100 = CapTerms { cap: 100_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        let t50 = CapTerms { cap: 50_000, window: None, alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION };
+        b.meter(&id(), Some(&t100), 5_000, 0);
+        b.meter(&CapId::new("region", "eu"), None, 9_000, 0); // uncapped
+        b.meter(&CapId::new("team", "idle"), Some(&t50), 0, 0); // zero spend
+        let report = b.spend_report(0);
         assert_eq!(report.len(), 1);
         assert_eq!(report[0].0, id());
         assert_eq!(report[0].2, 5_000);
+    }
+
+    // --- Billing windows (lazy rollover) -------------------------------------
+
+    fn minute_terms(cap: u64) -> CapTerms {
+        CapTerms {
+            cap,
+            window: Some(Window::Minute),
+            alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION,
+        }
+    }
+
+    #[test]
+    fn a_minute_window_rolls_the_counter_and_readmits() {
+        let (b, _) = budgets();
+        let t = minute_terms(100_000);
+        // Exhaust the cap inside window 0.
+        b.meter(&id(), Some(&t), 100_000, 10);
+        assert_eq!(b.admit(&id(), Some(&t), 30), Verdict::Deny { cap: 100_000 });
+        // 61s: a new minute window — the counter starts over, spend admitted.
+        assert_eq!(b.admit(&id(), Some(&t), 61), Verdict::Allow);
+        let (_, _, spent) = b.snapshot(&id()).unwrap();
+        assert_eq!(spent, 0, "window rollover resets the spend counter");
+    }
+
+    #[test]
+    fn a_lifetime_cap_never_rolls() {
+        let (b, _) = budgets();
+        let t = CapTerms {
+            cap: 100_000,
+            window: None,
+            alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION,
+        };
+        b.meter(&id(), Some(&t), 100_000, 0);
+        // A year later: still denied. Lifetime = the original behavior.
+        assert_eq!(
+            b.admit(&id(), Some(&t), 31_536_000),
+            Verdict::Deny { cap: 100_000 }
+        );
+    }
+
+    #[test]
+    fn alerts_re_arm_each_window_and_honor_alert_at() {
+        let (b, sink) = budgets();
+        // alert_at 50%: the operator's threshold, not the default 80.
+        let t = CapTerms {
+            cap: 100_000,
+            window: Some(Window::Minute),
+            alert_fraction: 0.5,
+        };
+        b.meter(&id(), Some(&t), 55_000, 0); // crosses 50% -> soft fires
+        assert_eq!(sink.alerts().len(), 1);
+        assert!(matches!(
+            sink.alerts()[0].kind,
+            AlertKind::SoftThreshold { fraction } if (fraction - 0.5).abs() < 1e-9
+        ));
+        b.meter(&id(), Some(&t), 1_000, 5); // same window: latched, no re-fire
+        assert_eq!(sink.alerts().len(), 1);
+        // Next minute: the latch re-armed; crossing fires again.
+        b.meter(&id(), Some(&t), 60_000, 70);
+        assert_eq!(sink.alerts().len(), 2);
+    }
+
+    #[test]
+    fn a_changed_window_kind_resets_the_counters() {
+        let (b, _) = budgets();
+        let day = CapTerms {
+            cap: 100_000,
+            window: Some(Window::Day),
+            alert_fraction: gateway_core::budget::SOFT_ALERT_FRACTION,
+        };
+        b.meter(&id(), Some(&day), 90_000, 100);
+        // The operator hot-swaps the cap to a minute window: yesterday's
+        // day-spend has no meaning against the new shape.
+        let minute = minute_terms(100_000);
+        assert_eq!(b.admit(&id(), Some(&minute), 100), Verdict::Allow);
+        let (_, _, spent) = b.snapshot(&id()).unwrap();
+        assert_eq!(spent, 0);
+    }
+
+    #[test]
+    fn spend_report_rolls_before_reporting() {
+        let (b, _) = budgets();
+        let t = minute_terms(100_000);
+        b.meter(&id(), Some(&t), 5_000, 0);
+        assert_eq!(b.spend_report(30).len(), 1, "same window: spend reported");
+        // Next window: the rolled counter reports empty — the control plane's
+        // overwrite ledger then propagates the reset fleet-wide.
+        assert!(b.spend_report(90).is_empty());
     }
 }

@@ -11,10 +11,9 @@
 //
 //	providers.yaml
 //	rejections.yaml            (GB-4, required)
-//	fleet/base.chain.yaml      (optional)
+//	fleet/base.chain.yaml      (optional; carries GB-5 spend_caps too)
 //	projects/<p>/base.chain.yaml
 //	routes/<name>.route.yaml   (one per route, sorted by filename)
-//	budget.yaml                (GB-5 caps; consumed by gatewayctl budget config)
 //
 // GB-2 JWT auth is project-deferred and is NOT rendered here (no auth.yaml);
 // the v1alpha1 spec exposes no auth field. See README "Follow-ups".
@@ -79,9 +78,20 @@ func Render(spec *gwv1.LLMGatewaySpec) (*Result, error) {
 	}
 	frags = append(frags, Fragment{Path: "rejections.yaml", Bytes: b})
 
-	// fleet/base.chain.yaml (optional scope 1)
+	// fleet/base.chain.yaml (optional scope 1). GB-5 spendCaps fold into the
+	// fleet scope's attribution.spend_caps — the config surface gatewayctl
+	// actually composes and the data planes enforce. (A separate budget.yaml
+	// was rendered before, which NOTHING read: a CR's caps never reached
+	// enforcement. Folding into the chain closes that honest-mapping defect.)
+	fleetAttr := map[string]any{}
 	if spec.Fleet != nil && spec.Fleet.Attribution != nil {
-		chain := map[string]any{"attribution": renderAttribution(spec.Fleet.Attribution)}
+		fleetAttr = renderAttribution(spec.Fleet.Attribution)
+	}
+	if spec.SpendCaps != nil && len(spec.SpendCaps.Caps) > 0 {
+		fleetAttr["spend_caps"] = renderSpendCaps(spec.SpendCaps.Caps)
+	}
+	if len(fleetAttr) > 0 {
+		chain := map[string]any{"attribution": fleetAttr}
 		b, err = yaml.Marshal(chain)
 		if err != nil {
 			return nil, fmt.Errorf("fleet chain: %w", err)
@@ -131,29 +141,6 @@ func Render(spec *gwv1.LLMGatewaySpec) (*Result, error) {
 	// not exposed in the v1alpha1 spec, so there is nothing to resolve here. It
 	// will be added only when the Secret->auth.yaml resolution is implemented
 	// and verified end to end (see README "Follow-ups").
-
-	// budget.yaml (GB-5 caps). gatewayctl reads a budget config; the caps map
-	// straight onto attributed-spend ceilings.
-	if spec.SpendCaps != nil && len(spec.SpendCaps.Caps) > 0 {
-		caps := make([]map[string]any, 0, len(spec.SpendCaps.Caps))
-		for _, c := range spec.SpendCaps.Caps {
-			window := c.Window
-			if window == "" {
-				window = "day"
-			}
-			caps = append(caps, map[string]any{
-				"key":       c.Key,
-				"value":     c.Value,
-				"limit_usd": c.LimitUsd,
-				"window":    window,
-			})
-		}
-		b, err = yaml.Marshal(map[string]any{"caps": caps})
-		if err != nil {
-			return nil, fmt.Errorf("budget: %w", err)
-		}
-		frags = append(frags, Fragment{Path: "budget.yaml", Bytes: b})
-	}
 
 	// Stable order for hashing and ConfigMap key layout.
 	sort.Slice(frags, func(i, j int) bool { return frags[i].Path < frags[j].Path })
@@ -228,4 +215,33 @@ var defaultUnknown = map[string]any{
 	"status":       404,
 	"content_type": "application/json",
 	"body":         `{"error":"unknown_route","path":"{{route}}"}`,
+}
+
+// renderSpendCaps groups the CR's flat cap list into the native
+// attribution.spend_caps shape: one entry per attribution key with
+// per-value overrides in TOKENS, plus the key's billing window and GB-6
+// alert threshold. When two caps on the same key disagree on window or
+// alertAt, the last one in the list wins (the CR is one reviewed document;
+// disagreement there is an authoring smell, not a runtime state).
+func renderSpendCaps(caps []gwv1.SpendCap) map[string]any {
+	byKey := map[string]map[string]any{}
+	for _, c := range caps {
+		spec, ok := byKey[c.Key]
+		if !ok {
+			spec = map[string]any{"overrides": map[string]any{}}
+			byKey[c.Key] = spec
+		}
+		spec["overrides"].(map[string]any)[c.Value] = c.LimitTokens
+		if c.Window != "" {
+			spec["window"] = c.Window
+		}
+		if c.AlertAt != 0 {
+			spec["alert_at"] = c.AlertAt
+		}
+	}
+	out := map[string]any{}
+	for k, v := range byKey {
+		out[k] = v
+	}
+	return out
 }

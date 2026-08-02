@@ -145,7 +145,7 @@ pub struct ReqCtx {
     event_counts: [usize; 6],
     /// GB-5: the capped spenders this request bills — one per resolved
     /// attribution tag that has a composed cap. `(CapId, cap_tokens)`.
-    caps: Vec<(CapId, u64)>,
+    caps: Vec<(CapId, gateway_core::budget::CapTerms)>,
     /// GB-5: the last estimated-output-token reading fed to the budget, so each
     /// tap computes the INCREMENT since the previous chunk (the Meter's
     /// estimate is cumulative). Reconciled to the authoritative frame at end.
@@ -339,7 +339,7 @@ impl ProxyHttp for Gateway {
         // GB-5: admit against the node-local budget for every capped tag before
         // the upstream (loop in the helper); a value at its cap rejects with the
         // GB-4 template, naming the exhausted spender.
-        let caps = match crate::proxy_stream::admit_caps(&self.budgets, policy, &tags, &route.prefix, v) {
+        let caps = match crate::proxy_stream::admit_caps(&self.budgets, policy, &tags, &route.prefix, v, now_unix()) {
             Ok(caps) => caps,
             Err(d) => {
                 info!(
@@ -778,6 +778,7 @@ impl ProxyHttp for Gateway {
             let caps = ctx.caps.clone();
             if let Some(cut) = crate::proxy_stream::charge_caps_and_cut(
                 &self.budgets, &caps, delta, streaming.as_ref(), &route_prefix, ctx.snapshot.version,
+                now_unix(),
             ) {
                 *body = Some(cut);
                 ctx.cut = true;
@@ -825,6 +826,7 @@ impl ProxyHttp for Gateway {
                 &binding.prefix,
                 ctx.snapshot.version,
                 ctx.cut,
+                now_unix(),
             );
         }
         Ok(None)

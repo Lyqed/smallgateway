@@ -244,9 +244,13 @@ spec:
                 spendCaps:
                   type: object
                   description: >-
-                    GB-5 fleet spend caps. Rendered into the control plane's
-                    budget config (budget.yaml). A cap is a ceiling on
-                    attributed spend for a key/value selector over a window.
+                    GB-5 fleet spend caps, folded into the fleet scope the
+                    control plane composes and the data planes enforce. A cap
+                    is a TOKEN ceiling for a key/value selector,
+                    fleet-conserved (budget shares, bounded overspend,
+                    mid-stream cut). Tokens, deliberately: the gateway meters
+                    tokens authoritatively; dollars are the cloud invoice's
+                    meter. Alert at alertAt percent (GB-6), enforce at 100.
                   properties:
                     caps:
                       type: array
@@ -255,21 +259,31 @@ spec:
                         required:
                           - key
                           - value
-                          - limitUsd
+                          - limitTokens
                         properties:
                           key:
                             type: string
-                            description: Attribution key the cap is scoped to (e.g. team).
+                            description: Attribution key the cap is scoped to (operator-chosen).
                           value:
                             type: string
                             description: Attribution value the cap applies to.
-                          limitUsd:
-                            type: string
-                            description: Ceiling in USD (string to avoid float drift).
+                          limitTokens:
+                            type: integer
+                            format: int64
+                            minimum: 1
+                            description: Ceiling in tokens for the window.
                           window:
                             type: string
-                            default: day
                             enum: [minute, hour, day, month]
+                            description: >-
+                              Billing window (UTC-aligned). Absent = a
+                              lifetime cap that never resets.
+                          alertAt:
+                            type: integer
+                            minimum: 1
+                            maximum: 100
+                            description: >-
+                              GB-6 alert threshold in percent. Absent = 80.
 
                 # NOTE: GB-2 JWT auth is NOT part of v1alpha1. It is project-
                 # deferred (see README "Follow-ups"); no `auth` field is exposed

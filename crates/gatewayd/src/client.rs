@@ -516,7 +516,7 @@ fn spawn_usage_reporter(
             // The near-limit escalation takes precedence: a spender at/above
             // ~90% of its share asks the control plane synchronously for a
             // bigger slice before its next spend crosses the cap.
-            let escalating = budgets.escalating();
+            let escalating = budgets.escalating(crate::proxy_support::now_unix());
             if !escalating.is_empty() {
                 let check = SyncCheck {
                     spenders: to_shares(&escalating),
@@ -531,7 +531,7 @@ fn spawn_usage_reporter(
                 continue;
             }
 
-            let report = budgets.spend_report();
+            let report = budgets.spend_report(crate::proxy_support::now_unix());
             if report.is_empty() {
                 continue; // nothing to report yet
             }

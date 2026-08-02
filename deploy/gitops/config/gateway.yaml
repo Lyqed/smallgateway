@@ -61,15 +61,18 @@ spec:
       contentType: application/json
       body: '{"error":"unknown_route","path":"{{route}}"}'
 
-  # GB-5: a fleet spend ceiling, attributed. This is the kind of line a
-  # GitOps PR review is FOR — a reviewer sees "team=acme, $500/day" in the
-  # diff and can approve or push back before it is ever live.
+  # GB-5: a fleet token ceiling, attributed and fleet-conserved. This is the
+  # kind of line a GitOps PR review is FOR: a reviewer sees "team=acme,
+  # 500k tokens/day, alert at 80%" in the diff and can approve or push back
+  # before it is ever live. Tokens, deliberately: the gateway meters tokens
+  # authoritatively; dollars are the cloud invoice's meter.
   spendCaps:
     caps:
       - key: team
         value: acme
-        limitUsd: "500.00"
+        limitTokens: 500000
         window: day
+        alertAt: 80
 
   dataPlanes:
     replicas: 1

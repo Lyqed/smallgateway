@@ -115,7 +115,7 @@ Once Ready, GB-1 enforcement is served by the data plane exactly as in the Helm
 quick start (see `../README.md`). The GitOps proof is the *round trip*:
 
 ```sh
-# Change the fleet spend cap in Git — e.g. limitUsd "500.00" -> "250.00" —
+# Change the fleet token cap in Git — e.g. limitTokens 500000 -> 250000 —
 # commit, push. The controller syncs, the operator re-renders, the fleet
 # converges. No kubectl touched the cluster. `git log config/gateway.yaml`
 # is now the authoritative deploy history for the gateway's spend policy.

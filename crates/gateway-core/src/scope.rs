@@ -83,6 +83,13 @@ impl EffectivePolicy {
     pub fn cap_for(&self, key: &str, value: &str) -> Option<u64> {
         self.spend_caps.get(key).and_then(|c| c.cap_for(value))
     }
+
+    /// The composed enforcement TERMS (cap + window + alert threshold) for a
+    /// resolved `key=value`, or `None` if uncapped. What the request path
+    /// carries per capped tag.
+    pub fn terms_for(&self, key: &str, value: &str) -> Option<crate::budget::CapTerms> {
+        self.spend_caps.get(key).and_then(|c| c.terms_for(value))
+    }
 }
 
 impl EffectivePolicy {
@@ -627,6 +634,13 @@ fn compile_layer(
     let mut spend_caps = BTreeMap::new();
     for (key, spec) in &attr.spend_caps {
         check_key(key, &format!("{name}: spend_caps"), errs);
+        if let Some(pct) = spec.alert_at {
+            if !(1..=100).contains(&pct) {
+                errs.push(format!(
+                    "{name}: spend_caps {key:?}: alert_at must be 1-100 (percent), got {pct}"
+                ));
+            }
+        }
         spend_caps.insert(key.clone(), spec.to_key_cap());
     }
 

@@ -547,3 +547,42 @@ fn inject_empty_path_segment_is_rejected() {
     let errs = errors_of(&yaml);
     assert!(errs.iter().any(|e| e.contains("dotted segments")), "{errs:?}");
 }
+
+// ---- GB-5 windows + alert_at ----
+
+#[test]
+fn spend_cap_window_and_alert_at_parse() {
+    let yaml = base_yaml().replace(
+        "pinned: { env: prod }",
+        "pinned: { env: prod }\n      spend_caps: { team: { default: 120000, window: minute, alert_at: 70 } }",
+    );
+    let cfg = Config::from_yaml(&yaml).unwrap();
+    let policy = cfg.routes[0].policy();
+    let terms = policy.terms_for("team", "anything").unwrap();
+    assert_eq!(terms.cap, 120000);
+    assert_eq!(terms.window, Some(gateway_core::budget::Window::Minute));
+    assert!((terms.alert_fraction - 0.7).abs() < 1e-9);
+}
+
+#[test]
+fn spend_cap_alert_at_out_of_range_is_rejected() {
+    for bad in ["0", "101"] {
+        let yaml = base_yaml().replace(
+            "pinned: { env: prod }",
+            &format!(
+                "pinned: {{ env: prod }}\n      spend_caps: {{ team: {{ default: 1000, alert_at: {bad} }} }}"
+            ),
+        );
+        let errs = errors_of(&yaml);
+        assert!(errs.iter().any(|e| e.contains("alert_at must be 1-100")), "{bad}: {errs:?}");
+    }
+}
+
+#[test]
+fn spend_cap_bad_window_is_a_parse_error() {
+    let yaml = base_yaml().replace(
+        "pinned: { env: prod }",
+        "pinned: { env: prod }\n      spend_caps: { team: { default: 1000, window: fortnight } }",
+    );
+    assert!(matches!(Config::from_yaml(&yaml), Err(ConfigError::Parse(_))));
+}

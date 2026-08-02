@@ -105,9 +105,21 @@ impl FleetBudgets {
         let mut caps = self.caps.lock().expect("budget lock");
         let entry = caps.entry(id.clone()).or_default();
         entry.cap = entry.cap.max(cap);
+        let before = entry.total_spend();
         entry
             .per_node_spend
             .insert(node_id.to_string(), spent);
+        // Windowed caps: node spend is monotone WITHIN a billing window, so a
+        // total that DROPS means a node rolled into a new window (nodes reset
+        // lazily and report the new, smaller figure). Re-arm the fleet GB-6
+        // latches so the new window alerts again. At a boundary, interleaved
+        // reports (one node rolled, another not yet) can re-fire once early —
+        // bounded by report cadence plus clock skew, the same honesty class
+        // as the partition overspend bound.
+        if entry.total_spend() < before {
+            entry.soft_fired = false;
+            entry.hard_fired = false;
+        }
         Self::fleet_alerts(id, entry)
     }
 
@@ -647,5 +659,22 @@ mod tests {
         assert_eq!(ledger[0].2, 5_000);
         assert_eq!(ledger[1].0, id("ml"));
         assert_eq!(ledger[1].2, 50_000);
+    }
+
+    #[test]
+    fn a_fleet_total_drop_re_arms_the_gb6_latches() {
+        // Node spend is monotone WITHIN a window; a dropping total means a
+        // node rolled into a new billing window. The fleet latches re-arm so
+        // the new window alerts again.
+        let fb = FleetBudgets::new();
+        let alerts = fb.report_spend("n1", &id("ml"), 100_000, 85_000);
+        assert_eq!(alerts.len(), 1, "soft fires in window 1");
+        // Same window, higher spend: latched.
+        assert!(fb.report_spend("n1", &id("ml"), 100_000, 90_000).is_empty());
+        // The node rolled: it reports the new window's small figure.
+        assert!(fb.report_spend("n1", &id("ml"), 100_000, 1_000).is_empty());
+        // Crossing again in the new window fires again.
+        let again = fb.report_spend("n1", &id("ml"), 100_000, 86_000);
+        assert_eq!(again.len(), 1, "soft re-fires after the window rolled");
     }
 }

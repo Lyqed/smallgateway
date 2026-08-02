@@ -466,6 +466,17 @@ pub struct SpendCapSpec {
     /// uncapped override of a capped default.
     #[serde(default)]
     pub overrides: BTreeMap<String, Option<u64>>,
+    /// The billing window the counters roll on: `minute`, `hour`, `day`, or
+    /// `month` (calendar, UTC). Absent → a lifetime cap that never resets
+    /// (the original behavior, unchanged). Windows align on UTC wall-clock
+    /// boundaries on every node; residual error is bounded by clock skew.
+    #[serde(default)]
+    pub window: Option<crate::budget::Window>,
+    /// GB-6 alert threshold as a percent (1-100): someone is told when spend
+    /// crosses this fraction of the cap; enforcement stays at 100. Absent →
+    /// 80. Composes down the chain like the cap itself (lower scope wins).
+    #[serde(default)]
+    pub alert_at: Option<u8>,
 }
 
 impl SpendCapSpec {
@@ -474,6 +485,8 @@ impl SpendCapSpec {
         crate::budget::KeyCap {
             default: self.default,
             overrides: self.overrides.clone(),
+            window: self.window,
+            alert_fraction: self.alert_at.map(|p| f64::from(p) / 100.0),
         }
     }
 }

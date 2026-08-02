@@ -67,6 +67,52 @@ impl std::fmt::Display for CapId {
     }
 }
 
+/// A billing window for a cap. Absent → a LIFETIME cap, today's original
+/// behavior (the counter never resets). Windows align on UTC wall-clock
+/// boundaries, so every node and the control plane compute the SAME window
+/// id from their own clock — alignment needs no coordination, and the
+/// residual error is bounded by clock skew (the same bounded-honesty
+/// posture as GB-5's partition overspend). The gateway meters TOKENS only:
+/// there is deliberately no request/call unit and no USD unit (dollars are
+/// the cloud invoice's authoritative meter, not ours).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Window {
+    Minute,
+    Hour,
+    Day,
+    /// Calendar month, UTC (not a fixed number of seconds).
+    Month,
+}
+
+impl Window {
+    /// The id of the window containing `now_unix`. Two touches in the same
+    /// window get the same id; a differing id means the counter rolls.
+    pub fn id_at(self, now_unix: u64) -> u64 {
+        match self {
+            Window::Minute => now_unix / 60,
+            Window::Hour => now_unix / 3600,
+            Window::Day => now_unix / 86_400,
+            Window::Month => {
+                let dt = chrono::DateTime::from_timestamp(now_unix as i64, 0)
+                    .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).expect("epoch"));
+                use chrono::Datelike;
+                dt.year() as u64 * 12 + dt.month0() as u64
+            }
+        }
+    }
+}
+
+/// The composed enforcement terms for one capped value: the token ceiling,
+/// the optional billing window, and the soft-alert fraction (GB-6's "alert
+/// at N%, enforce at 100"). What the request path carries per capped tag.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CapTerms {
+    pub cap: u64,
+    pub window: Option<Window>,
+    pub alert_fraction: f64,
+}
+
 /// A composed spend cap for one attribution key: a fleet default applied to
 /// every value of the key, plus Git-reviewed per-value overrides. Composition
 /// down the scoped chain (fleet → project → route → app) is a lower-scope
@@ -76,7 +122,7 @@ impl std::fmt::Display for CapId {
 /// A cap of `None` (no default, no override for a value) means UNCAPPED — the
 /// key simply is not spend-limited. `Some(0)` is a hard stop (spend nothing),
 /// distinct from uncapped.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct KeyCap {
     /// The default cap in tokens for every value of this key. `None` → the
     /// key is uncapped unless a per-value override sets a cap.
@@ -85,6 +131,12 @@ pub struct KeyCap {
     /// number instead of `default`; `None` inside the map is an explicit
     /// "this value is uncapped" override of a capped default.
     pub overrides: BTreeMap<String, Option<u64>>,
+    /// The billing window every value of this key rolls on. `None` →
+    /// lifetime (never resets), the original behavior.
+    pub window: Option<Window>,
+    /// The soft-alert threshold as a fraction (0, 1]; `None` → the default
+    /// [`SOFT_ALERT_FRACTION`].
+    pub alert_fraction: Option<f64>,
 }
 
 impl KeyCap {
@@ -97,9 +149,21 @@ impl KeyCap {
         }
     }
 
+    /// The full enforcement terms for one resolved value, or `None` when
+    /// the value is uncapped on this key.
+    pub fn terms_for(&self, value: &str) -> Option<CapTerms> {
+        Some(CapTerms {
+            cap: self.cap_for(value)?,
+            window: self.window,
+            alert_fraction: self.alert_fraction.unwrap_or(SOFT_ALERT_FRACTION),
+        })
+    }
+
     /// Fold a lower scope's KeyCap over this one: the lower scope's `default`
     /// wins when it sets one, and its per-value entries override this scope's.
     /// This is the cap analog of the scoped-chain map merge (lower scope wins).
+    /// Window and alert threshold follow the same rule: the lower scope's
+    /// setting wins when present.
     pub fn compose_child(&self, child: &KeyCap) -> KeyCap {
         let mut overrides = self.overrides.clone();
         for (value, cap) in &child.overrides {
@@ -108,6 +172,8 @@ impl KeyCap {
         KeyCap {
             default: child.default.or(self.default),
             overrides,
+            window: child.window.or(self.window),
+            alert_fraction: child.alert_fraction.or(self.alert_fraction),
         }
     }
 }
@@ -289,6 +355,13 @@ impl LocalBudget {
             self.spent = self.spent.saturating_sub(estimated - authoritative);
         }
     }
+
+    /// A new billing window opened: the spend counter starts over. The share
+    /// is kept — it is the fleet's capacity split, not spend; the control
+    /// plane rebalances it as the new window's reports arrive.
+    pub fn reset_window_spend(&mut self) {
+        self.spent = 0;
+    }
 }
 
 /// A GB-6 alert raised AT the point of enforcement (docs/04 Phase 3: "alert
@@ -434,19 +507,27 @@ impl AlertLatch {
 
     /// Given the current `spend` against `cap` for `id` on `node`, return the
     /// alert(s) newly crossed since the last call. Soft first, then hard; each
-    /// fires once. An uncapped budget (`cap` 0 or spend below soft) fires
-    /// nothing.
-    pub fn cross(&mut self, id: &CapId, cap: u64, spend: u64, node: &str) -> Vec<Alert> {
+    /// fires once per window (the rollover re-arms the latch). `soft_fraction`
+    /// is the operator's alert threshold (GB-6's `alert_at`, default 80%).
+    /// An uncapped budget (`cap` 0 or spend below soft) fires nothing.
+    pub fn cross(
+        &mut self,
+        id: &CapId,
+        cap: u64,
+        spend: u64,
+        node: &str,
+        soft_fraction: f64,
+    ) -> Vec<Alert> {
         let mut out = Vec::new();
         if cap == 0 {
             return out;
         }
         let frac = spend as f64 / cap as f64;
-        if !self.soft_fired && frac >= SOFT_ALERT_FRACTION {
+        if !self.soft_fired && frac >= soft_fraction {
             self.soft_fired = true;
             out.push(Alert {
                 kind: AlertKind::SoftThreshold {
-                    fraction: SOFT_ALERT_FRACTION,
+                    fraction: soft_fraction,
                 },
                 id: id.clone(),
                 cap,
@@ -490,7 +571,7 @@ mod tests {
         let mut overrides = BTreeMap::new();
         overrides.insert("ml-research".to_string(), Some(200_000));
         overrides.insert("free-tier".to_string(), None); // explicit uncapped
-        let cap = KeyCap {
+        let cap = KeyCap { window: None, alert_fraction: None,
             default: Some(100_000),
             overrides,
         };
@@ -509,13 +590,13 @@ mod tests {
     fn compose_child_lets_the_lower_scope_win() {
         // fleet default 100k; a project lowers the default to 50k and pins a
         // per-value 10k for one team.
-        let fleet = KeyCap {
+        let fleet = KeyCap { window: None, alert_fraction: None,
             default: Some(100_000),
             overrides: BTreeMap::new(),
         };
         let mut child_overrides = BTreeMap::new();
         child_overrides.insert("ml-research".to_string(), Some(10_000));
-        let project = KeyCap {
+        let project = KeyCap { window: None, alert_fraction: None,
             default: Some(50_000),
             overrides: child_overrides,
         };
@@ -527,7 +608,7 @@ mod tests {
 
     #[test]
     fn compose_child_inherits_default_when_child_sets_none() {
-        let fleet = KeyCap {
+        let fleet = KeyCap { window: None, alert_fraction: None,
             default: Some(100_000),
             overrides: BTreeMap::new(),
         };
@@ -647,19 +728,19 @@ mod tests {
         let mut latch = AlertLatch::new();
         let cap = 100_000;
         // Below 80%: nothing.
-        assert!(latch.cross(&id(), cap, 50_000, "n1").is_empty());
+        assert!(latch.cross(&id(), cap, 50_000, "n1", SOFT_ALERT_FRACTION).is_empty());
         // Crossing 80%: one soft alert.
-        let soft = latch.cross(&id(), cap, 80_000, "n1");
+        let soft = latch.cross(&id(), cap, 80_000, "n1", SOFT_ALERT_FRACTION);
         assert_eq!(soft.len(), 1);
         assert!(matches!(soft[0].kind, AlertKind::SoftThreshold { .. }));
         // Still above 80% but below cap: no repeat.
-        assert!(latch.cross(&id(), cap, 90_000, "n1").is_empty());
+        assert!(latch.cross(&id(), cap, 90_000, "n1", SOFT_ALERT_FRACTION).is_empty());
         // Hitting the cap: one hard alert.
-        let hard = latch.cross(&id(), cap, 100_000, "n1");
+        let hard = latch.cross(&id(), cap, 100_000, "n1", SOFT_ALERT_FRACTION);
         assert_eq!(hard.len(), 1);
         assert_eq!(hard[0].kind, AlertKind::HardCap);
         // Past the cap: no repeat of either.
-        assert!(latch.cross(&id(), cap, 120_000, "n1").is_empty());
+        assert!(latch.cross(&id(), cap, 120_000, "n1", SOFT_ALERT_FRACTION).is_empty());
     }
 
     #[test]
@@ -667,7 +748,7 @@ mod tests {
         // A budget that jumps straight past the cap (a big terminal frame) fires
         // both thresholds in one call, soft first.
         let mut latch = AlertLatch::new();
-        let alerts = latch.cross(&id(), 100_000, 100_000, "n1");
+        let alerts = latch.cross(&id(), 100_000, 100_000, "n1", SOFT_ALERT_FRACTION);
         assert_eq!(alerts.len(), 2);
         assert!(matches!(alerts[0].kind, AlertKind::SoftThreshold { .. }));
         assert_eq!(alerts[1].kind, AlertKind::HardCap);
@@ -676,10 +757,10 @@ mod tests {
     #[test]
     fn reset_re_arms_the_latch() {
         let mut latch = AlertLatch::new();
-        assert_eq!(latch.cross(&id(), 100_000, 100_000, "n1").len(), 2);
+        assert_eq!(latch.cross(&id(), 100_000, 100_000, "n1", SOFT_ALERT_FRACTION).len(), 2);
         latch.reset();
         // After reset the thresholds can fire again (new window).
-        assert_eq!(latch.cross(&id(), 100_000, 80_000, "n1").len(), 1);
+        assert_eq!(latch.cross(&id(), 100_000, 80_000, "n1", SOFT_ALERT_FRACTION).len(), 1);
     }
 
     // --- Alert rendering: log line + webhook body ----------------------------
