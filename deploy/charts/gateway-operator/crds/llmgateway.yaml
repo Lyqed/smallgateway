@@ -122,6 +122,14 @@ spec:
                           additionalProperties:
                             type: string
                           description: GB-3 operator-assigned key/value pins.
+                        models:
+                          type: array
+                          items:
+                            type: string
+                          description: >-
+                            Model allow-list for this scope: exact names or a
+                            trailing-* family (claude-3*). A lower scope list
+                            REPLACES a higher one. Absent = no gate.
 
                 # --- Routes (config `routes:`) -----------------------------
                 routes:
@@ -171,6 +179,11 @@ spec:
                             type: object
                             additionalProperties:
                               type: string
+                          models:
+                            type: array
+                            items:
+                              type: string
+                            description: Model allow-list (exact or trailing-* family); replaces the inherited list.
 
                 # --- Projects (config `projects:`) -------------------------
                 projects:
@@ -192,6 +205,11 @@ spec:
                             type: object
                             additionalProperties:
                               type: string
+                          models:
+                            type: array
+                            items:
+                              type: string
+                            description: Model allow-list (exact or trailing-* family); replaces the inherited list.
 
                 # --- Rejection templates (config `rejections:`, GB-4) ------
                 rejections:

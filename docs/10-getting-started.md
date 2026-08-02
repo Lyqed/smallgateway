@@ -57,6 +57,7 @@ spec:
   fleet:
     attribution:
       requiredKeys: [team]          # GB-1: your key names, not ours
+      models: [gpt-4o, claude-3*]   # which models these clients may use
       pinned: { env: prod }         # GB-3: assigned, never believed
   routes:
     - name: openai

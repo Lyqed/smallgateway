@@ -72,8 +72,12 @@ pub struct EffectivePolicy {
     /// here is uncapped. Composed down the chain: a lower scope's `default` and
     /// per-value overrides win over a higher one (docs/02 GB-5).
     pub spend_caps: BTreeMap<String, crate::budget::KeyCap>,
+    /// The composed model allow-list; `None` = no gate on this route.
+    pub models: Option<Vec<String>>,
     pub missing_attribution: RejectionTemplate,
     pub unknown_route: RejectionTemplate,
+    /// The model-gate refusal body (operator's, or the built-in default).
+    pub model_not_allowed: RejectionTemplate,
 }
 
 impl EffectivePolicy {
@@ -137,8 +141,10 @@ struct Layer {
     derived: BTreeMap<String, Arc<CompiledExpr>>,
     labels: Vec<LabelItem>,
     spend_caps: BTreeMap<String, crate::budget::KeyCap>,
+    models: Option<Vec<String>>,
     missing_attribution: Option<RejectionTemplate>,
     unknown_route: Option<RejectionTemplate>,
+    model_not_allowed: Option<RejectionTemplate>,
 }
 
 enum LabelItem {
@@ -653,6 +659,19 @@ fn compile_layer(
         spend_caps.insert(key.clone(), spec.to_key_cap());
     }
 
+    if let Some(models) = &attr.models {
+        if models.is_empty() {
+            errs.push(format!("{name}: models must not be an empty list (omit for no gate)"));
+        }
+        for m in models {
+            if m.trim().is_empty() || m.trim_end_matches('*').contains('*') {
+                errs.push(format!(
+                    "{name}: models entry {m:?} must be a name or a trailing-* family pattern"
+                ));
+            }
+        }
+    }
+
     Layer {
         name: name.to_string(),
         required_keys: attr.required_keys.clone(),
@@ -661,8 +680,10 @@ fn compile_layer(
         derived,
         labels: label_items,
         spend_caps,
+        models: attr.models.clone(),
         missing_attribution: rejections.and_then(|o| o.missing_attribution.clone()),
         unknown_route: rejections.and_then(|o| o.unknown_route.clone()),
+        model_not_allowed: rejections.and_then(|o| o.model_not_allowed.clone()),
     }
 }
 
@@ -777,15 +798,31 @@ fn compose(
         }
     }
 
+    // Model gate: a lower scope's list REPLACES a higher one's (a route
+    // narrowing the fleet's families to one exact model must not merge).
+    let mut models: Option<Vec<String>> = None;
+    for layer in chain {
+        if let Some(m) = &layer.models {
+            models = Some(m.clone());
+        }
+    }
+
     // Rejections: base, then per-reason overrides down the chain.
     let mut missing_attribution = base.missing_attribution.clone();
     let mut unknown_route = base.unknown_route.clone();
+    let mut model_not_allowed = base
+        .model_not_allowed
+        .clone()
+        .unwrap_or_else(crate::config::default_model_not_allowed);
     for layer in chain {
         if let Some(t) = &layer.missing_attribution {
             missing_attribution = t.clone();
         }
         if let Some(t) = &layer.unknown_route {
             unknown_route = t.clone();
+        }
+        if let Some(t) = &layer.model_not_allowed {
+            model_not_allowed = t.clone();
         }
     }
 
@@ -796,8 +833,10 @@ fn compose(
         derived,
         labels: final_labels,
         spend_caps,
+        models,
         missing_attribution,
         unknown_route,
+        model_not_allowed,
     }
 }
 

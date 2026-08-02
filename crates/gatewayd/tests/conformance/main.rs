@@ -922,5 +922,87 @@ fn vertex_location_gate_allows_listed_and_refuses_others() {
     });
 }
 
+// ------------------------------------------------------ model allow-list
+
+#[test]
+fn model_gate_body_half_refuses_and_admits_openai_models() {
+    check("MODELS", "model_gate_body_half_refuses_and_admits_openai_models", || {
+        // openai dialect: the model lives in the JSON body. The gate reads
+        // the buffered body BEFORE anything is forwarded; a disallowed (or
+        // absent) model gets the operator's model_not_allowed body verbatim.
+        let p = ports(2);
+        let cfg = base_cfg(p[0]).replace(
+            "    pinned: { env: prod }",
+            "    pinned: { env: prod }\n    models: [gpt-4o, claude-3*]",
+        );
+        let cfg = cfg.replace(
+            "rejections:",
+            concat!(
+                "rejections:\n",
+                "  model_not_allowed:\n",
+                "    status: 403\n",
+                "    content_type: application/json\n",
+                "    body: '{\"error\":\"model_denied\",\"asked\":\"{{model}}\",\"route\":\"{{route}}\"}'\n",
+            ),
+        );
+        let _mock = spawn_mock(p[0], &spike_fixture("openai.sse"), "openai", false);
+        let _gw = spawn_gatewayd(&cfg, p[1], "models1");
+        let headers = [("x-attr-team", "ml"), ("content-type", "application/json")];
+
+        let denied = http(
+            p[1], "POST", "/openai/v1/chat/completions", &headers,
+            br#"{"model":"gpt-4o-mini","messages":[]}"#,
+        );
+        assert_eq!(denied.status, 403, "body: {}", denied.body_text());
+        assert!(
+            denied.body_text().contains(r#""asked":"gpt-4o-mini""#),
+            "operator body verbatim: {}",
+            denied.body_text()
+        );
+
+        // No model at all on a gated route: fail closed.
+        let absent = http(p[1], "POST", "/openai/v1/chat/completions", &headers, br#"{"messages":[]}"#);
+        assert_eq!(absent.status, 403, "body: {}", absent.body_text());
+
+        // A family-matched model flows.
+        let ok = http(
+            p[1], "POST", "/openai/v1/chat/completions", &headers,
+            br#"{"model":"claude-3-haiku","messages":[]}"#,
+        );
+        assert_eq!(ok.status, 200, "body: {}", ok.body_text());
+    });
+}
+
+#[test]
+fn model_gate_path_half_refuses_disallowed_bedrock_models() {
+    check("MODELS", "model_gate_path_half_refuses_disallowed_bedrock_models", || {
+        // bedrock carries the model in the PATH; the gate composes with the
+        // full GB-7 pipeline (a denied model never mints credentials).
+        let p = ports(3);
+        let cfg = gb7_cfg(p[0], p[1]).replace(
+            "      pinned: { env: prod }",
+            "      pinned: { env: prod }\n      models: ['anthropic.claude*']",
+        );
+        let _sts = spawn_sts(p[1]);
+        let _mock = spawn_mock(p[0], &spike_fixture("bedrock.jsonl"), "bedrock", true);
+        let _gw = spawn_gatewayd(&cfg, p[2], "models2");
+        let token = mint_jwt(serde_json::json!({"sub": "alice", "exp": 4102444800u64}));
+        let auth = format!("Bearer {token}");
+
+        let denied = http(
+            p[2], "POST", "/bedrock/model/meta.llama-70b/converse-stream",
+            &[("authorization", auth.as_str())], b"{}",
+        );
+        assert_eq!(denied.status, 403, "body: {}", denied.body_text());
+        assert!(denied.body_text().contains("model_not_allowed"), "{}", denied.body_text());
+
+        let ok = http(
+            p[2], "POST", "/bedrock/model/anthropic.claude/converse-stream",
+            &[("authorization", auth.as_str())], b"{}",
+        );
+        assert_eq!(ok.status, 200, "body: {}", ok.body_text());
+    });
+}
+
 // GB-5 / GB-6 conformance lives in its own file (size budget).
 mod gb5;

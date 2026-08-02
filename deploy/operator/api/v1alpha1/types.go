@@ -88,6 +88,9 @@ type Scope struct {
 type Attribution struct {
 	RequiredKeys []string          `json:"requiredKeys,omitempty"`
 	Pinned       map[string]string `json:"pinned,omitempty"`
+	// Model allow-list for this scope: exact names or a trailing-* family
+	// (claude-3*). A lower scope's list REPLACES a higher one's.
+	Models []string `json:"models,omitempty"`
 }
 
 // Route is one path-prefix route.

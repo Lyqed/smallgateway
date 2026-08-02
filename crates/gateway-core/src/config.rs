@@ -546,6 +546,16 @@ pub struct Attribution {
     /// 100k-token scenario is five lines of YAML here. Absent → uncapped.
     #[serde(default)]
     pub spend_caps: BTreeMap<String, SpendCapSpec>,
+    /// Model allow-list for this scope: which models the requests it
+    /// governs may use. Exact names, or a trailing `*` for a family
+    /// (`claude-3*`). Composes down the chain like the rejection templates:
+    /// a lower scope's list REPLACES a higher one's. Absent → no gate.
+    /// The model comes from the request path (bedrock, vertex) or the
+    /// request body (openai dialects); a gated request whose model cannot
+    /// be determined is refused, fail closed, with the operator's
+    /// `model_not_allowed` body.
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
 }
 
 /// GB-5: one attribution key's spend cap as written in the config. Tokens.
@@ -624,6 +634,23 @@ pub struct Rejections {
     pub missing_attribution: RejectionTemplate,
     /// Placeholders: `{{route}}` (the unmatched request path).
     pub unknown_route: RejectionTemplate,
+    /// Model gate refusal (scopes with a `models:` allow-list).
+    /// Placeholders: `{{model}}`, `{{route}}`. OPTIONAL: absent, the
+    /// built-in conservative default applies — the only rejection reason
+    /// with a default, because the gate itself is opt-in per scope.
+    #[serde(default)]
+    pub model_not_allowed: Option<RejectionTemplate>,
+}
+
+/// The built-in `model_not_allowed` body used when the operator sets a
+/// `models:` gate but no template for it.
+pub fn default_model_not_allowed() -> RejectionTemplate {
+    RejectionTemplate {
+        status: 403,
+        content_type: "application/json".to_string(),
+        body: r#"{"error":"model_not_allowed","model":"{{model}}","route":"{{route}}"}"#.to_string(),
+        streaming: None,
+    }
 }
 
 /// Lower-scope rejection overrides: each reason overrides independently.
@@ -634,6 +661,49 @@ pub struct RejectionOverrides {
     pub missing_attribution: Option<RejectionTemplate>,
     #[serde(default)]
     pub unknown_route: Option<RejectionTemplate>,
+    #[serde(default)]
+    pub model_not_allowed: Option<RejectionTemplate>,
+}
+
+// ------------------------------------------------- model gate (pure helpers)
+
+/// The model named by a request PATH, per provider dialect: bedrock carries
+/// it as `/model/<id>/...`, vertex as `/models/<id>:method`. OpenAI-dialect
+/// requests carry it in the BODY ([`model_from_body`]). `None` for dialects
+/// whose path has no model, or when the segment is absent/empty.
+pub fn model_from_path(kind: ProviderKind, path: &str) -> Option<String> {
+    let (marker, terminators): (&str, &[char]) = match kind {
+        ProviderKind::Bedrock => ("/model/", &['/']),
+        ProviderKind::Vertex => ("/models/", &[':', '/']),
+        _ => return None,
+    };
+    let rest = &path[path.find(marker)? + marker.len()..];
+    let end = rest
+        .find(|c| terminators.contains(&c))
+        .unwrap_or(rest.len());
+    let model = &rest[..end];
+    if model.is_empty() {
+        None
+    } else {
+        Some(model.to_string())
+    }
+}
+
+/// The `"model"` field of a JSON request body (the openai/anthropic
+/// dialects). `None` when the body is not JSON or has no string model.
+pub fn model_from_body(body: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    v.get("model")?.as_str().map(str::to_string)
+}
+
+/// Whether `model` is admitted by the allow-list: exact match, or a
+/// trailing-`*` family pattern (`claude-3*`). No other wildcarding, on
+/// purpose.
+pub fn model_allowed(allow: &[String], model: &str) -> bool {
+    allow.iter().any(|pat| match pat.strip_suffix('*') {
+        Some(prefix) => model.starts_with(prefix),
+        None => pat == model,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -675,3 +675,54 @@ fn auth_requires_exactly_one_of_secret_or_jwks() {
     let errs = errors_of(&bad_jwks);
     assert!(errs.iter().any(|e| e.contains("jwks is not JSON")), "{errs:?}");
 }
+
+// ---- Model gate ----
+
+#[test]
+fn model_matching_and_extraction() {
+    use gateway_core::config::{model_allowed, model_from_body, model_from_path, ProviderKind};
+    let allow = vec!["gpt-4o".to_string(), "claude-3*".to_string()];
+    assert!(model_allowed(&allow, "gpt-4o"));
+    assert!(model_allowed(&allow, "claude-3-haiku"));
+    assert!(!model_allowed(&allow, "gpt-4o-mini"));
+    assert!(!model_allowed(&allow, "o1"));
+
+    assert_eq!(
+        model_from_path(ProviderKind::Bedrock, "/model/anthropic.claude-3/converse-stream"),
+        Some("anthropic.claude-3".to_string())
+    );
+    assert_eq!(
+        model_from_path(ProviderKind::Vertex, "/v1/projects/p/locations/eu/publishers/google/models/gemini-pro:streamGenerateContent"),
+        Some("gemini-pro".to_string())
+    );
+    assert_eq!(model_from_path(ProviderKind::OpenAi, "/v1/chat/completions"), None);
+    assert_eq!(model_from_body(br#"{"model":"gpt-4o","messages":[]}"#), Some("gpt-4o".to_string()));
+    assert_eq!(model_from_body(br#"{"messages":[]}"#), None);
+    assert_eq!(model_from_body(b"not json"), None);
+}
+
+#[test]
+fn models_list_composes_by_replacement_and_validates() {
+    // Route's list REPLACES the fleet's (narrowing must not merge).
+    let yaml = base_yaml().replace(
+        "routes:",
+        "fleet:\n  attribution:\n    models: [gpt-4o, claude-3*]\nroutes:",
+    ).replace(
+        "      pinned: { env: prod }",
+        "      pinned: { env: prod }\n      models: [gpt-4o]",
+    );
+    let cfg = Config::from_yaml(&yaml).unwrap();
+    let policy = cfg.routes[0].policy();
+    assert_eq!(policy.models.as_deref(), Some(&["gpt-4o".to_string()][..]));
+    // The built-in refusal default applies when the operator sets none.
+    assert_eq!(policy.model_not_allowed.status, 403);
+    assert!(policy.model_not_allowed.body.contains("{{model}}"));
+
+    // Bad entries are refused at load.
+    let bad = base_yaml().replace(
+        "      pinned: { env: prod }",
+        "      pinned: { env: prod }\n      models: ['a*b']",
+    );
+    let errs = errors_of(&bad);
+    assert!(errs.iter().any(|e| e.contains("trailing-* family pattern")), "{errs:?}");
+}

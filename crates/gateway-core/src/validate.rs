@@ -334,6 +334,9 @@ pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<Stri
         errs,
     );
     validate_template(&r.unknown_route, &format!("{ctx}.unknown_route"), &["route"], errs);
+    if let Some(t) = &r.model_not_allowed {
+        validate_template(t, &format!("{ctx}.model_not_allowed"), &["model", "route"], errs);
+    }
 }
 
 pub(crate) fn validate_rejection_overrides(o: &RejectionOverrides, ctx: &str, errs: &mut Vec<String>) {
@@ -347,6 +350,9 @@ pub(crate) fn validate_rejection_overrides(o: &RejectionOverrides, ctx: &str, er
     }
     if let Some(t) = &o.unknown_route {
         validate_template(t, &format!("{ctx}.unknown_route"), &["route"], errs);
+    }
+    if let Some(t) = &o.model_not_allowed {
+        validate_template(t, &format!("{ctx}.model_not_allowed"), &["model", "route"], errs);
     }
 }
 

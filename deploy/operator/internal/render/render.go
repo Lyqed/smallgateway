@@ -163,6 +163,9 @@ func renderAttribution(a *gwv1.Attribution) map[string]any {
 	if len(a.Pinned) > 0 {
 		out["pinned"] = a.Pinned
 	}
+	if len(a.Models) > 0 {
+		out["models"] = a.Models
+	}
 	return out
 }
 

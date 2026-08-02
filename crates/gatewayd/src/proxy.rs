@@ -545,28 +545,80 @@ impl ProxyHttp for Gateway {
             }
         }
 
-        // Signed-payload path (bedrock+sts): read the WHOLE request body now
-        // and apply forced-body injection BEFORE the Authorization is
-        // computed, so the SigV4 payload hash covers the final bytes. Bedrock
-        // request bodies are small JSON (the RESPONSE is the stream), so
-        // buffering here is bounded and correct.
-        if kind == ProviderKind::Bedrock && cfg.providers[&route.provider].sts.is_some() {
+        // Model gate, path half (bedrock/vertex carry the model in the URL):
+        // a gated request naming a model outside the operator's list — or
+        // naming none the gateway can find — is refused with the operator's
+        // model_not_allowed body BEFORE any credential is minted or byte
+        // forwarded. Fail closed.
+        if let Some(allow) = &policy.models {
+            if matches!(kind, ProviderKind::Bedrock | ProviderKind::Vertex) {
+                use gateway_core::config::{model_allowed, model_from_path};
+                let model = model_from_path(kind, &path);
+                let ok = model.as_deref().is_some_and(|m| model_allowed(allow, m));
+                if !ok {
+                    let shown = model.as_deref().unwrap_or("-");
+                    info!(
+                        "[req] {method} {path} -> route={} (rejecting: model {shown:?} not allowed) cfg=v{v}",
+                        route.prefix
+                    );
+                    respond_rejection(
+                        session,
+                        &policy.model_not_allowed,
+                        &[("model", shown), ("route", route.prefix.as_str())],
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+            }
+        }
+
+        // Early body read, two consumers: the signed-payload path
+        // (bedrock+sts: forced-body injection must precede Authorization so
+        // the hash covers the final bytes) and the model gate's body half
+        // (openai dialects carry the model in the JSON body). Bodies here
+        // are small JSON (the RESPONSE is the stream), so buffering is
+        // bounded and correct.
+        let signed_payload = kind == ProviderKind::Bedrock
+            && cfg.providers[&route.provider].sts.is_some();
+        let body_model_gate = policy.models.is_some()
+            && matches!(kind, ProviderKind::OpenAi | ProviderKind::Anthropic);
+        if signed_payload || body_model_gate {
             // Retry buffering is pingora's own consumed-body replay: the
             // pump re-sends the buffered body with end-of-body set, which
             // is what routes it through request_body_filter (where the
-            // finalized signed bytes replace it). Without this the pump
-            // idles forever waiting for a body we already consumed.
+            // finalized bytes replace it). Without this the pump idles
+            // forever waiting for a body we already consumed.
             session.enable_retry_buffering();
             let mut buf: Vec<u8> = Vec::new();
             while let Some(chunk) = session.read_request_body().await? {
                 buf.extend_from_slice(&chunk);
+            }
+            if body_model_gate {
+                use gateway_core::config::{model_allowed, model_from_body};
+                let allow = policy.models.as_deref().expect("gate checked above");
+                let model = model_from_body(&buf);
+                let ok = model.as_deref().is_some_and(|m| model_allowed(allow, m));
+                if !ok {
+                    let shown = model.as_deref().unwrap_or("-");
+                    info!(
+                        "[req] {method} {path} -> route={} (rejecting: model {shown:?} not allowed) cfg=v{v}",
+                        route.prefix
+                    );
+                    respond_rejection(
+                        session,
+                        &policy.model_not_allowed,
+                        &[("model", shown), ("route", route.prefix.as_str())],
+                    )
+                    .await?;
+                    return Ok(true);
+                }
             }
             let forced_body = ctx
                 .forced
                 .as_ref()
                 .map(|f| f.body.as_slice())
                 .unwrap_or(&[]);
-            let merged = if forced_body.is_empty() || buf.is_empty() {
+            let merged = if !signed_payload || forced_body.is_empty() || buf.is_empty() {
                 buf
             } else {
                 match labels::inject_into_body(&buf, forced_body) {
