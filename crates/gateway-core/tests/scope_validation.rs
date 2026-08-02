@@ -629,3 +629,35 @@ fn vertex_auth_lifetime_and_email_are_validated() {
     assert!(errs.iter().any(|e| e.contains("not an email")), "{errs:?}");
     assert!(errs.iter().any(|e| e.contains("lifetime_secs must be 300-3600")), "{errs:?}");
 }
+
+// ---- Vertex location routing ----
+
+#[test]
+fn vertex_host_derivation_is_multi_region_aware() {
+    use gateway_core::config::{derive_vertex_host, vertex_path_location};
+    assert_eq!(derive_vertex_host("eu", "aiplatform.googleapis.com"), "aiplatform.googleapis.com");
+    assert_eq!(derive_vertex_host("global", "aiplatform.googleapis.com"), "aiplatform.googleapis.com");
+    assert_eq!(
+        derive_vertex_host("europe-west3", "aiplatform.googleapis.com"),
+        "europe-west3-aiplatform.googleapis.com"
+    );
+    assert_eq!(
+        vertex_path_location("/v1/projects/p/locations/europe-west3/publishers/google/models/g:streamGenerateContent"),
+        Some("europe-west3")
+    );
+    assert_eq!(vertex_path_location("/v1/projects/p/locations//x"), None);
+    assert_eq!(vertex_path_location("/v1/no-location-here"), None);
+}
+
+#[test]
+fn locations_on_non_vertex_provider_is_rejected() {
+    let yaml = base_yaml().replace(
+        "    upstream: { host: 127.0.0.1, port: 6190 }",
+        "    upstream: { host: 127.0.0.1, port: 6190 }\n    locations: [eu, europe-west3]",
+    );
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter().any(|e| e.contains("vertex-kind providers only")),
+        "{errs:?}"
+    );
+}

@@ -86,6 +86,15 @@ pub struct Provider {
     /// unchanged (the original behavior). See [`VertexAuth`].
     #[serde(default)]
     pub auth: Option<VertexAuth>,
+    /// Vertex-kind only: the operator's ALLOWED location list. Present, the
+    /// upstream host is derived per request from the `/locations/<loc>/`
+    /// path segment (multi-regions `eu`/`us`/`global` use `upstream.host`
+    /// as-is, a regional location prefixes it: `europe-west3-<host>`), and
+    /// a request naming a location outside the list is refused with the
+    /// operator's GB-4 unknown_route body. Absent: static host, no gate —
+    /// the original behavior.
+    #[serde(default)]
+    pub locations: Option<Vec<String>>,
     /// GB-7 (bedrock kind only): exchange attribution values for STS
     /// session-tag credentials and SigV4-sign every upstream request.
     #[serde(default)]
@@ -264,6 +273,33 @@ impl WifAudience {
             "//iam.googleapis.com/projects/{}/locations/global/workloadIdentityPools/{}/providers/{}",
             self.project_number, self.pool_id, self.provider_id
         )
+    }
+}
+
+/// The Google multi-region location names that use the bare API host
+/// (`aiplatform.googleapis.com`); every other location prefixes it
+/// (`europe-west3-aiplatform.googleapis.com`).
+pub const VERTEX_MULTI_REGIONS: [&str; 3] = ["eu", "us", "global"];
+
+/// Derive the Vertex host for a request's location: multi-regions use the
+/// configured base host, regional locations prefix it.
+pub fn derive_vertex_host(location: &str, base_host: &str) -> String {
+    if VERTEX_MULTI_REGIONS.contains(&location) {
+        base_host.to_string()
+    } else {
+        format!("{location}-{base_host}")
+    }
+}
+
+/// The `<loc>` from a Vertex path's `/locations/<loc>/` segment, if present.
+pub fn vertex_path_location(path: &str) -> Option<&str> {
+    let rest = &path[path.find("/locations/")? + "/locations/".len()..];
+    let end = rest.find('/').unwrap_or(rest.len());
+    let loc = &rest[..end];
+    if loc.is_empty() {
+        None
+    } else {
+        Some(loc)
     }
 }
 

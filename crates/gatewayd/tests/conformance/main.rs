@@ -880,5 +880,47 @@ fn gb8_auth_chain_mints_the_bearer_and_caches_it() {
     });
 }
 
+#[test]
+fn vertex_location_gate_allows_listed_and_refuses_others() {
+    check("GB-8", "vertex_location_gate_allows_listed_and_refuses_others", || {
+        let p = ports(3);
+        let token_file = std::env::temp_dir().join(format!("gb8-loc-{}.jwt", p[1]));
+        std::fs::write(&token_file, "mock-oidc-token\n").expect("write token file");
+        let cfg = gb8_auth_cfg(p[0], p[1], token_file.to_str().unwrap()).replace(
+            "    auth:",
+            "    locations: [eu]\n    auth:",
+        );
+        let _gcp = spawn_gcp(p[1]);
+        let _mock = spawn_mock_bearer(p[0], &demo_fixture("vertex.sse"), "vertex", "sa-token-");
+        let _gw = spawn_gatewayd(&cfg, p[2], "gb8loc");
+        let body = br#"{"contents":[{"parts":[{"text":"hi"}]}]}"#;
+        let headers = [("x-attr-team", "ml"), ("content-type", "application/json")];
+
+        // `eu` is a multi-region: the derived host is the configured base
+        // (the mock), so the request flows.
+        let ok = http(
+            p[2],
+            "POST",
+            "/vertex/v1/projects/x/locations/eu/publishers/google/models/g:streamGenerateContent",
+            &headers,
+            body,
+        );
+        assert_eq!(ok.status, 200, "body: {}", ok.body_text());
+
+        // A location outside the operator's list is refused with the GB-4
+        // unknown_route body before anything is minted or forwarded.
+        let bad = http(
+            p[2],
+            "POST",
+            "/vertex/v1/projects/x/locations/mars/publishers/google/models/g:streamGenerateContent",
+            &headers,
+            body,
+        );
+        assert_eq!(bad.status, 404, "body: {}", bad.body_text());
+        assert!(bad.body_text().contains("unknown_route"), "{}", bad.body_text());
+        let _ = std::fs::remove_file(&token_file);
+    });
+}
+
 // GB-5 / GB-6 conformance lives in its own file (size budget).
 mod gb5;

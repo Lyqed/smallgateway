@@ -152,6 +152,10 @@ pub struct ReqCtx {
     /// computed, so the SigV4 payload hash covers exactly these bytes.
     /// Re-injected as the upstream body in request_body_filter.
     signed_body: Option<Bytes>,
+    /// Vertex location routing: the per-request derived upstream host
+    /// (multi-region -> base host, regional -> `<loc>-<base>`), used for
+    /// the peer address, SNI, and the Host header.
+    vertex_host: Option<String>,
     body_bytes: usize,
     body_chunks: usize,
     event_counts: [usize; 6],
@@ -201,6 +205,7 @@ impl ReqCtx {
             aws: None,
             gcp_bearer: None,
             signed_body: None,
+            vertex_host: None,
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
@@ -456,6 +461,36 @@ impl ProxyHttp for Gateway {
             }
         }
 
+        // Vertex location routing: derive the per-request host from the
+        // /locations/<loc>/ path segment, refusing locations outside the
+        // operator's list with the GB-4 unknown_route body — fail closed
+        // BEFORE any token is minted or byte forwarded.
+        if let Some(allowed) = &cfg.providers[&route.provider].locations {
+            use gateway_core::config::{derive_vertex_host, vertex_path_location};
+            let loc = vertex_path_location(&path).filter(|l| allowed.iter().any(|a| a == l));
+            match loc {
+                Some(loc) => {
+                    let up = &cfg.providers[&route.provider].upstream;
+                    let host = derive_vertex_host(loc, &up.host);
+                    info!("[vertex {}] location={loc} host={host} cfg=v{v}", route.prefix);
+                    ctx.vertex_host = Some(host);
+                }
+                None => {
+                    info!(
+                        "[req] {method} {path} -> route={} (rejecting: location gate) cfg=v{v}",
+                        route.prefix
+                    );
+                    respond_rejection(
+                        session,
+                        &policy.unknown_route,
+                        &[("route", path.as_str())],
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+            }
+        }
+
         // GB-8 auth: mint (or cache-hit) the SA bearer for vertex providers
         // with an auth chain. An exchange failure is a 502 (infra, loud),
         // never the operator's GB-4 body — same posture as GB-7.
@@ -618,10 +653,14 @@ impl ProxyHttp for Gateway {
         // The request's pinned snapshot, never the live cell: a swap between
         // request_filter and here must not retarget this request.
         let up = &ctx.snapshot.config.providers[&binding.provider].upstream;
+        // Vertex location routing: the derived host replaces the static one
+        // for the address AND the SNI (the cert must match the regional host).
+        let host = ctx.vertex_host.as_deref().unwrap_or(&up.host);
+        let sni = if ctx.vertex_host.is_some() { host } else { up.sni() };
         let peer = HttpPeer::new(
-            format!("{}:{}", up.host, up.port),
+            format!("{host}:{}", up.port),
             up.tls,
-            up.sni().to_string(),
+            sni.to_string(),
         );
         Ok(Box::new(peer))
     }
@@ -667,6 +706,19 @@ impl ProxyHttp for Gateway {
         // never the caller's.
         if let Some(bearer) = &ctx.gcp_bearer {
             upstream_request.insert_header("authorization", format!("Bearer {bearer}"))?;
+        }
+
+        // Vertex location routing: the Host header names the derived
+        // regional host (bare on the standard ports, host:port otherwise).
+        if let Some(host) = &ctx.vertex_host {
+            let binding = ctx.route.as_ref().expect("route bound in request_filter");
+            let port = ctx.snapshot.config.providers[&binding.provider].upstream.port;
+            let value = if port == 443 || port == 80 {
+                host.clone()
+            } else {
+                format!("{host}:{port}")
+            };
+            upstream_request.insert_header("host", value)?;
         }
 
         // Operator-forced headers: applied BEFORE signing so the signature

@@ -197,6 +197,24 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
                 }
             }
         }
+        if let Some(locations) = &p.locations {
+            let lctx = format!("provider {name:?}: locations");
+            if p.kind != ProviderKind::Vertex {
+                errs.push(format!(
+                    "{lctx}: location routing applies to vertex-kind providers only \
+                     ({name:?} is {})",
+                    p.kind.name()
+                ));
+            }
+            if locations.is_empty() {
+                errs.push(format!("{lctx} must not be empty when present"));
+            }
+            for l in locations {
+                if l.trim().is_empty() || l.contains('/') {
+                    errs.push(format!("{lctx}: {l:?} is not a location name"));
+                }
+            }
+        }
         if let Some(inject) = &p.inject {
             let ictx = format!("provider {name:?}: inject");
             for h in &inject.headers {
