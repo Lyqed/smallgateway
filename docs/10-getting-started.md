@@ -254,6 +254,69 @@ telemetry:                             # spans to the collector you own
     service_name: bedrock-research-fleet
 ```
 
+### One of three AWS shapes — pick by who holds the credentials
+
+The chain above is the MOST machinery, not the default. The `sts:` block
+is optional, and its `role_arn` takes a bare string as well as a
+template, which yields three honest shapes:
+
+| Shape | Who holds AWS credentials | Reach into the bill |
+|---|---|---|
+| Pass-through — no `sts:` | Every caller keeps its own | Only what callers' own roles and tags already do |
+| One static role + session tags | The gateway; ONE role | Gateway-guaranteed: tags → CUR and CloudTrail |
+| Templated role chain (above) | The gateway; a role PER team | Tags, plus IAM-level separation per team |
+
+**Pass-through.** Delete the `sts:` block and the caller's own SigV4
+signature forwards unchanged:
+
+```yaml
+providers:
+  bedrock-prod:
+    kind: bedrock
+    upstream: { host: bedrock-runtime.us-east-1.amazonaws.com, port: 443, tls: true }
+    # no sts: the caller's own SigV4 Authorization passes through unchanged
+```
+
+Why: zero credential centralization. The gateway can never spend as
+anyone — a gateway compromise is a policy incident, not an identity
+incident — and teams that already carry scoped IAM roles keep them.
+Every check still fires: the 428, the caps, the model gate, the spans.
+The honest trade: the gateway writes no session tags in this shape, so
+the CUR join depends on the role-per-team hygiene the org already has;
+the gateway's own token ledger lives in its spans and logs.
+
+**One static role, tags carry the who.** The flagship config unchanged,
+with the `sts:` block reduced to a bare role — no template, no allow
+list:
+
+```yaml
+    sts:
+      endpoint: { host: sts.us-east-1.amazonaws.com, port: 443, tls: true }
+      region: us-east-1
+      role_arn: arn:aws:iam::111122223333:role/bedrock-gateway   # ONE role, bare
+      base:
+        web_identity_token: { file: /var/run/secrets/tokens/gateway-token }
+        role_arn: arn:aws:iam::111122223333:role/gatewayd-base
+        sts_region: us-east-1
+      tags:
+        - { key: cost_center, from_attribution: cost_center }
+        - { key: workload, from_attribution: workload }
+```
+
+Why: the smallest IAM footprint that still delivers the invoice-grade
+join. Callers hold no AWS keys at all, one operator-built role signs
+everything, and attribution rides the session tags into the CUR and
+CloudTrail regardless. The one boundary is shared — any admitted caller
+can invoke whatever the one role can — and the moment that stops being
+acceptable is the reason the templated chain exists.
+
+**The templated chain** (the full config above). Choose it when teams
+need DIFFERENT PERMISSIONS at the IAM level — which models, which
+guardrail policies, which regions — not just different lines on the
+bill. Each step up this ladder is a provider-block diff, so starting at
+pass-through and ending at the chain is a migration measured in merge
+requests, not a redesign.
+
 ## Vertex, with WIF auth and the location gate
 
 What this buys: the gateway MINTS the Google credential itself (callers
