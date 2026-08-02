@@ -100,6 +100,20 @@ project does not present it as a settled, first-class feature. GB-3
 (operator-assigned values) carries the load in the meantime, which is
 the mode most callers actually use.
 
+When a fleet DOES turn it on (an explicit `auth:` block in that fleet's
+Git repo — absent means off, zero verification cost, zero behavior
+change), a verified claim reaches everything an attribution value
+reaches: required keys and pins via `from_claims`, CEL derivations and
+labels via `jwt.claims.<claim>`, and — since the per-request role
+identity work — STS session tags, the templated RoleSessionName, and
+operator-forced guardrail values. The two-hop conformance test exercises
+exactly this: `from_claims: { user: sub }` feeds `{{user}}` into the
+RoleSessionName, so a verified login lands in CloudTrail's identity
+column. One honesty boundary: verification is HS256 (shared secret)
+today, which fits a fleet that mints its own tokens; RS256/JWKS against
+a real IdP is the follow-up that would make GB-2 production-ready for
+directory-backed identity, and it is not built.
+
 ## The scoped policy chain
 
 Config composes `fleet → project → route → app` (docs/02): lists
