@@ -315,3 +315,17 @@ pub fn check(gb: &'static str, test: &'static str, f: impl FnOnce() + std::panic
         std::panic::resume_unwind(panic);
     }
 }
+
+/// The strict mock OTLP collector: refuses malformed exports with 400,
+/// serves accepted spans on GET /received for assertions.
+pub fn spawn_otlp(port: u16) -> Proc {
+    let child = Command::new(env!("CARGO_BIN_EXE_mock_otlp"))
+        .args(["--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mock_otlp");
+    let proc = Proc { child };
+    wait_for_port(port, "mock_otlp");
+    proc
+}

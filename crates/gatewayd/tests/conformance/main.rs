@@ -1004,5 +1004,63 @@ fn model_gate_path_half_refuses_disallowed_bedrock_models() {
     });
 }
 
+// ---------------------------------------------------------- OTLP telemetry
+
+#[test]
+fn otel_request_span_reaches_a_strict_collector_with_attribution() {
+    check("OTEL", "otel_request_span_reaches_a_strict_collector_with_attribution", || {
+        // The mock collector REFUSES malformed OTLP (400 on bad ids, shapes,
+        // timestamps), so a 200-accepted span proves the export a real
+        // collector's OTLP receiver would parse. The span must carry the
+        // ADJUDICATED attribution: that is the point of the feature.
+        let p = ports(3);
+        let cfg = base_cfg(p[0]) + &format!(
+            "telemetry:\n  otlp:\n    endpoint: {{ host: 127.0.0.1, port: {} }}\n    flush_interval_secs: 1\n",
+            p[2]
+        );
+        let _otlp = spawn_otlp(p[2]);
+        let _mock = spawn_mock(p[0], &spike_fixture("openai.sse"), "openai", false);
+        let _gw = spawn_gatewayd(&cfg, p[1], "otel1");
+
+        let resp = http(
+            p[1], "POST", "/openai/v1/chat/completions",
+            &[("x-attr-team", "ml-research"), ("content-type", "application/json")],
+            br#"{"model":"gpt-4o","messages":[]}"#,
+        );
+        assert_eq!(resp.status, 200, "body: {}", resp.body_text());
+
+        // Poll for the flushed span (flush interval is 1s).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let received = http(p[2], "GET", "/received", &[], b"");
+            let spans: serde_json::Value =
+                serde_json::from_slice(&received.body).expect("received JSON");
+            let found = spans.as_array().unwrap().iter().any(|s| {
+                let attrs = s["attributes"].as_array().cloned().unwrap_or_default();
+                let has = |k: &str, v: &str| {
+                    attrs.iter().any(|a| a["key"] == k && a["value"]["stringValue"] == v)
+                };
+                s["service"] == "gatewayd"
+                    && s["name"] == "gateway.request"
+                    && has("gateway.attribution.team", "ml-research")
+                    && has("gateway.attribution.env", "prod")
+                    && has("gateway.route", "/openai")
+                    && attrs.iter().any(|a| {
+                        a["key"] == "http.response.status_code"
+                            && a["value"]["intValue"] == "200"
+                    })
+            });
+            if found {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "span with adjudicated attribution never reached the collector; got: {spans}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    });
+}
+
 // GB-5 / GB-6 conformance lives in its own file (size budget).
 mod gb5;

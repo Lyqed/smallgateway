@@ -362,7 +362,100 @@ impl AlertSink for LogWebhookSink {
     fn emit(&self, alert: &Alert) {
         log::warn!("{alert}");
         let body = gateway_core::budget::WebhookAlertSink::<fn(String)>::body(alert);
-        log::info!("[gb6] webhook body (delivery deferred): {body}");
+        log::info!("[gb6] webhook body (no webhook configured): {body}");
+    }
+}
+
+/// The production sink: the guaranteed structured log line at the
+/// enforcement point, PLUS — once `configure` is called with the config's
+/// `alerts.webhook` — a fire-and-forget POST of the documented JSON body
+/// to the fleet owner's chosen receiver. Delivery is best-effort with a
+/// short timeout on its own thread (alerts are rare; enforcement never
+/// waits on a pager).
+#[derive(Default)]
+pub struct ConfigurableSink {
+    webhook: std::sync::OnceLock<gateway_core::config::WebhookTarget>,
+}
+
+impl ConfigurableSink {
+    pub fn new() -> std::sync::Arc<ConfigurableSink> {
+        std::sync::Arc::new(ConfigurableSink::default())
+    }
+
+    /// Set the webhook target (once, after the bootstrap config loads).
+    pub fn configure(&self, target: gateway_core::config::WebhookTarget) {
+        let addr = format!("{}:{}", target.endpoint.host, target.endpoint.port);
+        if self.webhook.set(target).is_ok() {
+            log::info!("[gb6] alert webhook configured: {addr}");
+        }
+    }
+}
+
+impl AlertSink for ConfigurableSink {
+    fn emit(&self, alert: &Alert) {
+        log::warn!("{alert}");
+        let body = gateway_core::budget::WebhookAlertSink::<fn(String)>::body(alert);
+        match self.webhook.get() {
+            None => log::info!("[gb6] webhook body (no webhook configured): {body}"),
+            Some(target) => {
+                let target = target.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = post_alert_blocking(&target, &body) {
+                        log::error!("[gb6] alert webhook delivery failed: {e}");
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// A minimal blocking POST for alert delivery: rare, small, and off the
+/// enforcement path on its own thread. 5s whole-call timeout.
+fn post_alert_blocking(
+    target: &gateway_core::config::WebhookTarget,
+    body: &str,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let addr = format!("{}:{}", target.endpoint.host, target.endpoint.port);
+    let timeout = std::time::Duration::from_secs(5);
+    let stream = std::net::TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .or_else(|_| {
+                use std::net::ToSocketAddrs;
+                addr.to_socket_addrs()
+                    .map_err(|e| format!("resolve {addr}: {e}"))?
+                    .next()
+                    .ok_or_else(|| format!("resolve {addr}: no address"))
+            })
+            .map_err(|e: String| e)?,
+        timeout,
+    )
+    .map_err(|e| format!("connect {addr}: {e}"))?;
+    stream.set_write_timeout(Some(timeout)).ok();
+    stream.set_read_timeout(Some(timeout)).ok();
+    let mut stream = stream;
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        target.path,
+        body.len(),
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write: {e}"))?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).map_err(|e| format!("read: {e}"))?;
+    let head = String::from_utf8_lossy(&response);
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if (200..300).contains(&status) {
+        log::info!("[gb6] alert delivered to webhook ({status})");
+        Ok(())
+    } else {
+        Err(format!("webhook returned {status}"))
     }
 }
 

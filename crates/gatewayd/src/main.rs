@@ -12,6 +12,7 @@
 
 mod aws_auth;
 mod gcp_auth;
+mod otel;
 mod budget;
 mod client;
 mod proxy;
@@ -31,7 +32,7 @@ use pingora::server::Server;
 
 use std::sync::Arc as StdArc;
 
-use budget::{LogWebhookSink, NodeBudgets};
+use budget::{ConfigurableSink, NodeBudgets};
 use proxy::Gateway;
 use reload::{Reloader, SharedSnapshot};
 
@@ -166,7 +167,17 @@ fn main() {
         ConfigSource::ControlPlane { node_id, .. } => node_id.clone(),
         ConfigSource::File(_) => "standalone".to_string(),
     };
-    let budgets = StdArc::new(NodeBudgets::new(node_label, Box::new(LogWebhookSink)));
+    let node_label_for_otel = node_label.clone();
+    // GB-6 sink: the guaranteed log line, plus the config's alerts.webhook
+    // once the bootstrap config loads below.
+    let alert_sink = ConfigurableSink::new();
+    struct SinkHandle(StdArc<ConfigurableSink>);
+    impl gateway_core::budget::AlertSink for SinkHandle {
+        fn emit(&self, alert: &gateway_core::budget::Alert) {
+            gateway_core::budget::AlertSink::emit(&*self.0, alert);
+        }
+    }
+    let budgets = StdArc::new(NodeBudgets::new(node_label, Box::new(SinkHandle(alert_sink.clone()))));
 
     // Obtain the SharedSnapshot pingora binds per request from whichever config
     // source was chosen. In BOTH modes the snapshot is a validated v1 that must
@@ -266,9 +277,26 @@ fn main() {
     let mut server = Server::new(None).expect("pingora server init");
     server.bootstrap();
 
-    let mut gateway = Gateway::with_budgets(shared, budgets);
+    let mut gateway = Gateway::with_budgets(shared.clone(), budgets);
     if let Some(rt) = wasm_runtime {
         gateway = gateway.with_wasm(rt);
+    }
+    // GB-6 webhook delivery, from the bootstrap config.
+    if let Some(alerts) = shared.load().config.alerts.as_ref() {
+        alert_sink.configure(alerts.webhook.clone());
+    }
+    // OTLP export, from the bootstrap config (endpoint hot-swap is a
+    // deliberate non-feature; absent block = no task, zero cost).
+    if let Some(telemetry) = shared.load().config.telemetry.as_ref() {
+        let exporter = otel::OtelExporter::spawn(
+            gateway_core::config::OtlpConfig {
+                endpoint: telemetry.otlp.endpoint.clone(),
+                service_name: telemetry.otlp.service_name.clone(),
+                flush_interval_secs: telemetry.otlp.flush_interval_secs,
+            },
+            node_label_for_otel.clone(),
+        );
+        gateway = gateway.with_otel(StdArc::new(exporter));
     }
     let mut service = http_proxy_service(&server.configuration, gateway);
     service.add_tcp(&cli.listen);

@@ -72,10 +72,10 @@ principles).
 | Operator-forced guardrail headers/body (Bedrock guardrails, Model-Armor-class attach points) | **implemented** | `inject:` per provider/route: forced headers enter the SigV4 signed set, body fields inject before signing, never caller-steerable |
 | Guardrails hooks (moderation, jailbreak, PII) | **compose (P4)** | The canonical event stream makes these per-delta WASM modules; we ship the hook, the community ships the guardrail — versioned with the config snapshot, rolled out in waves like any rule |
 | PII redaction on streams | **compose (P4)** | Flagship demo of the event model |
-| Model allow-list per scope (which models a client may use) | **adopt (P1)** | Keyed by adjudicated attribution on the scoped chain, never by caller-asserted identity; model from the path (bedrock/vertex) or the buffered body (openai dialects); refused with the operator's GB-4 body |
+| Model allow-list per scope (which models a client may use) | **implemented** | Keyed by adjudicated attribution on the scoped chain, never by caller-asserted identity; model from the path (bedrock/vertex) or the buffered body (openai dialects); refused with the operator's GB-4 body |
 | Audit logs | **adopt (P2)** | Falls out of Git-as-truth + snapshot history |
 | Tamper-evident audit trail (hash-chained adjudication log) | **defer (P4)** | Honest logs exist; tamper-evidence is a real design (chained hashes, external anchor) and is claimed NOWHERE until built |
-| OpenTelemetry export (OTLP for adjudications + meter) | **adopt (P2)** | The observability version of the invoice thesis: ship spans/metrics to the collector you already own; no dashboard of ours |
+| OpenTelemetry export (OTLP request spans, adjudicated attribution) | **implemented** | SDK-free OTLP/HTTP JSON to the collector you already own; best-effort bounded queue, never blocks enforcement; no dashboard of ours |
 | SSO / RBAC for the control plane | **defer (P5)** | OIDC first, nothing bespoke |
 
 ### Interfaces

@@ -67,6 +67,8 @@ pub struct Gateway {
     /// limitation 3: a cap tightened mid-stream does not retroactively apply;
     /// the counters carry across swaps).
     budgets: Arc<NodeBudgets>,
+    /// OTLP request-span export (None = telemetry absent in config).
+    otel: Option<Arc<crate::otel::OtelExporter>>,
 }
 
 impl Gateway {
@@ -93,7 +95,14 @@ impl Gateway {
             sts_cache: CredentialCache::new(),
             gcp_tokens: crate::gcp_auth::GcpTokenCache::new(),
             budgets,
+            otel: None,
         }
+    }
+
+    /// Attach the OTLP exporter (built in main from the bootstrap config).
+    pub fn with_otel(mut self, otel: Arc<crate::otel::OtelExporter>) -> Self {
+        self.otel = Some(otel);
+        self
     }
 
     /// Attach the tier-2 WASM runtime (Phase 4). `main` builds it from the
@@ -152,6 +161,10 @@ pub struct ReqCtx {
     /// computed, so the SigV4 payload hash covers exactly these bytes.
     /// Re-injected as the upstream body in request_body_filter.
     signed_body: Option<Bytes>,
+    /// OTLP: request start (unix nanos) and the authoritative token count
+    /// captured at stream end, for the request span.
+    start_unix_nanos: u64,
+    authoritative_tokens: Option<u64>,
     /// Vertex location routing: the per-request derived upstream host
     /// (multi-region -> base host, regional -> `<loc>-<base>`), used for
     /// the peer address, SNI, and the Host header.
@@ -206,6 +219,8 @@ impl ReqCtx {
             gcp_bearer: None,
             signed_body: None,
             vertex_host: None,
+            start_unix_nanos: crate::otel::now_unix_nanos(),
+            authoritative_tokens: None,
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
@@ -1030,6 +1045,7 @@ impl ProxyHttp for Gateway {
                 );
             }
 
+            ctx.authoritative_tokens = report.authoritative_output_tokens;
             // GB-5: reconcile each capped spender's live estimate for THIS
             // stream to the provider's authoritative terminal frame (docs/01
             // Q3) and log its post-reconcile state — the billing number.
@@ -1044,6 +1060,32 @@ impl ProxyHttp for Gateway {
             );
         }
         Ok(None)
+    }
+
+    /// End of request, every path (proxied, rejected, errored): emit the
+    /// request span carrying the ADJUDICATED attribution. One bounded
+    /// try_send; telemetry never blocks or fails a request.
+    async fn logging(&self, session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {
+        let Some(otel) = &self.otel else { return };
+        let head = session.req_header();
+        otel.record(crate::otel::SpanRecord {
+            start_unix_nanos: ctx.start_unix_nanos,
+            end_unix_nanos: crate::otel::now_unix_nanos(),
+            method: head.method.as_str().to_string(),
+            path: head.uri.path().to_string(),
+            status: session.response_written().map(|h| h.status.as_u16()),
+            route: ctx.route.as_ref().map(|r| r.prefix.clone()),
+            provider: ctx.route.as_ref().map(|r| r.provider.clone()),
+            attribution: ctx
+                .tags
+                .iter()
+                .map(|t| (t.key.clone(), t.value.clone()))
+                .collect(),
+            tokens_estimated: ctx.meter.estimated_output_tokens(),
+            tokens_authoritative: ctx.authoritative_tokens,
+            cut: ctx.cut,
+            config_version: ctx.snapshot.version,
+        });
     }
 }
 

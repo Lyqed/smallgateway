@@ -259,6 +259,43 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
     }
 }
 
+pub(crate) fn validate_telemetry(cfg: &Config, errs: &mut Vec<String>) {
+    if let Some(t) = &cfg.telemetry {
+        if t.otlp.endpoint.host.trim().is_empty() {
+            errs.push("telemetry.otlp.endpoint.host must not be empty".to_string());
+        }
+        if t.otlp.endpoint.port == 0 {
+            errs.push("telemetry.otlp.endpoint.port must be 1-65535".to_string());
+        }
+        if t.otlp.service_name.trim().is_empty() {
+            errs.push("telemetry.otlp.service_name must not be empty".to_string());
+        }
+        if t.otlp.flush_interval_secs == 0 || t.otlp.flush_interval_secs > 300 {
+            errs.push(format!(
+                "telemetry.otlp.flush_interval_secs must be 1-300, got {}",
+                t.otlp.flush_interval_secs
+            ));
+        }
+    }
+}
+
+pub(crate) fn validate_alerts(cfg: &Config, errs: &mut Vec<String>) {
+    if let Some(a) = &cfg.alerts {
+        if a.webhook.endpoint.host.trim().is_empty() {
+            errs.push("alerts.webhook.endpoint.host must not be empty".to_string());
+        }
+        if a.webhook.endpoint.port == 0 {
+            errs.push("alerts.webhook.endpoint.port must be 1-65535".to_string());
+        }
+        if !a.webhook.path.starts_with('/') {
+            errs.push(format!(
+                "alerts.webhook.path must start with '/', got {:?}",
+                a.webhook.path
+            ));
+        }
+    }
+}
+
 pub(crate) fn validate_auth(cfg: &Config, errs: &mut Vec<String>) {
     if let Some(auth) = &cfg.auth {
         match (&auth.jwt.hs256_secret, &auth.jwt.jwks) {

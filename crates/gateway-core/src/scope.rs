@@ -41,7 +41,8 @@ pub use crate::validate::{
     validate_session_tag_value,
 };
 use crate::validate::{
-    check_key, validate_auth, validate_providers, validate_rejection_overrides,
+    check_key, validate_alerts, validate_auth, validate_providers, validate_rejection_overrides,
+    validate_telemetry,
     validate_rejections, validate_wasm,
 };
 use crate::expr::{CompiledExpr, ExprKind};
@@ -176,6 +177,8 @@ pub fn finalize(cfg: &mut Config) -> Result<(), Vec<String>> {
 
     validate_providers(cfg, &mut errs);
     validate_auth(cfg, &mut errs);
+    validate_telemetry(cfg, &mut errs);
+    validate_alerts(cfg, &mut errs);
     validate_wasm(cfg, &mut errs);
     validate_rejections(&cfg.rejections, "rejections", &mut errs);
 

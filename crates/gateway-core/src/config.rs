@@ -55,6 +55,21 @@ pub struct Config {
     /// GB-2 (optional): JWT verification for claim-mapped attribution.
     #[serde(default)]
     pub auth: Option<Auth>,
+    /// OTLP telemetry export (optional): one span per request, carrying the
+    /// ADJUDICATED attribution — the observability face of the invoice
+    /// thesis, shipped to the collector you already own. Absent → no
+    /// exporter task, zero cost, unchanged behavior.
+    #[serde(default)]
+    pub telemetry: Option<TelemetryConfig>,
+    /// GB-6 alert delivery (optional): WHO is told when a cap crosses its
+    /// alert_at threshold or hits 100%. Alerts always land in the
+    /// structured log at the enforcement point; with a webhook configured
+    /// they are ALSO POSTed as the documented JSON body — to whatever the
+    /// fleet's owner routes them at (Alertmanager, a Slack webhook, a
+    /// pager bridge). The webhook is the fleet repo's choice: the alert
+    /// goes to the team that owns the rules, not a central NOC.
+    #[serde(default)]
+    pub alerts: Option<AlertsConfig>,
     /// Tier-2 (optional, Phase 4): signed WASM policy modules. The DECLARATIVE
     /// half lives here — name, module source, signature, which hooks, and the
     /// counter schema version — so gateway-core (and the control-plane
@@ -640,6 +655,64 @@ pub struct Rejections {
     /// with a default, because the gate itself is opt-in per scope.
     #[serde(default)]
     pub model_not_allowed: Option<RejectionTemplate>,
+}
+
+/// OTLP telemetry export. Deliberately SDK-free: the exporter speaks
+/// OTLP/HTTP with the JSON encoding, which every collector's OTLP receiver
+/// accepts — hand-assembled spans, one HTTP POST per flush, no
+/// OpenTelemetry dependency tree. Best-effort by design: a slow or absent
+/// collector drops spans (counted, logged), never blocks enforcement.
+/// Read once at startup from the bootstrap config; endpoint hot-swap is a
+/// deliberate non-feature for now.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryConfig {
+    pub otlp: OtlpConfig,
+}
+
+/// The collector's OTLP/HTTP endpoint (conventionally port 4318; the
+/// exporter POSTs to `/v1/traces`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtlpConfig {
+    pub endpoint: Upstream,
+    /// `service.name` on the resource. The node id rides as
+    /// `service.instance.id` automatically.
+    #[serde(default = "default_otlp_service")]
+    pub service_name: String,
+    /// Flush cadence; spans batch in between.
+    #[serde(default = "default_otlp_flush_secs")]
+    pub flush_interval_secs: u64,
+}
+
+fn default_otlp_service() -> String {
+    "gatewayd".to_string()
+}
+
+fn default_otlp_flush_secs() -> u64 {
+    5
+}
+
+/// GB-6 alert delivery.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertsConfig {
+    pub webhook: WebhookTarget,
+}
+
+/// Where alert JSON bodies POST. Fire-and-forget with a short timeout:
+/// alert delivery is best-effort; the log line at the enforcement point is
+/// the guaranteed record.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookTarget {
+    pub endpoint: Upstream,
+    #[serde(default = "default_webhook_path")]
+    pub path: String,
+}
+
+fn default_webhook_path() -> String {
+    "/".to_string()
 }
 
 /// The built-in `model_not_allowed` body used when the operator sets a
