@@ -147,6 +147,11 @@ pub struct ReqCtx {
     /// GB-8 auth: the minted SA bearer for vertex providers with an auth
     /// chain; applied as `Authorization: Bearer` in upstream_request_filter.
     gcp_bearer: Option<String>,
+    /// Signed-payload providers (bedrock+sts): the COMPLETE request body,
+    /// read and forced-injected in request_filter BEFORE Authorization is
+    /// computed, so the SigV4 payload hash covers exactly these bytes.
+    /// Re-injected as the upstream body in request_body_filter.
+    signed_body: Option<Bytes>,
     body_bytes: usize,
     body_chunks: usize,
     event_counts: [usize; 6],
@@ -195,6 +200,7 @@ impl ReqCtx {
             body_buf: Vec::new(),
             aws: None,
             gcp_bearer: None,
+            signed_body: None,
             body_bytes: 0,
             body_chunks: 0,
             event_counts: [0; 6],
@@ -504,6 +510,50 @@ impl ProxyHttp for Gateway {
             }
         }
 
+        // Signed-payload path (bedrock+sts): read the WHOLE request body now
+        // and apply forced-body injection BEFORE the Authorization is
+        // computed, so the SigV4 payload hash covers the final bytes. Bedrock
+        // request bodies are small JSON (the RESPONSE is the stream), so
+        // buffering here is bounded and correct.
+        if kind == ProviderKind::Bedrock && cfg.providers[&route.provider].sts.is_some() {
+            // Retry buffering is pingora's own consumed-body replay: the
+            // pump re-sends the buffered body with end-of-body set, which
+            // is what routes it through request_body_filter (where the
+            // finalized signed bytes replace it). Without this the pump
+            // idles forever waiting for a body we already consumed.
+            session.enable_retry_buffering();
+            let mut buf: Vec<u8> = Vec::new();
+            while let Some(chunk) = session.read_request_body().await? {
+                buf.extend_from_slice(&chunk);
+            }
+            let forced_body = ctx
+                .forced
+                .as_ref()
+                .map(|f| f.body.as_slice())
+                .unwrap_or(&[]);
+            let merged = if forced_body.is_empty() || buf.is_empty() {
+                buf
+            } else {
+                match labels::inject_into_body(&buf, forced_body) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        info!(
+                            "[req] {method} {path} -> route={} (rejecting: body: {e}) cfg=v{v}",
+                            route.prefix
+                        );
+                        respond_rejection(
+                            session,
+                            &policy.missing_attribution,
+                            &[("key", "body"), ("route", route.prefix.as_str())],
+                        )
+                        .await?;
+                        return Ok(true);
+                    }
+                }
+            };
+            ctx.signed_body = Some(Bytes::from(merged));
+        }
+
         info!(
             "[req] {method} {path} -> route={} provider={}({}) cfg=v{v}",
             route.prefix,
@@ -628,21 +678,30 @@ impl ProxyHttp for Gateway {
             }
         }
 
-        // GB-8 labels / forced body fields: the body will be rewritten in
-        // request_body_filter, so its length changes — switch the upstream
-        // leg to chunked framing. (Composes with UNSIGNED-PAYLOAD signing
-        // only; a signed-payload Bedrock follow-up must move body injection
-        // before the Authorization computation.)
-        let rewrites_body = ctx.vertex_labels.is_some()
-            || ctx.forced.as_ref().is_some_and(|f| !f.body.is_empty());
+        // GB-8 labels / forced body fields on NON-signed providers: the body
+        // will be rewritten in request_body_filter, so its length changes —
+        // switch the upstream leg to chunked framing. Signed-payload
+        // providers already finalized their body in request_filter and skip
+        // this entirely.
+        let rewrites_body = ctx.signed_body.is_none()
+            && (ctx.vertex_labels.is_some()
+                || ctx.forced.as_ref().is_some_and(|f| !f.body.is_empty()));
         if rewrites_body {
             upstream_request.remove_header("content-length");
             upstream_request.insert_header("transfer-encoding", "chunked")?;
         }
 
-        // GB-7: SigV4 with the session-tagged credentials. Forced headers
-        // enter the SIGNED set: a stripped or altered guardrail header
-        // fails verification instead of silently passing unsigned.
+        // Signed-payload path: the finalized body's length is known — plain
+        // content-length framing, and the payload hash below covers it.
+        if let Some(body) = &ctx.signed_body {
+            upstream_request.remove_header("transfer-encoding");
+            upstream_request.insert_header("content-length", body.len().to_string())?;
+        }
+
+        // GB-7: SigV4 with the session-tagged credentials, over the REAL
+        // payload hash. Forced headers enter the SIGNED set: a stripped or
+        // altered guardrail header fails verification instead of silently
+        // passing unsigned.
         if let Some(aws) = &ctx.aws {
             let binding = ctx.route.as_ref().expect("route bound in request_filter");
             let up = &ctx.snapshot.config.providers[&binding.provider].upstream;
@@ -651,12 +710,16 @@ impl ProxyHttp for Gateway {
                 .as_ref()
                 .map(|f| f.headers.as_slice())
                 .unwrap_or(&[]);
+            let payload_hash = gateway_core::aws::sha256_hex(
+                ctx.signed_body.as_deref().unwrap_or(&[]),
+            );
             aws_auth::sign_bedrock_request(
                 upstream_request,
                 up,
                 &aws.region,
                 &aws.creds,
                 now_unix(),
+                &payload_hash,
                 extra_signed,
             )?;
         }
@@ -676,6 +739,14 @@ impl ProxyHttp for Gateway {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // Signed-payload providers: the downstream body was consumed and
+        // finalized in request_filter; re-inject those exact bytes (the
+        // ones the signature covers) as the upstream body.
+        if ctx.signed_body.is_some() {
+            *body = ctx.signed_body.take();
+            return Ok(());
+        }
+
         let has_labels = ctx.vertex_labels.is_some();
         let forced_body = ctx
             .forced

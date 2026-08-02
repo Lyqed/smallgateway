@@ -768,6 +768,8 @@ fn forced_guardrail_headers_are_signed_and_operator_wins() {
                 "      headers:\n",
                 "        - { name: x-amzn-bedrock-guardrailidentifier, value: gr-abc123 }\n",
                 "        - { name: x-amzn-bedrock-guardrailversion, value: '7' }\n",
+                "      body:\n",
+                "        - { path: guardrailConfig.guardrailIdentifier, value: gr-abc123, if_absent: true }\n",
                 "    sts:",
             ),
         );

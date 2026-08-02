@@ -237,7 +237,16 @@ fn verify_sigv4(req: &Request) -> Result<Vec<(String, String)>, String> {
     let timestamp = req.header("x-amz-date").ok_or("no x-amz-date")?;
     let payload_hash = req
         .header("x-amz-content-sha256")
-        .unwrap_or(aws::UNSIGNED_PAYLOAD);
+        .ok_or("no x-amz-content-sha256")?;
+    // Live-Bedrock strictness: the payload must be SIGNED (UNSIGNED-PAYLOAD
+    // refused) and the declared hash must match the received body — so a
+    // signature made before body finalization can never pass.
+    if payload_hash == aws::UNSIGNED_PAYLOAD {
+        return Err("UNSIGNED-PAYLOAD refused: live Bedrock signs the body".to_string());
+    }
+    if payload_hash != aws::sha256_hex(&req.body) {
+        return Err("payload hash does not match the received body".to_string());
+    }
     let params = SignParams {
         method: &req.method,
         path,

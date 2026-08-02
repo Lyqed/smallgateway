@@ -7,12 +7,12 @@
 //! the proxy before calling in here; nothing in this file ever reads a
 //! caller header.
 //!
-//! Documented follow-up (no real AWS account exists in this environment):
-//! live STS requires the AssumeRole call itself to be signed with base
-//! credentials (instance profile / env), and live Bedrock requires a
-//! signed payload hash instead of UNSIGNED-PAYLOAD. The mechanism —
-//! exchange, cache, sign, verify — is proven against the mock STS + mock
-//! Bedrock pair in tests/ and demo.sh; see README.md "GB-7 status".
+//! Live-STS parity: with a base hop configured the AssumeRole call itself
+//! is SigV4-signed by web-identity base credentials, and the Bedrock
+//! request is signed over the REAL payload hash (the body is buffered and
+//! finalized before Authorization is computed). Both halves are verified
+//! against mocks that enforce the live wire contracts (signature recompute
+//! + body-hash check); see README.md "GB-7 status".
 
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use gateway_core::aws::{
-    self, cache_key, Credentials, CredentialCache, SignParams, UNSIGNED_PAYLOAD,
+    self, cache_key, Credentials, CredentialCache, SignParams,
 };
 use gateway_core::config::{BaseHop, StsConfig, TokenSourceSpec, Upstream};
 
@@ -273,18 +273,20 @@ pub(crate) async fn http_post(
 
 /// SigV4-sign the outbound Bedrock request in place: sets `host` (the
 /// canonical host must be what the upstream receives), `x-amz-date`,
-/// `x-amz-security-token`, `x-amz-content-sha256` (UNSIGNED-PAYLOAD — the
-/// documented live-AWS follow-up), and `authorization`. `extra_signed`
-/// carries operator-forced headers (already inserted on the request with
-/// these exact values by the caller) so the signature COVERS them — a
-/// stripped or altered guardrail header then fails verification instead of
-/// passing unsigned.
+/// `x-amz-security-token`, `x-amz-content-sha256` (the REAL payload hash —
+/// the body was buffered and finalized in request_filter before this runs,
+/// so the signature covers exactly the bytes the upstream receives), and
+/// `authorization`. `extra_signed` carries operator-forced headers (already
+/// inserted on the request with these exact values by the caller) so the
+/// signature COVERS them — a stripped or altered guardrail header then
+/// fails verification instead of passing unsigned.
 pub fn sign_bedrock_request(
     upstream_request: &mut RequestHeader,
     upstream: &Upstream,
     region: &str,
     creds: &Credentials,
     now_unix: u64,
+    payload_hash: &str,
     extra_signed: &[(String, String)],
 ) -> Result<()> {
     let host = format!("{}:{}", upstream.host, upstream.port);
@@ -295,11 +297,11 @@ pub fn sign_bedrock_request(
     upstream_request.insert_header("host", host.clone())?;
     upstream_request.insert_header("x-amz-date", timestamp.clone())?;
     upstream_request.insert_header("x-amz-security-token", creds.session_token.clone())?;
-    upstream_request.insert_header("x-amz-content-sha256", UNSIGNED_PAYLOAD)?;
+    upstream_request.insert_header("x-amz-content-sha256", payload_hash.to_string())?;
 
     let mut signed_headers = vec![
         ("host".to_string(), host),
-        ("x-amz-content-sha256".to_string(), UNSIGNED_PAYLOAD.to_string()),
+        ("x-amz-content-sha256".to_string(), payload_hash.to_string()),
         ("x-amz-date".to_string(), timestamp.clone()),
         ("x-amz-security-token".to_string(), creds.session_token.clone()),
     ];
@@ -313,7 +315,7 @@ pub fn sign_bedrock_request(
         region,
         service: "bedrock",
         headers: &signed_headers,
-        payload_hash: UNSIGNED_PAYLOAD,
+        payload_hash,
         timestamp: &timestamp,
     };
     let authorization = params.authorization(&creds.access_key_id, &creds.secret_access_key);
