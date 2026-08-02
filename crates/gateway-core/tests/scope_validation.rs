@@ -462,6 +462,24 @@ fn sts_base_hop_caps_duration_at_one_hour() {
 }
 
 #[test]
+fn sts_live_aws_endpoint_without_base_is_rejected() {
+    // The unsigned single hop only ever works against the mock pair; a
+    // fleet pointing at real STS without the signed chain must hear it at
+    // load, not as a 502 on every production request.
+    let yaml = bedrock_sts_yaml(concat!(
+        "      endpoint: { host: sts.us-east-1.amazonaws.com, port: 443, tls: true }\n",
+        "      role_arn: arn:aws:iam::1:role/gw\n",
+        "      tags: [ { key: env, from_attribution: env } ]",
+    ));
+    let errs = errors_of(&yaml);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("live AWS STS") && e.contains("base")),
+        "{errs:?}"
+    );
+}
+
+#[test]
 fn sts_base_token_source_is_exactly_one_of() {
     let yaml = bedrock_sts_yaml(concat!(
         "      endpoint: { host: 127.0.0.1, port: 6199 }\n",

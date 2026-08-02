@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GatewayBaseHopViaWebIdentity",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::111122223333:oidc-provider/OIDC_PROVIDER_PATH"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "OIDC_PROVIDER_PATH:sub": "system:serviceaccount:gateway-system:gatewayd",
+          "OIDC_PROVIDER_PATH:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

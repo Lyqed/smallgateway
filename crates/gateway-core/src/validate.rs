@@ -106,6 +106,22 @@ pub(crate) fn validate_providers(cfg: &Config, errs: &mut Vec<String>) {
                     ));
                 }
             }
+            // The unsigned single hop is a test seam for the mock pair:
+            // live STS refuses unsigned AssumeRole, so a fleet pointing at
+            // real AWS without the chain would 502 on every request. Catch
+            // the miswire at load, not in production.
+            let host = sts.endpoint.host.to_ascii_lowercase();
+            let live_aws = host == "amazonaws.com"
+                || host.ends_with(".amazonaws.com")
+                || host.ends_with(".amazonaws.com.cn");
+            if sts.base.is_none() && live_aws {
+                errs.push(format!(
+                    "{ctx}: endpoint {:?} is live AWS STS but no base hop is \
+                     configured — live STS requires the SigV4-signed role \
+                     chain; add base: with the platform's web-identity token",
+                    sts.endpoint.host
+                ));
+            }
             if sts.endpoint.host.trim().is_empty() {
                 errs.push(format!("{ctx}: endpoint.host must not be empty"));
             }
