@@ -323,6 +323,79 @@ just different lines on the bill. Each step up this ladder is a
 provider-block diff, so starting at pass-through and ending at the
 chain is a migration measured in merge requests, not a redesign.
 
+### Where real AWS estates land
+
+The shapes are the gateway half; the other half is the AWS estate the
+org already has. The realistic layouts, and where each conforms —
+verified against the config surface, not asserted:
+
+- **One account, tags split the bill.** The entry-level estate (smaller
+  or legacy). Shape 2: one role, session tags carry team. Billing
+  mechanics, precisely: on Bedrock, session tags reach the bill through
+  IAM principal cost allocation — activate the tag keys, export CUR 2.0
+  with caller-identity data — and CloudTrail records them on every
+  AssumeRole regardless.
+
+- **One account, IAM separation by department.** In practice this
+  COMPOSES with tags rather than replacing them. Shape 3: each
+  department's role is scoped at the resource level (Bedrock IAM
+  reaches individual foundation models and inference profiles), and the
+  role's trust policy can REQUIRE the gateway's tags — `sts:TagSession`
+  plus `aws:RequestTag` conditions make an untagged assumption fail at
+  AWS itself. The discipline the gateway enforces becomes mandatory one
+  layer down, in the cloud's own policy engine.
+
+- **Account-per-entity (Organizations).** The default at
+  hospital-network and multi-entity scale, where compliance boundaries
+  (separate audit scopes, separate BAAs) drive account separation. Two
+  conforming layouts: each entity runs its OWN fleet in its own account
+  (the decentralized model below — any shape locally, spend converging
+  only at the consolidated invoice), or one shared fleet whose hop-2
+  AssumeRole crosses accounts — the target role lives in the entity's
+  account, so the spend lands as that account's own usage line: the
+  strongest attribution AWS offers, the account boundary itself.
+  Nothing in the plumbing pins the chained role to the base account;
+  the trust policies decide. Practical note: model access and quotas
+  are per account per region, so each entity account enables its own
+  models.
+
+- **A shared-services AI account.** One account holds the model access
+  and the quota headroom; every entity calls through it. Common
+  precisely because Bedrock enablement is per-account. Shape 2 or 3
+  inside that account; the gateway's tags and spans are the chargeback.
+
+- **Research organizations attributing to grants.** The templating key
+  or tag is the grant number. Watch cardinality: application inference
+  profiles are a quota'd per-account resource, and billing guidance
+  keeps tag values low-cardinality — per-major-grant works, per-request
+  uniqueness does not.
+
+**Application inference profiles** — AWS's own attribution object —
+compose rather than compete: a taggable profile per team, invoked by
+its ARN, rides through the gateway like any model id, and IAM can force
+invocation only-through-profile (the `bedrock:InferenceProfileArn`
+condition). The gateway adds what profiles cannot do alone: the refusal
+at the door, token caps, per-request tags. If you gate profiles with
+`models:`, write the entry as it rides the path — percent-encoded.
+
+And what does NOT conform, stated plainly:
+
+- **Long-lived IAM user access keys.** No config surface for them, on
+  purpose — AWS's own guidance retired that shape for workloads.
+- **An `sts:` block without `base:` against live AWS.** Live STS
+  requires a SigV4-signed AssumeRole, and without a base hop there is
+  nothing to sign with; that combination is a test seam against the
+  mock pair. Live no-chain means shape 1.
+- **The chain itself is STS's shape, not ours.**
+  AssumeRoleWithWebIdentity accepts NO Tags parameter — with a web
+  identity, tags can only be baked into the token at issuance — so
+  per-request session tags from an OIDC credential require exactly
+  this: a web-identity hop, then a signed AssumeRole carrying the tags.
+- **IRSA conforms directly; EKS Pod Identity does not, today.** The
+  base hop reads the same projected token file the SDK chain would,
+  made explicit in config. The newer agent-based Pod Identity is a
+  different mechanism with no web-identity exchange.
+
 ## Vertex, with WIF auth and the location gate
 
 What this buys: the gateway MINTS the Google credential itself (callers
