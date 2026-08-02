@@ -1,0 +1,79 @@
+# The in-cluster mock upstream the demo LLMGateway points at.
+#
+# Included in the GitOps config dir ONLY so the worked Argo CD / Flux examples
+# are demonstrable end to end on k3d with no external provider. In a real
+# deployment you delete this file and point spec.providers[].upstream at your
+# actual provider endpoint; nothing else in the GitOps setup changes.
+#
+# Identical to deploy/samples/mock.yaml. Kept as its own copy here so the
+# GitOps source directory is self-contained (a GitOps controller syncs a
+# directory, not a curated subset of the repo).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-mock
+  namespace: gateway-system
+  labels:
+    app.kubernetes.io/name: gateway-mock
+    app.kubernetes.io/part-of: the-gateway-project
+    app.kubernetes.io/managed-by: gitops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-mock
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-mock
+    spec:
+      containers:
+        - name: mock-upstream
+          image: thegatewayproject/gatewayd:smoke
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/mock_upstream"]
+          args:
+            - --bind
+            - 0.0.0.0
+            - --port
+            - "6190"
+            - --fixture
+            - /opt/gateway/fixtures/openai.sse
+            - --provider
+            - openai
+            - --delay-ms
+            - "20"
+          ports:
+            - name: mock
+              containerPort: 6190
+          readinessProbe:
+            tcpSocket:
+              port: mock
+            initialDelaySeconds: 1
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-mock
+  namespace: gateway-system
+  labels:
+    app.kubernetes.io/name: gateway-mock
+    app.kubernetes.io/part-of: the-gateway-project
+    app.kubernetes.io/managed-by: gitops
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway-mock
+  ports:
+    - name: mock
+      port: 6190
+      targetPort: mock
+      protocol: TCP

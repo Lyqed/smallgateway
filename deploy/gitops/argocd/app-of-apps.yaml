@@ -1,0 +1,49 @@
+# App-of-Apps: the ONE Application that guarantees operator-before-gateway.
+#
+# Apply THIS file (not application.yaml + application-operator.yaml directly)
+# when you want Argo to own the whole stack AND enforce the ordering:
+#
+#   kubectl apply -f deploy/gitops/argocd/app-of-apps.yaml
+#
+# Why this and not the two Applications directly: a sync-wave orders resources
+# only WITHIN a single sync operation. This parent Application syncs the two
+# child Applications (gateway-operator, gateway-demo) as ITS OWN resources in
+# ONE sync, so the `sync-wave: "-1"` on the operator child now genuinely lands
+# it before the gateway child. Applied without this parent, the two children
+# reconcile concurrently and the wave has nothing to act on (the finding this
+# structure fixes).
+#
+# It selects ONLY the two child Application manifests from the argocd/ dir via
+# directory.include, so the parent never tries to manage itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    # Point at your fork/clone.
+    repoURL: https://github.com/thegatewayproject/thegatewayproject
+    targetRevision: main
+    path: deploy/gitops/argocd
+    directory:
+      # Only the two child Applications — never this parent (app-of-apps.yaml)
+      # and never the plain Kubernetes manifests under ../config.
+      include: '{application.yaml,application-operator.yaml}'
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    # The child Application objects live in the argocd namespace.
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

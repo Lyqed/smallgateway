@@ -1,0 +1,76 @@
+# The desired gateway, as plain declarative YAML.
+#
+# This is the WHOLE point of the k8s-native surface: the gateway's desired
+# state — providers, the GB-1/GB-3 attribution contract, GB-4 rejection bodies,
+# GB-5 spend caps, and the data-plane topology — is one auditable object in Git.
+# A GitOps controller (Argo CD or Flux) syncs this file into the cluster; the
+# operator reconciles it into a running gatewayctl control plane + gatewayd data
+# planes. No `kubectl apply` by a human, no drift: Git is truth, end to end.
+#
+# Edit this file, open a PR, merge. The merge IS the deploy. `git revert` IS
+# the rollback. The six-month rule is mechanical here: `git blame` names the
+# commit and the author of every attribution key and every spend cap.
+#
+# This example points at the in-cluster mock upstream (deploy/samples/mock.yaml)
+# so the GitOps loop is demonstrable on k3d without a real provider. Swap the
+# provider `upstream` for a real endpoint in your own repo.
+apiVersion: gateway.thegatewayproject.io/v1alpha1
+kind: LLMGateway
+metadata:
+  name: demo
+  namespace: gateway-system
+  labels:
+    app.kubernetes.io/name: demo
+    app.kubernetes.io/part-of: the-gateway-project
+    app.kubernetes.io/managed-by: gitops
+spec:
+  providers:
+    openai-demo:
+      kind: openai
+      upstream:
+        host: gateway-mock
+        port: 6190
+
+  # GB-1: every request must carry `team`, or it is rejected before the
+  # upstream is ever contacted. GB-3: the gateway pins `env=prod`; a
+  # caller-forged `x-attr-env` is overwritten, never believed.
+  fleet:
+    attribution:
+      requiredKeys: [team]
+      pinned:
+        env: prod
+
+  routes:
+    - name: openai
+      prefix: /openai
+      provider: openai-demo
+
+  # GB-4: the operator owns every rejection body, returned verbatim. The
+  # placeholders {{key}} and {{route}} are filled by the data plane at
+  # rejection time.
+  rejections:
+    missingAttribution:
+      status: 428
+      contentType: application/json
+      body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
+      streaming:
+        event: error
+        data: '{"error":"attribution_required","missing":"{{key}}"}'
+    unknownRoute:
+      status: 404
+      contentType: application/json
+      body: '{"error":"unknown_route","path":"{{route}}"}'
+
+  # GB-5: a fleet spend ceiling, attributed. This is the kind of line a
+  # GitOps PR review is FOR — a reviewer sees "team=acme, $500/day" in the
+  # diff and can approve or push back before it is ever live.
+  spendCaps:
+    caps:
+      - key: team
+        value: acme
+        limitUsd: "500.00"
+        window: day
+
+  dataPlanes:
+    replicas: 1
+    listenPort: 8080

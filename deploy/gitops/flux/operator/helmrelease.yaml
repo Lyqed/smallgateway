@@ -1,0 +1,36 @@
+# Flux: install the OPERATOR (CRD + controller + RBAC) from the chart in Git.
+#
+# This is the platform layer. The gateway Kustomization (kustomization.yaml)
+# `dependsOn` this HelmRelease, so Flux will not apply any LLMGateway until the
+# operator — and therefore the CRD — is installed and healthy. That is the one
+# hard ordering constraint in the stack, enforced declaratively.
+#
+# The chart is sourced straight from the GitRepository (no separate Helm repo
+# needed) via .spec.chart.spec.sourceRef.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gateway-operator
+  namespace: gateway-system
+spec:
+  interval: 5m
+  releaseName: gwop
+  targetNamespace: gateway-system
+  install:
+    createNamespace: true
+    # A chart shipping a CRD under crds/ — let Helm create it on install.
+    crds: Create
+  upgrade:
+    crds: CreateReplace
+  chart:
+    spec:
+      chart: deploy/charts/gateway-operator
+      sourceRef:
+        kind: GitRepository
+        name: thegatewayproject
+        namespace: flux-system
+      interval: 1m
+  values:
+    # The gateway comes from the config-dir Kustomization, not the chart sample.
+    sampleGateway:
+      enabled: false

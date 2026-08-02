@@ -1,0 +1,76 @@
+# Flux bootstrap: the two Flux Kustomizations that wire the whole stack, plus
+# the shared GitRepository source. Apply this ONE file to a Flux-enabled
+# cluster and Flux takes over from Git.
+#
+#   kubectl apply -f deploy/gitops/flux/bootstrap.yaml
+#
+# Ordering — the one hard constraint — is expressed with dependsOn:
+#
+#   gateway-operator  (installs the operator HelmRelease -> CRD + controller)
+#        ▲
+#        │ dependsOn
+#   gateway-demo      (applies the LLMGateway CR + mock upstream)
+#
+# Flux blocks gateway-demo until gateway-operator is applied AND healthy, so an
+# LLMGateway is never applied before its CRD exists. Both Kustomizations prune,
+# so deleting a manifest from Git deletes it from the cluster: Git is truth.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: thegatewayproject
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/thegatewayproject/thegatewayproject
+  ref:
+    branch: main
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gateway-operator
+  namespace: flux-system
+spec:
+  interval: 5m
+  retryInterval: 30s
+  timeout: 5m
+  path: ./deploy/gitops/flux/operator
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: thegatewayproject
+  # Surface the operator HelmRelease's own readiness, so gateway-demo's
+  # dependsOn actually waits for the operator to be healthy, not merely applied.
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: gateway-operator
+      namespace: gateway-system
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gateway-demo
+  namespace: flux-system
+spec:
+  interval: 1m
+  retryInterval: 30s
+  timeout: 3m
+  path: ./deploy/gitops/config
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: thegatewayproject
+  # The hard ordering constraint: wait for the operator (and its CRD) to be
+  # healthy before applying any LLMGateway.
+  dependsOn:
+    - name: gateway-operator
+  targetNamespace: gateway-system
+  # Report the LLMGateway's own Ready condition up to Flux, so
+  # `flux get kustomizations` reflects real gateway health.
+  healthChecks:
+    - apiVersion: gateway.thegatewayproject.io/v1alpha1
+      kind: LLMGateway
+      name: demo
+      namespace: gateway-system

@@ -1,0 +1,8 @@
+# Kustomize overlay for the operator layer: just the HelmRelease that installs
+# the operator chart from Git. A Flux Kustomization (bootstrap.yaml) points at
+# this directory, and the gateway Kustomization dependsOn THAT Flux
+# Kustomization — which is how Flux expresses "operator before gateway".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml

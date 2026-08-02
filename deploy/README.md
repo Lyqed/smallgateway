@@ -14,6 +14,7 @@ deploy/
 ├── charts/
 │   ├── gateway-operator/           # PRODUCTION chart: CRD + operator + RBAC + sample
 │   └── (data-plane chart)          # the standalone file-mode chart (see below)
+├── gitops/                         # worked Argo CD + Flux examples (see gitops/README.md)
 ├── images/                         # Dockerfiles: gatewayctl, operator
 ├── samples/mock.yaml               # in-cluster mock upstream for demos/verification
 └── README.md
@@ -270,12 +271,22 @@ green, and neither changes any existing behavior.
    data plane now logs `gatewayd listening on 0.0.0.0:8080` and serves requests;
    `cargo test -p gatewayd` (25+21 tests) and clippy stay green.
 
+## GitOps (Argo CD / Flux)
+
+The `LLMGateway` CR is plain declarative YAML and reconciles level-triggered, so
+it drops into a GitOps repo directly. Worked Argo CD and Flux examples live in
+[`gitops/`](gitops/README.md): a self-contained config dir (the gateway CR + a
+demo upstream), Argo CD `Application`s (gateway alone, or an App-of-Apps that
+truly orders operator-before-gateway), and a one-file Flux bootstrap
+(`GitRepository` + Kustomizations with `dependsOn` ordering). The one hard
+constraint — the CRD must exist before any `LLMGateway` — is enforced by Flux
+`dependsOn` and by the Argo App-of-Apps (a bare cross-Application `sync-wave`
+does not gate, and the docs say so). This extends the
+control plane's own Git-as-truth model one layer up: the merge is the deploy,
+`git revert` is the rollback, and the PR review is the change-control gate.
+
 ## Follow-ups (explicitly NOT in this milestone)
 
-- **GitOps examples (Argo CD / Flux):** the CR is plain declarative YAML and
-  reconciles level-triggered, so it drops into a GitOps repo directly; worked
-  Argo/Flux `Application`/`Kustomization` examples are a follow-up, not built
-  here.
 - **Full upstream Gateway API conformance:** the `GatewayClass` claim +
   `Gateway`/`HTTPRoute` translation described above is an adapter seam in M1;
   full conformance (and the conformance test suite) is a follow-up.

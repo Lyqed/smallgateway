@@ -1,0 +1,66 @@
+# Argo CD Application: GitOps-manage the demo gateway.
+#
+# This syncs deploy/gitops/config (an LLMGateway CR + its mock upstream) into
+# the cluster. The operator — installed once as a prerequisite (see the note in
+# ../config/kustomization.yaml) — reconciles the CR into a running control
+# plane + data planes.
+#
+# PREREQUISITE (once, platform-owned, NOT GitOps-managed here):
+#   helm install gwop deploy/charts/gateway-operator \
+#     -n gateway-system --create-namespace --wait
+#
+# The CRD must exist before Argo applies an LLMGateway. Installing the operator
+# chart first (the Helm prerequisite above) guarantees that.
+#
+# If you would rather have Argo own the operator too AND guarantee the ordering,
+# use the App-of-Apps in app-of-apps.yaml — a parent Application that syncs both
+# the operator and this gateway as its children, where a sync-wave on the
+# operator child genuinely orders them (a sync-wave only orders resources WITHIN
+# a single sync, so it needs the parent sync to take effect — see the note in
+# app-of-apps.yaml). This Application on its own does NOT depend on the operator
+# Application; if applied standalone before the CRD exists it tolerates the gap
+# via SkipDryRunOnMissingResource + retry and converges once the CRD lands, but
+# that is eventual convergence by retry, not a hard ordering guarantee.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-demo
+  namespace: argocd
+  # Keep the Application object around until its children are gone, so a
+  # delete cleans up in order rather than orphaning the CR.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    # Point this at YOUR fork/clone. The path is the self-contained config dir.
+    repoURL: https://github.com/thegatewayproject/thegatewayproject
+    targetRevision: main
+    path: deploy/gitops/config
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway-system
+
+  syncPolicy:
+    automated:
+      # Level-triggered on the GitOps side too: prune removed objects and
+      # self-heal manual drift. This mirrors the operator's own reconcile
+      # discipline — a manual `kubectl edit` on the CR is reverted to Git.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # The namespace is created by the operator's Helm install; tolerate it
+      # already existing.
+      - CreateNamespace=false
+      # The LLMGateway CRD is installed by the operator chart, not by this
+      # Application. Skip the dry-run that would otherwise fail if Argo syncs
+      # in the brief window before the CRD is established.
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,59 @@
+# OPTIONAL: GitOps-manage the OPERATOR itself (CRD + controller + RBAC) too.
+#
+# This installs the platform layer (operator + CRD) from Git instead of by hand.
+#
+# IMPORTANT — ORDERING: the `sync-wave: "-1"` below orders this Application's
+# children ONLY when this Application is itself a child of the App-of-Apps
+# parent (app-of-apps.yaml). A sync-wave orders resources WITHIN a single sync
+# operation; two independently-applied Application objects reconcile
+# concurrently and a wave on one does NOT sequence it relative to the other.
+# So DO NOT apply this file + application.yaml directly and expect the CRD to be
+# guaranteed first — for that guarantee, apply app-of-apps.yaml, which syncs
+# both as children and lets this wave take effect. Applied directly on its own,
+# this simply installs the operator (the gateway Application then converges via
+# retry once the CRD exists).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-operator
+  namespace: argocd
+  annotations:
+    # Lower wave = synced first — but only inside the App-of-Apps parent's sync
+    # (see the header note). The operator (with its CRD) must exist before an
+    # LLMGateway is applied.
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/thegatewayproject/thegatewayproject
+    targetRevision: main
+    path: deploy/charts/gateway-operator
+    helm:
+      # Zero overrides: the chart ships production-safe defaults. Set
+      # sampleGateway.enabled stays false — the gateway comes from the
+      # gateway-demo Application's config dir, not from the chart's sample.
+      releaseName: gwop
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # A Helm chart that ships a CRD in crds/ needs the CRD applied; Argo's
+      # Replace avoids the "metadata.annotations too long" apply error on large
+      # CRDs.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

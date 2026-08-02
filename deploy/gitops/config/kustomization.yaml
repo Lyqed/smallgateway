@@ -1,0 +1,17 @@
+# The GitOps config source. Both the Argo CD Application and the Flux
+# Kustomization below point a controller at THIS directory.
+#
+# It contains only the desired GATEWAY (an LLMGateway CR) and its demo mock
+# upstream — NOT the operator or the CRD. Those are installed once as a
+# platform prerequisite (Helm: `helm install gwop deploy/charts/gateway-operator`),
+# exactly like you would install cert-manager or an ingress controller before
+# GitOps-managing the workloads that depend on them. Keeping the app config
+# and the platform operator in separate sync scopes is the standard split:
+# the CRD must exist before any LLMGateway can be applied, and a
+# platform-owned Helm release is the honest place for that ordering.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - gateway.yaml
+  - mock-upstream.yaml
