@@ -386,8 +386,8 @@ RULES.
 | Responsibility | Platform team | Product team (per fleet) |
 |---|---|---|
 | Operator install/upgrade, images, CRD versions | ✔ | |
-| Cloud credentials: STS roles, WIF pools, egress | ✔ (one-time per team) | |
-| Provider endpoints + base rejection bodies | ✔ (a shared base repo) | |
+| Cloud credentials: STS roles, WIF pools, egress | ✔ (one-time) | |
+| Provider endpoints + base rejection bodies | ✔ | |
 | The team's `LLMGateway` CR / fleet repo | | ✔ |
 | Attribution keys and their names | | ✔ |
 | Token caps, windows, `alertAt` | | ✔ |
@@ -396,9 +396,10 @@ RULES.
 | Billing-tag activation (once) | finance | |
 
 Mechanics: the platform team's repo holds a fleet TEMPLATE (providers,
-role ARNs with `{{team}}`-style identity, base bodies); each team's repo
-vendors it and owns everything scoped. The platform team reviews nothing
-inside team repos; teams touch no cloud credentials.
+role ARNs templated on whatever identity grain the org chooses — org,
+team, user — and base bodies); each team's repo vendors it and owns
+everything scoped. The platform team reviews nothing inside team repos;
+teams touch no cloud credentials.
 
 **End result:** one operating rotation instead of forty; forty policy
 owners instead of one bottleneck. A team changing its own cap never files
@@ -423,9 +424,8 @@ cloud roles, its own pager. There is no central gateway team at all.
 
 Mechanics: a department bootstraps by forking a template repo and running
 steps 1-6 above in its own namespace or cluster. Departments share
-nothing: not a control plane, not a dashboard, not a rotation. Common
-policy travels the way common code travels — a base repo departments merge
-from, each reviewing the update themselves.
+nothing: not a control plane, not a dashboard, not a rotation, not a
+base repo.
 
 **End result:** zero shared operational surface; a department's outage,
 bad merge, or weird requirement is entirely its own. Onboarding
@@ -446,3 +446,12 @@ are trying to avoid. What we recommend against is the third model this
 project exists to replace: one team owning everyone's POLICY — the
 single pane of glass, where every cap change in the company queues behind
 one backlog.
+
+Both models land on the idea this document keeps returning to:
+**responsibility is owned, never diluted.** The team that runs a fleet
+owns all of it — every request that crosses it, every cap, every
+incident, the PII that leaks or does not, the breach post-mortem, the
+page. There is no provider governance layer in the middle to absorb
+blame, and the absence is the feature: an executive who knows every AI
+incident lands on a named team has no incentive to buy tooling whose
+main function is to make responsibility harder to locate.
