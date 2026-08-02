@@ -23,6 +23,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team }}
 wasm:
   per_event_hooks: false
   modules:

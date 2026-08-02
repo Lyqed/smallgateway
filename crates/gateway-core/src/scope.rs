@@ -75,6 +75,10 @@ pub struct EffectivePolicy {
     pub spend_caps: BTreeMap<String, crate::budget::KeyCap>,
     /// The composed model allow-list; `None` = no gate on this route.
     pub models: Option<Vec<String>>,
+    /// The EXACT caller header per attribution key (operator-named; no
+    /// built-in convention exists). A key absent here has no caller channel
+    /// and its adjudicated value is not forwarded upstream.
+    pub headers: BTreeMap<String, String>,
     pub missing_attribution: RejectionTemplate,
     pub unknown_route: RejectionTemplate,
     /// The model-gate refusal body (operator's, or the built-in default).
@@ -142,6 +146,7 @@ pub struct CompiledRoute {
 struct Layer {
     name: String,
     required_keys: Vec<String>,
+    headers: BTreeMap<String, String>,
     pinned: BTreeMap<String, String>,
     from_claims: BTreeMap<String, String>,
     derived: BTreeMap<String, Arc<CompiledExpr>>,
@@ -217,6 +222,15 @@ pub fn finalize(cfg: &mut Config) -> Result<(), Vec<String>> {
                         errs.push("apps.overrides: empty app value".to_string());
                     }
                     let layer = compile_scope(s, &name, &mut errs);
+                    // Caller headers are read BEFORE the app is selected, so
+                    // an app override cannot rename the caller channel.
+                    if !layer.headers.is_empty() {
+                        errs.push(format!(
+                            "{name}: attribution.headers is route-scope and \
+                             above — the caller channel must be known before \
+                             the app override is selected"
+                        ));
+                    }
                     // The selector key must not be redefined by the layer
                     // it selects — the selection could invalidate itself.
                     for (map_name, has) in [
@@ -320,6 +334,12 @@ pub fn finalize(cfg: &mut Config) -> Result<(), Vec<String>> {
             if !policy.from_claims.is_empty() && cfg.auth.is_none() {
                 errs.push(format!("{ctx_name}: from_claims requires auth.jwt to be configured"));
             }
+            validate_attr_headers(
+                &ctx_name,
+                policy,
+                provider.and_then(|p| p.sts.as_ref()),
+                &mut errs,
+            );
             if let Some(p) = provider {
                 validate_effective_for_provider(
                     &ctx_name,
@@ -380,6 +400,83 @@ pub fn finalize(cfg: &mut Config) -> Result<(), Vec<String>> {
 }
 
 /// GB-7/GB-8 checks that need the composed policy AND the provider.
+/// Headers owned by transport, signing, or upstream credentials: naming one
+/// as an attribution channel would corrupt the request or strip real auth.
+const RESERVED_ATTR_HEADERS: [&str; 9] = [
+    "host",
+    "authorization",
+    "content-length",
+    "transfer-encoding",
+    "content-type",
+    "api-key",
+    "x-amz-date",
+    "x-amz-security-token",
+    "x-amz-content-sha256",
+];
+
+/// The `attribution.headers` contract, checked over the COMPOSED policy:
+/// there is deliberately NO default header name, so every caller-sourced
+/// key must be named by the operator, every name must be a safe token, and
+/// no two keys may share one header.
+fn validate_attr_headers(
+    ctx_name: &str,
+    policy: &EffectivePolicy,
+    sts: Option<&StsConfig>,
+    errs: &mut Vec<String>,
+) {
+    // A mapped key outside this chain's universe is inert, not an error: a
+    // fleet-wide map may name keys only some routes use.
+    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+    for (key, name) in &policy.headers {
+        let ok = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !ok {
+            errs.push(format!(
+                "{ctx_name}: header {name:?} for key {key:?} must be non-empty \
+                 [a-z0-9-] (proxies commonly drop underscore headers)"
+            ));
+        }
+        if RESERVED_ATTR_HEADERS.contains(&name.as_str()) {
+            errs.push(format!(
+                "{ctx_name}: header {name:?} for key {key:?} is owned by \
+                 transport/signing/credentials and cannot carry attribution"
+            ));
+        }
+        if let Some(prev) = seen.insert(name.as_str(), key.as_str()) {
+            errs.push(format!(
+                "{ctx_name}: header {name:?} is named for both {prev:?} and \
+                 {key:?} — one header, one key"
+            ));
+        }
+    }
+    let established = |key: &str| {
+        policy.pinned.contains_key(key)
+            || policy.from_claims.contains_key(key)
+            || policy.derived.contains_key(key)
+    };
+    for key in &policy.required_keys {
+        if !established(key) && !policy.headers.contains_key(key) {
+            errs.push(format!(
+                "{ctx_name}: required key {key:?} has no source — not pinned, \
+                 claim-mapped, or derived, and no caller header is named for \
+                 it under attribution.headers (there is no default header name)"
+            ));
+        }
+    }
+    if let Some(allow) = sts.and_then(|s| s.allow.as_ref()) {
+        if !established(&allow.key) && !policy.headers.contains_key(&allow.key) {
+            errs.push(format!(
+                "{ctx_name}: sts allow key {:?} has no source — it is neither \
+                 gateway-established nor named under attribution.headers, so \
+                 every request would be refused",
+                allow.key
+            ));
+        }
+    }
+}
+
 fn validate_effective_for_provider(
     ctx_name: &str,
     policy: &EffectivePolicy,
@@ -685,6 +782,7 @@ fn compile_layer(
     Layer {
         name: name.to_string(),
         required_keys: attr.required_keys.clone(),
+        headers: attr.headers.clone(),
         pinned: attr.pinned.clone(),
         from_claims: attr.from_claims.clone(),
         derived,
@@ -719,6 +817,7 @@ fn compose(
     let mut pinned = BTreeMap::new();
     let mut from_claims = BTreeMap::new();
     let mut derived = BTreeMap::new();
+    let mut headers: BTreeMap<String, String> = BTreeMap::new();
     for layer in chain {
         let sets: [(OriginKind, Vec<&String>); 3] = [
             (OriginKind::Pinned, layer.pinned.keys().collect()),
@@ -746,6 +845,11 @@ fn compose(
         }
         for (k, v) in &layer.from_claims {
             from_claims.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &layer.headers {
+            // Header names are case-insensitive on the wire; one canonical
+            // lowercase form everywhere.
+            headers.insert(k.clone(), v.to_ascii_lowercase());
         }
         for (k, v) in &layer.derived {
             derived.insert(k.clone(), Arc::clone(v));
@@ -848,6 +952,7 @@ fn compose(
 
     EffectivePolicy {
         required_keys: required,
+        headers,
         pinned,
         from_claims,
         derived,

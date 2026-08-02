@@ -20,6 +20,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team }}
     pinned: {{ env: prod }}
     spend_caps:
       team:

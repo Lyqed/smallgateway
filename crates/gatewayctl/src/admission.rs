@@ -522,6 +522,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-attr-team }
 routes:
   - prefix: /openai
     provider: openai-main
@@ -621,6 +622,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team }}
     pinned: {{ tpm_cap: "100" }}
 apps:
   key: team

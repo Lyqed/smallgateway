@@ -17,11 +17,12 @@ spec:
       upstream:
         host: {{ .Values.sampleGateway.upstream.host | quote }}
         port: {{ .Values.sampleGateway.upstream.port }}
-  # GB-1 required key `team`; GB-3 pins env=prod (a caller-forged x-attr-env is
-  # overwritten before the upstream ever sees it).
+  # GB-1 required key `team` (wire name x-team, operator-chosen); GB-3 pins
+  # env=prod (a caller-forged pin is overwritten before the upstream sees it).
   fleet:
     attribution:
       requiredKeys: [team]
+      headers: { team: x-team }
       pinned:
         env: prod
   routes:

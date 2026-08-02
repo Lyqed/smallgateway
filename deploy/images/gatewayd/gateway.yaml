@@ -22,6 +22,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-team }
     pinned: { env: prod }
 
 routes:
@@ -37,7 +38,7 @@ rejections:
   missing_attribution:
     status: 428
     content_type: application/json
-    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send x-attr-<key> request headers"}'
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send the operator-named attribution headers (this demo: x-team)"}'
     streaming:
       event: error
       data: '{"error":"attribution_required","missing":"{{key}}"}'

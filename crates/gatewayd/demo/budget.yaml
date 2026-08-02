@@ -5,6 +5,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-attr-team }
     pinned: { env: prod }
     # GB-5: the 100k-token scenario, expressed as a few lines of YAML. Every
     # value of `team` is capped at 100_000 tokens by default; ml-research is

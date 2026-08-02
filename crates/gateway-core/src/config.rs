@@ -22,9 +22,6 @@ use crate::adapters::{
 use crate::expr::EvalCtx;
 use crate::scope::CompiledRoute;
 
-/// Attribution keys travel as `x-attr-<key>` request headers.
-pub const ATTR_HEADER_PREFIX: &str = "x-attr-";
-
 /// The explicit base marker (docs/02: "each level prepends/appends around
 /// an explicit base marker"). In `required_keys` it is a plain list entry;
 /// in `labels` it is a plain string entry among the label mappings. A list
@@ -541,6 +538,17 @@ pub struct Attribution {
     /// contain the `<base>` marker to splice the parent scope's list.
     #[serde(default)]
     pub required_keys: Vec<String>,
+    /// The EXACT caller header per attribution key — the operator's name,
+    /// not ours: there is deliberately NO built-in header convention. A key
+    /// listed here may arrive from the caller under precisely this header,
+    /// and its adjudicated value is forwarded upstream under the same name.
+    /// A key absent here has no caller channel at all — correct for pinned,
+    /// claim-mapped, and derived keys. A required key with neither a
+    /// gateway origin nor a header name is refused at load: it could never
+    /// resolve. Composes down the chain like `pinned` (lower scope wins per
+    /// key). Names are case-insensitive (normalized to lowercase).
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
     /// GB-3: key → value assigned by the gateway. A caller-sent value for a
     /// pinned key is overwritten, never believed.
     #[serde(default)]
@@ -1043,6 +1051,7 @@ routes:
     provider: openai-main
     attribution:
       required_keys: [team]
+      headers: { team: x-attr-team }
       pinned: { env: prod }
 rejections:
   missing_attribution:

@@ -23,6 +23,7 @@ routes:
     provider: openai-main
     attribution:
       required_keys: [team]
+      headers: { team: x-attr-team }
       pinned: { env: prod }
 rejections:
   missing_attribution:
@@ -122,10 +123,13 @@ fn cross_scope_contradictory_pin_is_rejected() {
 }
 
 #[test]
-fn uppercase_key_is_rejected_with_header_hint() {
+fn uppercase_key_is_rejected_with_charset_hint() {
     let yaml = base_yaml().replace("required_keys: [team]", "required_keys: [Team]");
     let errs = errors_of(&yaml);
-    assert!(errs.iter().any(|e| e.contains("x-attr-Team")), "{errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("\"Team\"") && e.contains("lowercase")),
+        "{errs:?}"
+    );
 }
 
 #[test]
@@ -586,6 +590,28 @@ fn inject_empty_path_segment_is_rejected() {
 }
 
 // ---- GB-5 windows + alert_at ----
+
+// ---- Shipped configs stay loadable (anti-rot, like the doc examples) ----
+
+#[test]
+fn demo_and_deploy_configs_load_and_validate() {
+    // The demo configs and the smoke-image fallback are shipped artifacts:
+    // a contract change that breaks them must fail HERE, not on the first
+    // `docker run`. (gateway.invalid.yaml is excluded — invalid on purpose.)
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    for rel in [
+        "crates/gatewayd/demo/gateway.yaml",
+        "crates/gatewayd/demo/gateway.v2.yaml",
+        "crates/gatewayd/demo/budget.yaml",
+        "deploy/images/gatewayd/gateway.yaml",
+    ] {
+        let path = format!("{root}/{rel}");
+        let yaml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        if let Err(e) = Config::from_yaml(&yaml) {
+            panic!("{rel} does not validate: {e:?}");
+        }
+    }
+}
 
 // ---- Dedicated refusal templates (value_not_allowed / cap_exceeded) ----
 

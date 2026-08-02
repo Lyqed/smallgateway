@@ -174,6 +174,7 @@ mod tests {
         derived: &[&str],
     ) -> EffectivePolicy {
         EffectivePolicy {
+            headers: BTreeMap::new(),
             required_keys: required.iter().map(|s| s.to_string()).collect(),
             pinned: pinned.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             from_claims: claims.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),

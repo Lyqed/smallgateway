@@ -38,6 +38,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-attr-team, purpose: x-attr-purpose }
     pinned: { env: canary }
 
 # Scope 2 — projects. /vertex opts into ml-platform, which extends the
@@ -85,8 +86,9 @@ routes:
         from_attribution: team
       - '<base>'
 
-  # GB-2: `user` is proven from the verified JWT's `sub` claim — a caller
-  # header x-attr-user is never believed on this route.
+  # GB-2: `user` is proven from the verified JWT's `sub` claim. No caller
+  # header exists for it — the key has no caller channel at all; only the
+  # verified claim supplies it.
   - prefix: /claims
     provider: openai-demo
     attribution:
@@ -116,7 +118,7 @@ rejections:
   missing_attribution:
     status: 428
     content_type: application/json
-    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send x-attr-<key> request headers"}'
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send the operator-named attribution headers (this demo: x-attr-team)"}'
     streaming:
       event: error
       data: '{"error":"attribution_required","missing":"{{key}}"}'

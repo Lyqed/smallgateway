@@ -40,6 +40,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team, env: x-attr-env, user: x-attr-user, variant: x-attr-variant, org: x-attr-org }}
     pinned: {{ env: prod }}
 routes:
   - prefix: /openai
@@ -104,6 +105,44 @@ fn gb1_required_key_present_reaches_the_upstream() {
 }
 
 #[test]
+fn gb1_the_wire_header_name_is_the_operators_exact_choice() {
+    check("GB-1", "gb1_the_wire_header_name_is_the_operators_exact_choice", || {
+        let p = ports(2);
+        // The operator names `team`'s wire header x-tenant: that EXACT name
+        // admits, and there is no default — the x-attr-team spelling is just
+        // an unknown header, so a request carrying only it is refused.
+        let cfg = base_cfg(p[0]).replace(
+            "headers: { team: x-attr-team,",
+            "headers: { team: x-tenant,",
+        );
+        let _mock = spawn_mock(p[0], &spike_fixture("openai.sse"), "openai", false);
+        let _gw = spawn_gatewayd(&cfg, p[1], "gb1n");
+
+        let named = http(
+            p[1],
+            "POST",
+            "/openai/v1/chat",
+            &[("x-tenant", "ml-research")],
+            b"{}",
+        );
+        assert_eq!(named.status, 200, "the operator's exact name admits");
+
+        let default_spelling = http(
+            p[1],
+            "POST",
+            "/openai/v1/chat",
+            &[("x-attr-team", "ml-research")],
+            b"{}",
+        );
+        assert_eq!(
+            default_spelling.status, 428,
+            "no default header name exists: {}",
+            default_spelling.body_text()
+        );
+    });
+}
+
+#[test]
 fn gb1_app_override_pin_satisfies_a_required_key() {
     check("GB-1", "gb1_app_override_pin_satisfies_a_required_key", || {
         let p = ports(2);
@@ -121,7 +160,12 @@ fn gb1_app_override_pin_satisfies_a_required_key() {
                 "routes:",
             ),
         );
-        let cfg = cfg.replace("required_keys: [team]", "required_keys: [team, purpose]");
+        let cfg = cfg
+            .replace("required_keys: [team]", "required_keys: [team, purpose]")
+            .replace(
+                "headers: { team: x-attr-team,",
+                "headers: { team: x-attr-team, purpose: x-attr-purpose,",
+            );
         let _mock = spawn_mock(p[0], &spike_fixture("openai.sse"), "openai", false);
         let _gw = spawn_gatewayd(&cfg, p[1], "gb1c");
 
@@ -386,6 +430,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team }}
     pinned: {{ env: prod }}
 routes:
   - prefix: /vertex
@@ -588,6 +633,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team, env: x-attr-env, region: x-attr-region, cost: x-attr-cost }}
     pinned: {{ env: fleet-prod, region: eu }}
 projects:
   ml:
@@ -818,6 +864,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: {{ team: x-attr-team }}
     pinned: {{ env: prod }}
 routes:
   - prefix: /vertex

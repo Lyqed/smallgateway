@@ -29,7 +29,7 @@ use gateway_core::adapters::Adapter;
 use gateway_core::attribution::Tag;
 use gateway_core::aws::{CredentialCache, Credentials};
 use gateway_core::budget::CapId;
-use gateway_core::config::{ProviderKind, ATTR_HEADER_PREFIX};
+use gateway_core::config::ProviderKind;
 use gateway_core::event::Event;
 use gateway_core::labels;
 use gateway_core::metering::Meter;
@@ -165,6 +165,10 @@ pub struct ReqCtx {
     /// captured at stream end, for the request span.
     start_unix_nanos: u64,
     authoritative_tokens: Option<u64>,
+    /// The operator-named attribution headers for THIS request's policy:
+    /// stripped from the caller request and re-inserted with adjudicated
+    /// values in upstream_request_filter.
+    attr_headers: BTreeMap<String, String>,
     /// Infra-failure detail for the request span (e.g. the STS error on a
     /// 502) — set at the failure site, carried out through `logging`.
     error: Option<String>,
@@ -224,6 +228,7 @@ impl ReqCtx {
             vertex_host: None,
             start_unix_nanos: crate::otel::now_unix_nanos(),
             authoritative_tokens: None,
+            attr_headers: BTreeMap::new(),
             error: None,
             body_bytes: 0,
             body_chunks: 0,
@@ -342,7 +347,10 @@ impl ProxyHttp for Gateway {
             .await?;
             return Ok(true);
         };
-        let caller = caller_attrs(session.req_header());
+        // Caller-asserted keys arrive ONLY under the operator-named headers
+        // (the base route policy's map: app overrides cannot rename the
+        // channel, validated at load).
+        let caller = caller_attrs(session.req_header(), &route.policy().headers);
 
         // Two-phase resolution (fleet→project→route, then route⊕app if the
         // resolved apps.key value selects an override) — the loop lives in the
@@ -693,6 +701,7 @@ impl ProxyHttp for Gateway {
             kind,
         });
         ctx.adapter = Some(kind.new_adapter());
+        ctx.attr_headers = policy.headers.clone();
         ctx.tags = tags;
         ctx.caps = caps;
         info!("[attr {}] {} cfg=v{v}", route.prefix, ctx.tag_summary());
@@ -761,26 +770,20 @@ impl ProxyHttp for Gateway {
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
-        // Only the resolved contract crosses this boundary: strip EVERY
-        // caller-sent x-attr-* header, then insert the resolved tags. A key
-        // outside the route's contract (neither required, pinned,
-        // claim-mapped, nor derived) never reaches the upstream, so a
-        // caller cannot smuggle attribution the gateway never adjudicated.
-        let stray: Vec<_> = upstream_request
-            .headers
-            .keys()
-            .filter(|name| name.as_str().starts_with(ATTR_HEADER_PREFIX))
-            .cloned()
-            .collect();
-        for name in stray {
-            upstream_request.remove_header(&name);
+        // Only the resolved contract crosses this boundary: strip every
+        // operator-NAMED attribution header the caller may have sent, then
+        // insert the adjudicated tags under those exact names. A key the
+        // operator gave no header name has no caller channel and is not
+        // forwarded — attribution still binds, meters, and bills without
+        // touching the upstream request. GB-3 holds: a pinned or proven
+        // tag's header was stripped above, so it is assigned, not believed.
+        for name in ctx.attr_headers.values() {
+            upstream_request.remove_header(name.as_str());
         }
-        // GB-3: the gateway ASSIGNS. Everything x-attr-* was removed above,
-        // so a pinned or proven tag can never be spoofed past this point —
-        // assigned, not believed.
         for tag in &ctx.tags {
-            upstream_request
-                .insert_header(format!("{ATTR_HEADER_PREFIX}{}", tag.key), tag.value.clone())?;
+            if let Some(name) = ctx.attr_headers.get(&tag.key) {
+                upstream_request.insert_header(name.clone(), tag.value.clone())?;
+            }
         }
 
         // Phase 4: apply the WASM `on_request` header transform on the

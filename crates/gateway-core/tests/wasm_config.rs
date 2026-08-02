@@ -17,6 +17,7 @@ routes:
     provider: openai-main
     attribution:
       required_keys: [team]
+      headers: { team: x-attr-team }
       pinned: { env: prod }
 rejections:
   missing_attribution:

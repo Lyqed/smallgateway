@@ -11,7 +11,6 @@ use std::collections::BTreeSet;
 
 use crate::config::{
     Config, OperatorValueSpec, ProviderKind, RejectionOverrides, RejectionTemplate, Rejections,
-    ATTR_HEADER_PREFIX,
 };
 use crate::scope::{
     MAX_LABEL_KEY_LEN, MAX_LABEL_VALUE_LEN, MAX_SESSION_TAG_KEY_LEN, MAX_SESSION_TAG_VALUE_LEN,
@@ -464,7 +463,7 @@ pub(crate) fn check_key(key: &str, ctx: &str, errs: &mut Vec<String>) {
     if !ok {
         errs.push(format!(
             "{ctx}: attribution key {key:?} must be lowercase [a-z0-9_-] \
-             (it becomes the {ATTR_HEADER_PREFIX}{key} header)"
+             (keys appear in templates, CEL, session tags, and labels)"
         ));
     }
 }

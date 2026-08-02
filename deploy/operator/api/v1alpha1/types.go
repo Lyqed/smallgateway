@@ -86,8 +86,12 @@ type Scope struct {
 
 // Attribution is a scope's GB-1 required keys and GB-3 pins.
 type Attribution struct {
-	RequiredKeys []string          `json:"requiredKeys,omitempty"`
-	Pinned       map[string]string `json:"pinned,omitempty"`
+	RequiredKeys []string `json:"requiredKeys,omitempty"`
+	// Headers names the EXACT caller header per attribution key. There is
+	// no default header name: a required key with no gateway origin and no
+	// entry here is refused by the gateway at config load.
+	Headers map[string]string `json:"headers,omitempty"`
+	Pinned  map[string]string `json:"pinned,omitempty"`
 	// Model allow-list for this scope: exact names or a trailing-* family
 	// (claude-3*). A lower scope's list REPLACES a higher one's.
 	Models []string `json:"models,omitempty"`

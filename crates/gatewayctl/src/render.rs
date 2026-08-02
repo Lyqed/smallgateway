@@ -428,7 +428,7 @@ pub mod testrepo {
         .unwrap();
         std::fs::write(
             root.join("fleet").join("base.chain.yaml"),
-            format!("attribution:\n  required_keys: [team]\n  pinned: {{ env: {env} }}\n"),
+            format!("attribution:\n  required_keys: [team]\n  headers: {{ team: x-attr-team }}\n  pinned: {{ env: {env} }}\n"),
         )
         .unwrap();
         std::fs::write(

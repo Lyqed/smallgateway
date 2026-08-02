@@ -14,20 +14,24 @@ use pingora::prelude::*;
 
 use gateway_core::attribution::{self, Origin, Tag};
 use gateway_core::budget::CapId;
-use gateway_core::config::{Config, RejectionTemplate, StreamingRejection, StsConfig, ATTR_HEADER_PREFIX};
+use gateway_core::config::{Config, RejectionTemplate, StreamingRejection, StsConfig};
 use gateway_core::expr::EvalCtx;
 use gateway_core::jwt;
 use gateway_core::scope::{validate_session_tag_value, EffectivePolicy};
 use gateway_core::template;
 
-/// Caller-sent attribution headers (`x-attr-<key>`), first value wins.
-pub(crate) fn caller_attrs(head: &RequestHeader) -> BTreeMap<String, String> {
+/// Caller-sent attribution values, read from the operator-named headers.
+pub(crate) fn caller_attrs(
+    head: &RequestHeader,
+    names: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    // ONLY the operator-named headers are read — there is deliberately no
+    // built-in header convention. A key without an `attribution.headers`
+    // entry has no caller channel at all.
     let mut out = BTreeMap::new();
-    for (name, value) in head.headers.iter() {
-        if let Some(key) = name.as_str().strip_prefix(ATTR_HEADER_PREFIX) {
-            if let Ok(v) = value.to_str() {
-                out.entry(key.to_string()).or_insert_with(|| v.to_string());
-            }
+    for (key, header) in names {
+        if let Some(v) = head.headers.get(header.as_str()).and_then(|v| v.to_str().ok()) {
+            out.insert(key.clone(), v.to_string());
         }
     }
     out

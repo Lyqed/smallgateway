@@ -58,7 +58,7 @@ kubectl run c --rm -i --restart=Never --image=curlimages/curl -n gateway-system 
 
 # With attribution -> the request is proxied and metered.
 kubectl run c --rm -i --restart=Never --image=curlimages/curl -n gateway-system -- \
-  -s -o /dev/null -w '%{http_code}\n' -H 'x-attr-team: acme' \
+  -s -o /dev/null -w '%{http_code}\n' -H 'x-team: acme' \
   http://demo-gatewayd:8080/openai/v1/chat -d '{}'
 # -> 200
 ```
@@ -82,6 +82,7 @@ distribute.
 |-----------------------------------|----------|-----------------------------------------------|
 | `spec.providers`                  | —        | `providers.yaml`                              |
 | `spec.fleet.attribution.requiredKeys` | GB-1 | `fleet/base.chain.yaml` → `attribution.required_keys` |
+| `spec.fleet.attribution.headers`  | caller header names (no default) | `fleet/base.chain.yaml` → `attribution.headers` |
 | `spec.fleet.attribution.pinned`   | GB-3     | `fleet/base.chain.yaml` → `attribution.pinned` |
 | `spec.projects.<p>.attribution`   | —        | `projects/<p>/base.chain.yaml`                |
 | `spec.routes[]`                   | —        | `routes/<name>.route.yaml` (one per route)    |

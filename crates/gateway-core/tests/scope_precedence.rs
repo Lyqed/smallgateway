@@ -24,6 +24,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-attr-team, costcenter: x-attr-costcenter, purpose: x-attr-purpose }
     pinned: { env: fleet-env, region: eu }
   labels:
     - key: env

@@ -8,6 +8,31 @@ This guide assumes a grounding in the basics: docs/00-principles.md (what
 the gateway refuses to become), docs/02-architecture.md (two binaries and
 Git), and docs/05-features.md (the Gateway Baseline, GB-1 through GB-9).
 
+## The philosophy, briefly
+
+Stated once, so the rest of the document can just be instructions. These
+are the project's views; the market can judge them.
+
+- **The bill is the record.** Attribution rides to the invoice itself —
+  AWS session tags, Vertex billing labels. Where no per-request billing
+  dimension exists, the gateway's own token ledger is the record, and
+  it never converts tokens into dollars it cannot prove.
+- **Git is the control plane.** The merge is the deploy, the revert is
+  the rollback, the diff is the change control. No console, no
+  database, no SaaS dependency.
+- **Refusal at the door.** An unattributed request never reaches a
+  provider and never spends a token, and every refusal speaks the
+  operator's words.
+- **Responsibility is owned, never diluted.** A fleet belongs to the
+  team it bills; the caps, the page, and the post-mortem land on a
+  named owner. There is no vendor layer in the middle to absorb blame.
+- **Nothing is named for you.** Attribution keys, wire header names,
+  refusal bodies, alert receivers — all operator-chosen. The gateway
+  brings machinery, not vocabulary.
+- **Defer by default.** A feature enters when users pull it, not when a
+  competitor ships it; the catalog (docs/05-features.md) says no in
+  writing.
+
 ## Requirements
 
 - `kubectl` and `helm`, with a kubeconfig pointing at a cluster (k3d/kind
@@ -57,6 +82,10 @@ spec:
   fleet:
     attribution:
       requiredKeys: [team]          # GB-1: your key names, not ours
+      # The EXACT wire header per caller-supplied key — yours to choose,
+      # there is no default. Recommended: short, x- prefixed (the
+      # long-standing private-header convention): x-team, x-cost-center.
+      headers: { team: x-team }
       models: [gpt-4o, claude-3*]   # which models these clients may use
       pinned: { env: prod }         # GB-3: assigned, never believed
   routes:
@@ -118,7 +147,7 @@ Now with attribution:
 
 ```sh
 kubectl run c --rm -i --restart=Never --image=curlimages/curl -n gateway-system -- \
-  -s -o /dev/null -w '%{http_code}\n' -H 'x-attr-team: acme' \
+  -s -o /dev/null -w '%{http_code}\n' -H 'x-team: acme' \
   http://demo-gatewayd:8080/openai/v1/chat -d '{}'
 # -> 200, attributed, metered, counted against acme's 500k/day
 ```
@@ -151,13 +180,13 @@ deliberately no SDK of ours.
 If you are an app developer and this doc arrived from your platform
 team: the contract is one of two things, and they picked which.
 
-- **`x-attr-*` headers** — plain strings naming who the spend belongs
-  to, and the header names are not ours: each is `x-attr-<key>` for a
-  key THE FLEET's config defines. `required_keys: [team]` is exactly
-  why the examples below send `x-attr-team`; a fleet requiring
-  `[cost_center, workload]` means your requests carry
-  `x-attr-cost_center` and `x-attr-workload` instead. No token
-  involved; the gateway checks and pins them per its config.
+- **Attribution headers** — plain strings naming who the spend belongs
+  to, under EXACT header names the fleet's config chooses: there is no
+  built-in convention and no default prefix. `attribution.headers:
+  { team: x-team }` is why the example below sends `x-team`; your
+  fleet's names are one lookup away in its config, one header per
+  caller-supplied key. No token involved; the gateway checks and pins
+  the values per its config.
 - **`GATEWAY_TOKEN`** — a JWT the gateway VERIFIES (fleets configured
   with `auth.jwt`). It is not an OpenAI key and not a cloud
   credential. It comes from your org's identity provider, or from the
@@ -178,9 +207,9 @@ client = OpenAI(
     # UPSTREAM checks it (on pass-through providers this is your real
     # provider key, forwarded). auth.jwt fleets: the GATEWAY_TOKEN.
     api_key=GATEWAY_TOKEN,
-    # One header per key the fleet requires: this fleet's config says
-    # required_keys: [team], hence x-attr-team. Yours may differ.
-    default_headers={"x-attr-team": "acme"},
+    # One header per caller-supplied key, under the exact name the
+    # fleet's config chose (attribution.headers: { team: x-team }).
+    default_headers={"x-team": "acme"},
 )
 r = client.chat.completions.create(model="llama-3.3-70b", messages=[...])
 ```
@@ -381,7 +410,7 @@ rejections:
   missing_attribution:
     status: 428
     content_type: application/json
-    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","help":"Set x-attr-cost_center and x-attr-workload. Research IT: ext 4571."}'
+    body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","help":"Authenticate with your app token; its claims prove cost_center and workload. Research IT: ext 4571."}'
   unknown_route:
     status: 404
     content_type: application/json
@@ -516,6 +545,7 @@ providers:
 fleet:
   attribution:
     required_keys: [study]
+    headers: { study: x-study }        # the exact wire name is yours
     pinned: { env: prod, data_residency: eu }
     models: [gemini-2.5-pro, gemini-2.5-flash]
     spend_caps:
@@ -570,6 +600,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-team }          # the exact wire name is yours
     pinned: { env: prod }
     # Azure's body `model` is the customer-chosen DEPLOYMENT alias, so
     # the gate is a closed list of names your org already controls.
@@ -659,6 +690,7 @@ providers:
 fleet:
   attribution:
     required_keys: [team]
+    headers: { team: x-team }          # the exact wire name is yours
     pinned: { env: prod }
     models: ['llama-3.3*', 'qwen2.5-coder*']   # the pool serves exactly these
     spend_caps:

@@ -33,10 +33,11 @@ spec:
 
   # GB-1: every request must carry `team`, or it is rejected before the
   # upstream is ever contacted. GB-3: the gateway pins `env=prod`; a
-  # caller-forged `x-attr-env` is overwritten, never believed.
+  # caller-forged pin is overwritten, never believed.
   fleet:
     attribution:
       requiredKeys: [team]
+      headers: { team: x-team }
       pinned:
         env: prod
 

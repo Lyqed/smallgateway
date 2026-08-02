@@ -160,6 +160,9 @@ func renderAttribution(a *gwv1.Attribution) map[string]any {
 	if len(a.RequiredKeys) > 0 {
 		out["required_keys"] = a.RequiredKeys
 	}
+	if len(a.Headers) > 0 {
+		out["headers"] = a.Headers
+	}
 	if len(a.Pinned) > 0 {
 		out["pinned"] = a.Pinned
 	}
