@@ -27,6 +27,15 @@ These are acceptance tests, not aspirations — see
 | GB-7 | The tag reaches the AWS bill | 1 |
 | GB-8 | The tag reaches the Vertex bill | 1 |
 | GB-9 | The rules can change while it runs (bounded staleness, stated) | 4 |
+| GB-10 | The fleet is managed the way teams already manage clusters: desired state in Git, a reconciler that converges it | 2 |
+| GB-11 | Every traffic shape the gateway carries is metered and attributed — inexactness stated, never silent | 1 |
+| GB-12 | The spend figure is the bill's, not a guess: provider-authoritative usage, no fabricated dollars, estimates only with a stated error bound | 1 |
+
+> GB-10 through GB-12 entered the bar on 3 August 2026, alongside the second
+> full verification pass of the public tracker. GB-11 is the one check where
+> our own row is PARTIAL by our own admission: docs/11 names the two open
+> gaps (default OpenAI streams settle on a published estimate until the D3
+> decision lands; an aborted body bills at what was metered until D4 lands).
 
 ## Optional: the catalog, triaged
 
