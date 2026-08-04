@@ -1,3 +1,4 @@
+import { RepoLink } from "@/components/layout/RepoLink";
 import { NAV_ITEMS, SITE_CONFIG } from "@/lib/site-config";
 
 /**
@@ -45,16 +46,12 @@ export function SiteHeader() {
                 </a>
               </li>
             ))}
-            {/* Inert while the repository is private. Deliberately not
-                an anchor: a real href would 404, href="/" would reload
-                to the top, and href="#" would smooth-scroll there
-                because scroll-behavior is smooth on html. A span does
-                nothing at all, which is the only behaviour that leaves
-                the reader where they were. */}
+            {/* Clickable while the repository is private, but it
+                reloads rather than navigates: browsers restore scroll
+                position across a reload, so the reader stays put. See
+                RepoLink for why href="/" and href="#" both move them. */}
             <li>
-              <span className="inline-block cursor-default py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4">
-                GitHub ↗
-              </span>
+              <RepoLink className="inline-block py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4 transition-[text-decoration-thickness] duration-150 hover:decoration-[3px]" />
             </li>
           </ul>
         </nav>
