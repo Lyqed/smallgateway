@@ -20,11 +20,7 @@ export function Masthead() {
   return (
     <header className="relative overflow-x-clip border-b border-steel">
       <div className="mx-auto w-full max-w-[80rem] px-5 pb-16 pt-20 sm:px-8 sm:pb-24 sm:pt-28">
-        <p className="voice-mono text-xs uppercase tracking-[0.28em] text-steel-dark">
-          {SITE_CONFIG.workingName}
-        </p>
-
-        <h1 className="voice-display mt-6 max-w-[22ch] text-[length:var(--text-hero)] leading-[0.94]">
+        <h1 className="voice-display max-w-[22ch] text-[length:var(--text-hero)] leading-[0.94]">
           An LLM gateway you can{" "}
           <span className="relative inline-block whitespace-nowrap">
             read

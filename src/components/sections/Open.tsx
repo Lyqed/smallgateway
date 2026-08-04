@@ -30,8 +30,14 @@ export function Open() {
               04 · The terms
             </p>
 
-            <div className="relative mt-6 inline-block max-w-4xl px-[3%] py-[5%]">
-              <HandCircle className="pointer-events-none absolute -left-[10%] top-1/2 h-[124%] w-[116%] -translate-y-1/2" />
+            {/* The circle is hidden below lg. The mark is a fixed-aspect
+                ellipse, so on narrow screens, where this sentence wraps
+                to three or four lines, stretching it tall enough to
+                enclose them puts the stroke straight through the eyebrow
+                above and the copy below. It only earns its place where
+                the sentence sits on one or two lines. */}
+            <div className="relative mt-6 inline-block max-w-4xl lg:px-[3%] lg:py-[4%]">
+              <HandCircle className="pointer-events-none absolute -left-[8%] top-1/2 hidden h-[132%] w-[116%] -translate-y-1/2 lg:block" />
               <h2
                 id="open-heading"
                 className="voice-display relative text-3xl leading-[1.14] sm:text-5xl"
