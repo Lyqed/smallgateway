@@ -45,17 +45,16 @@ export function SiteHeader() {
                 </a>
               </li>
             ))}
-            {/* Points at this page rather than at the repository: the
-                repo is private, so a real link would send every visitor
-                to a 404. It reads as present without promising access
-                that does not exist yet. */}
+            {/* Inert while the repository is private. Deliberately not
+                an anchor: a real href would 404, href="/" would reload
+                to the top, and href="#" would smooth-scroll there
+                because scroll-behavior is smooth on html. A span does
+                nothing at all, which is the only behaviour that leaves
+                the reader where they were. */}
             <li>
-              <a
-                href="/"
-                className="inline-block py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4 transition-[text-decoration-thickness] duration-150 hover:decoration-[3px]"
-              >
+              <span className="inline-block cursor-default py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4">
                 GitHub ↗
-              </a>
+              </span>
             </li>
           </ul>
         </nav>
