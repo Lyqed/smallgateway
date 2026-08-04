@@ -1,4 +1,5 @@
 import { HandCircle } from "@/components/art/marks";
+import { Wordmark } from "@/components/art/Wordmark";
 import { Reveal } from "@/components/reveal/Reveal";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { SITE_CONFIG } from "@/lib/site-config";
@@ -19,7 +20,11 @@ const KIND_LABEL: Record<string, string> = {
 export function Masthead() {
   return (
     <header className="relative overflow-x-clip border-b border-steel">
-      <div className="mx-auto w-full max-w-[80rem] px-5 pb-16 pt-20 sm:px-8 sm:pb-24 sm:pt-28">
+      <div className="mx-auto w-full max-w-[80rem] px-5 pb-16 pt-14 sm:px-8 sm:pb-24 sm:pt-20">
+        {/* The favicon drawn long: the mark opens the page as a rule
+            rather than as a logo sitting in a corner. */}
+        <Wordmark className="mb-12 w-full sm:mb-16" />
+
         <h1 className="voice-display max-w-[22ch] text-[length:var(--text-hero)] leading-[0.94]">
           An LLM gateway you can{" "}
           <span className="relative inline-block whitespace-nowrap">
