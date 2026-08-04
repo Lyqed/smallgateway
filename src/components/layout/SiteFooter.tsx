@@ -1,9 +1,9 @@
 import { SITE_CONFIG } from "@/lib/site-config";
 
 /**
- * The polished floor: the one dark surface on the site. Small print
- * only. The closing line states the standing invitation without asking
- * for anything, which is the whole posture of the project.
+ * The polished floor: the one dark surface on the site. Two links and
+ * two lines of small print. The repository is reachable from the header
+ * and from the close of the page, so it is not repeated here.
  */
 export function SiteFooter() {
   return (
@@ -16,11 +16,6 @@ export function SiteFooter() {
               <br />
               Open enough to check.
             </p>
-            <p className="voice-mono mt-4 text-xs leading-relaxed text-[oklch(66%_0.012_255)]">
-              &ldquo;{SITE_CONFIG.workingName}&rdquo; is a working name. The
-              final one is still an open decision, carried in the open like
-              everything else here.
-            </p>
           </div>
 
           <nav aria-label="Footer">
@@ -28,16 +23,6 @@ export function SiteFooter() {
               <li>
                 <a href={SITE_CONFIG.sisterUrl} className="link-floor inline-block py-1.5">
                   {SITE_CONFIG.sisterName} ↗
-                </a>
-              </li>
-              <li>
-                <a
-                  href={SITE_CONFIG.repoUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="link-floor inline-block py-1.5"
-                >
-                  github.com/Lyqed/thegatewayproject ↗
                 </a>
               </li>
               <li>
