@@ -39,7 +39,7 @@ export function SiteHeader() {
               <li key={item.href}>
                 <a
                   href={item.href}
-                  className="text-steel-dark transition-colors duration-150 hover:text-ink"
+                  className="inline-block py-1.5 text-steel-dark transition-colors duration-150 hover:text-ink"
                 >
                   {item.label}
                 </a>
@@ -50,7 +50,7 @@ export function SiteHeader() {
                 href={SITE_CONFIG.repoUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="text-ink underline decoration-monarch decoration-2 underline-offset-4 transition-[text-decoration-thickness] duration-150 hover:decoration-[3px]"
+                className="inline-block py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4 transition-[text-decoration-thickness] duration-150 hover:decoration-[3px]"
               >
                 GitHub ↗
               </a>

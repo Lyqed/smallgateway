@@ -17,7 +17,7 @@ const EVENTS = [
   },
   {
     name: "ToolCallDelta",
-    note: "streamed tool calls — same contract as text",
+    note: "streamed tool calls, same contract as text",
   },
   {
     name: "UsageDelta",
@@ -29,7 +29,7 @@ const EVENTS = [
   },
   {
     name: "Error",
-    note: "an operator-defined terminal event — even mid-stream",
+    note: "an operator-defined terminal event, even mid-stream",
   },
 ] as const;
 

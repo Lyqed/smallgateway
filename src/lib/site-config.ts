@@ -1,15 +1,17 @@
 /**
  * Single source of truth for site-wide constants.
- * Site B of the Gateway Baseline / Gateway Project pair — temperament: the mural.
+ * Site B of the Gateway Baseline / Gateway Project pair.
+ *
+ * Temperament: the specimen sheet. The product's argument is that it is
+ * small enough to read end to end, so the site is built to be read the
+ * same way: numbered, precise, and full of values you can go check.
  */
 export const SITE_CONFIG = {
   name: "The Open Source Gateway",
-  // The project's working name, used in copy. Final naming is an open
-  // decision — docs/04 names the collision risk.
   workingName: "The Gateway Project",
-  tagline: "A gateway platform teams build, own, and answer for",
+  tagline: "Small enough to read end to end",
   description:
-    "A community-built LLM gateway: designed from scratch, owned end to end, and measured by the Gateway Baseline, in the open. Two binaries plus Git.",
+    "An LLM gateway you can read in an afternoon. Two binaries and a Git repository, no database in the request path, and every number on this page measured rather than claimed.",
   url: "https://opensourcegateway.com",
   repoUrl: "https://github.com/Lyqed/thegatewayproject",
   sisterUrl: "https://thegatewaybaseline.com",
@@ -22,10 +24,10 @@ export type NavItem = {
   href: string;
 };
 
-/** Anchored single-page navigation. */
+/** Anchored single-page navigation, numbered like the sections. */
 export const NAV_ITEMS: readonly NavItem[] = [
-  { label: "Principles", href: "#principles" },
-  { label: "Architecture", href: "#architecture" },
-  { label: "Build", href: "#build" },
-  { label: "Contribute", href: "#contribute" },
+  { label: "Shape", href: "#shape" },
+  { label: "Path", href: "#path" },
+  { label: "Measured", href: "#measured" },
+  { label: "Open", href: "#open" },
 ] as const;

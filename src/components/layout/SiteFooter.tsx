@@ -1,9 +1,9 @@
 import { SITE_CONFIG } from "@/lib/site-config";
 
 /**
- * The polished floor (brief §4): the one dark surface on the site.
- * Dark band with a faint vertical reflection of the content above,
- * mono small print, sister-site and repo links.
+ * The polished floor: the one dark surface on the site. Small print
+ * only. The closing line states the standing invitation without asking
+ * for anything, which is the whole posture of the project.
  */
 export function SiteFooter() {
   return (
@@ -12,21 +12,22 @@ export function SiteFooter() {
         <div className="flex flex-col justify-between gap-10 md:flex-row md:items-end">
           <div className="max-w-md">
             <p className="voice-display text-2xl text-atrium">
-              Built in the open.
+              Small enough to read.
               <br />
-              Measured by the Baseline.
+              Open enough to check.
             </p>
             <p className="voice-mono mt-4 text-xs leading-relaxed text-[oklch(66%_0.012_255)]">
-              &ldquo;{SITE_CONFIG.workingName}&rdquo; is the working name: the
-              final name is an open decision, carried openly.
+              &ldquo;{SITE_CONFIG.workingName}&rdquo; is a working name. The
+              final one is still an open decision, carried in the open like
+              everything else here.
             </p>
           </div>
 
           <nav aria-label="Footer">
-            <ul className="voice-mono flex flex-col gap-2.5 text-sm md:items-end">
+            <ul className="voice-mono flex flex-col gap-1 text-sm md:items-end">
               <li>
-                <a href={SITE_CONFIG.sisterUrl} className="link-floor">
-                  {SITE_CONFIG.sisterName}: the yardstick ↗
+                <a href={SITE_CONFIG.sisterUrl} className="link-floor inline-block py-1.5">
+                  {SITE_CONFIG.sisterName} ↗
                 </a>
               </li>
               <li>
@@ -34,13 +35,13 @@ export function SiteFooter() {
                   href={SITE_CONFIG.repoUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="link-floor"
+                  className="link-floor inline-block py-1.5"
                 >
                   github.com/Lyqed/thegatewayproject ↗
                 </a>
               </li>
               <li>
-                <a href="#main" className="link-floor">
+                <a href="#main" className="link-floor inline-block py-1.5">
                   Back to top
                 </a>
               </li>
@@ -50,13 +51,10 @@ export function SiteFooter() {
 
         <div className="mt-12 flex flex-col gap-2 border-t border-floor-soft pt-6 sm:flex-row sm:items-center sm:justify-between">
           <p className="voice-mono text-xs text-[oklch(66%_0.012_255)]">
-            {SITE_CONFIG.name} · sister site of{" "}
-            <a href={SITE_CONFIG.sisterUrl} className="link-floor">
-              thegatewaybaseline.com
-            </a>
+            {SITE_CONFIG.name}
           </p>
           <p className="voice-mono text-xs text-[oklch(66%_0.012_255)]">
-            You don&rsquo;t need to buy anything. Yet.
+            Nothing here is for sale.
           </p>
         </div>
       </div>

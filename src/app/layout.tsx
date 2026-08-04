@@ -42,9 +42,9 @@ export const metadata: Metadata = {
     "LLM gateway",
     "open source",
     "Gateway Baseline",
-    "GitOps",
+    "token metering",
+    "streaming proxy",
     "control plane",
-    "canonical event stream",
   ],
   openGraph: {
     type: "website",
