@@ -37,7 +37,7 @@ export function Open() {
                 above and the copy below. It only earns its place where
                 the sentence sits on one or two lines. */}
             <div className="relative mt-6 inline-block max-w-4xl lg:px-[3%] lg:py-[4%]">
-              <HandCircle className="pointer-events-none absolute -left-[23%] top-1/2 hidden h-[112%] w-[99%] -translate-y-1/2 lg:block" />
+              <HandCircle className="pointer-events-none absolute -left-[13%] top-1/2 hidden h-[112%] w-[99%] -translate-y-1/2 lg:block" />
               <h2
                 id="open-heading"
                 className="voice-display relative text-3xl leading-[1.14] sm:text-5xl"
