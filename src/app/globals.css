@@ -226,32 +226,6 @@ section[id] {
   transition-delay: var(--reveal-delay, 0ms);
 }
 
-/* The stillness register (monolith bands): 1200ms linear fade, no
- * translate — the sentence does not move, it only appears. */
-.reveal-armed.reveal-still {
-  transform: none;
-}
-.reveal-armed.reveal-still.is-revealed {
-  transition: opacity 1200ms linear;
-}
-
-/* The watching dot: one per site, inside the monolith band. A slow
- * opacity breath (>4s), nothing more — no glow, no theatrics. */
-@media (prefers-reduced-motion: no-preference) {
-  .watching-dot {
-    animation: watch-breath 5.5s ease-in-out infinite;
-  }
-}
-@keyframes watch-breath {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
-
 /* Hand strokes: paths carry pathLength=1 so dasharray normalizes. */
 .draw-path {
   stroke-dasharray: 1;

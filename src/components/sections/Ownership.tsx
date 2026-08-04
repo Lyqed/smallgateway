@@ -11,10 +11,8 @@ export function Ownership() {
   return (
     <section
       aria-labelledby="ownership-heading"
-      className="relative overflow-x-clip pb-[var(--space-section)] pt-[clamp(7rem,42svh,26rem)]"
+      className="relative overflow-x-clip py-[var(--space-section)]"
     >
-      {/* The generous top gap is deliberate: the monolith band above must
-          never share a viewport with this section's mural moment. */}
       <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <div className="relative border-y border-steel py-16 sm:py-20">
           <Monarch className="pointer-events-none absolute -bottom-12 right-2 w-24 rotate-6 sm:-bottom-14 sm:right-10 sm:w-32" />

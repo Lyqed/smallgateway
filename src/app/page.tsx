@@ -3,7 +3,6 @@ import { Hero } from "@/components/sections/Hero";
 import { Principles } from "@/components/sections/Principles";
 import { Architecture } from "@/components/sections/Architecture";
 import { BuildStatus } from "@/components/sections/BuildStatus";
-import { MonolithBand } from "@/components/sections/MonolithBand";
 import { Ownership } from "@/components/sections/Ownership";
 import { Contribute } from "@/components/sections/Contribute";
 
@@ -16,7 +15,6 @@ export default function HomePage() {
       <Architecture />
       <PerforatedRail id="rail-b" />
       <BuildStatus />
-      <MonolithBand />
       <Ownership />
       <Contribute />
     </>
