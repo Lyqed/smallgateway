@@ -28,9 +28,11 @@ export function Masthead() {
           An LLM gateway you can{" "}
           <span className="relative inline-block whitespace-nowrap">
             read
-            {/* Shifted right and tilted so the right edge lifts, the way
-                a circle drawn by hand in one pass comes back high. */}
-            <HandCircle className="pointer-events-none absolute -left-[7%] top-[58%] h-[166%] w-[126%] -translate-y-1/2 -rotate-[4deg]" />
+            {/* Tilted so the right edge lifts, the way a circle drawn by
+                hand in one pass comes back high. The extra width goes
+                out to the left, which keeps the right edge where the
+                tilt put it. */}
+            <HandCircle className="pointer-events-none absolute -left-[15%] top-[58%] h-[166%] w-[134%] -translate-y-1/2 -rotate-[4deg]" />
           </span>{" "}
           end to end
         </h1>
