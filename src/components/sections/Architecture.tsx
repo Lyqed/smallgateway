@@ -1,6 +1,4 @@
 import { EventStream } from "@/components/art/EventStream";
-import { PaintBloom, SplashArcs } from "@/components/art/PaintField";
-import { SprayTag } from "@/components/art/graffiti";
 import { OrbitArc } from "@/components/art/marks";
 import { Reveal } from "@/components/reveal/Reveal";
 
@@ -90,21 +88,10 @@ export function Architecture() {
       aria-labelledby="architecture-heading"
       className="skylight-band relative overflow-x-clip py-[var(--space-section)]"
     >
-      {/* paint bleeding in from the left corner, behind the header only —
-          it never crosses the event-stream panel, which stays clean so the
-          diagram labels stay crisp (MURAL-DIRECTION non-negotiable) */}
-      <PaintBloom
-        id="arch-bloom"
-        className="paint-live pointer-events-none absolute -left-48 -top-20 h-[46rem] w-[46rem] max-w-[100vw] opacity-45"
-      />
-      <SplashArcs
-        id="arch-arcs"
-        className="paint-live-slow pointer-events-none absolute -right-16 top-4 h-[20rem] w-[120%] opacity-50"
-      />
       {/* orbit arc crossing the section corner — the reconcile loop */}
       <OrbitArc className="pointer-events-none absolute -right-24 top-10 hidden w-[26rem] lg:block" />
 
-      <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
+      <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <header className="max-w-2xl">
           <p className="voice-mono text-xs text-steel-dark">
             02-architecture.md
@@ -116,8 +103,8 @@ export function Architecture() {
             One event model over three wire formats
           </h2>
           <p className="mt-4 leading-relaxed text-steel-dark">
-            Provider adapters normalize every provider&rsquo;s wire format
-            (OpenAI SSE deltas, Anthropic events, Bedrock event-stream) into
+            Provider adapters normalize every provider&rsquo;s wire format:
+            OpenAI SSE deltas, Anthropic events, Bedrock event-stream, into
             one internal event model, flowing through the response path with
             backpressure, never buffered whole. Every capability that made
             streaming a second-class citizen becomes uniform.
@@ -125,34 +112,14 @@ export function Architecture() {
         </header>
 
         <Reveal className="mt-14">
-          {/* the diagram panel is torn open to teal along its top edge, but
-              its own surface stays a clean near-white so every event label
-              reads at full contrast — the mural frames the fact, never
-              covers it */}
-          <div
-            className="torn-top relative border border-steel bg-[oklch(99%_0.002_95)] px-5 py-8 sm:px-10 sm:py-10"
-            style={{ ["--torn-color" as string]: "var(--teal)" }}
-          >
-            <p
-              aria-hidden
-              className="marker absolute -top-9 right-4 -rotate-2 text-lg text-violet"
-            >
-              one contract, three formats
-            </p>
+          <div className="border border-steel bg-[oklch(99%_0.002_95)] px-5 py-8 sm:px-10 sm:py-10">
             <EventStream />
           </div>
         </Reveal>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-2">
           <Reveal>
-            <article
-              className="lift-card torn-top relative h-full border border-steel bg-panel p-7 sm:p-9"
-              style={{ ["--torn-color" as string]: "var(--violet)" }}
-            >
-              <SprayTag
-                id="arch-tag"
-                className="pointer-events-none absolute -right-2 top-3 w-28 rotate-3 opacity-80"
-              />
+            <article className="lift-card h-full border border-steel bg-panel p-7 sm:p-9">
               <p className="voice-mono text-xs text-steel-dark">
                 the data plane
               </p>
@@ -164,10 +131,7 @@ export function Architecture() {
           </Reveal>
 
           <Reveal delay={120}>
-            <article
-              className="lift-card torn-top relative h-full border border-steel bg-panel p-7 sm:p-9"
-              style={{ ["--torn-color" as string]: "var(--gold)" }}
-            >
+            <article className="lift-card h-full border border-steel bg-panel p-7 sm:p-9">
               <p className="voice-mono text-xs text-steel-dark">
                 the control plane
               </p>

@@ -1,12 +1,9 @@
 import { HandArrow } from "@/components/art/marks";
-import { PaintBloomCool, SplashArcs } from "@/components/art/PaintField";
-import { AnarchyStar, ScribbleCircle } from "@/components/art/graffiti";
 import { Reveal } from "@/components/reveal/Reveal";
 
-/** Honest, dated status, sourced from docs/04-build-plan.md, the phase
- * READMEs, and the repo as of 2026-08-02. All six phases are done and
- * adversarially verified. No invented progress, and no withheld progress
- * either; the deferred items are stated plainly, not hidden. */
+/** Honest, dated status — sourced from docs/04-build-plan.md (the Phase 0
+ * closed callout), the spike READMEs, and the repo README as of
+ * 2026-08-01. No invented progress — and no withheld progress either. */
 
 type ChipTone = "teal" | "gold";
 
@@ -66,7 +63,7 @@ const PHASES = [
   },
 ] as const;
 
-const DEFERRED = [
+const NAMED_RISKS = [
   {
     name: "kubernetes-native deployment",
     body: "CRDs, an operator, Gateway API, and a production Helm chart are the next work, not built yet. The control plane distributes to any data plane over gRPC today; a k8s-native path is not claimed.",
@@ -89,26 +86,16 @@ const DEFERRED = [
   },
 ] as const;
 
+
+
 export function BuildStatus() {
   return (
     <section
       id="build"
       aria-labelledby="build-heading"
-      className="relative overflow-x-clip py-[var(--space-section)]"
+      className="py-[var(--space-section)]"
     >
-      {/* paint bleeds behind the header and margins only; every fact-bearing
-          surface below keeps its clean/wash ground so no mural touches a
-          number, chip, or phase state (MURAL-DIRECTION non-negotiable) */}
-      <PaintBloomCool
-        id="build-bloom"
-        className="paint-live pointer-events-none absolute -right-48 -top-24 h-[46rem] w-[46rem] max-w-[100vw] opacity-40"
-      />
-      <SplashArcs
-        id="build-arcs"
-        className="paint-live-slow pointer-events-none absolute -left-16 top-8 h-[18rem] w-[120%] opacity-45"
-      />
-
-      <div className="relative mx-auto w-full max-w-[80rem] px-5 sm:px-8">
+      <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
         <header className="flex max-w-3xl flex-wrap items-baseline gap-x-5 gap-y-2">
           <div>
             <p className="voice-mono text-xs text-steel-dark">
@@ -121,43 +108,27 @@ export function BuildStatus() {
               Build status
             </h2>
           </div>
-          <span className="relative inline-block">
-            <p className="voice-mono rounded-sm border border-steel bg-panel px-2.5 py-1 text-xs text-steel-dark">
-              as of 2026-08-02
-            </p>
-            {/* the hand rings the date — precision, circled by the mural */}
-            <ScribbleCircle
-              className="pointer-events-none absolute -inset-x-3 -inset-y-2 h-[calc(100%+1rem)] w-[calc(100%+1.5rem)]"
-              color="var(--violet)"
-            />
-          </span>
+          <p className="voice-mono rounded-sm border border-steel bg-panel px-2.5 py-1 text-xs text-steel-dark">
+            as of 2026-08-01
+          </p>
         </header>
         <p className="mt-4 max-w-2xl leading-relaxed text-steel-dark">
-          All six phases are done, built in risk order so the scariest novel
-          claim was validated first, and each was verified by an adversarial
-          critique that caught real defects a demo would have missed. Two
-          binaries plus Git, with runtime state in memory and Git as the only
-          source of truth.
+          Risk-ordered: the highest-risk novel claim gets validated first, and
+          every phase ships something a platform team can run.
         </p>
         <div aria-hidden className="mt-2 flex items-center gap-2">
-          <p className="marker -rotate-2 text-xl text-monarch">
-            the whole plan, closed
+          <p className="voice-hand -rotate-2 text-lg">
+            the scariest claim first
           </p>
           <HandArrow className="h-8 w-10 -scale-y-100" />
-          <AnarchyStar className="w-9 -rotate-6" />
         </div>
 
-        {/* Phase 0 — closed 1 August 2026 (docs/04-build-plan.md callout).
-            Torn open to teal, but the well and its cards keep clean grounds
-            so every chip and the measured error bound stay fully legible. */}
+        {/* Phase 0 — closed 1 August 2026 (docs/04-build-plan.md callout) */}
         <Reveal className="mt-12">
-          <div
-            className="torn-top relative border border-steel border-l-4 border-l-teal bg-teal-wash p-7 sm:p-9"
-            style={{ ["--torn-color" as string]: "var(--teal)" }}
-          >
+          <div className="border border-steel border-l-4 border-l-teal bg-teal-wash p-7 sm:p-9">
             <div className="flex flex-wrap items-center gap-3">
-              <h3 className="voice-display text-2xl">Phase 0 · the spikes</h3>
-              <StatusChip tone="teal" label="closed · 1 August 2026" />
+              <h3 className="voice-display text-2xl">Phase 0: the spikes</h3>
+              <StatusChip tone="teal" label="closed 1 August 2026" />
             </div>
 
             <div className="mt-7 grid gap-7 lg:grid-cols-2">
@@ -190,7 +161,7 @@ export function BuildStatus() {
                   The foundation bake-off: Pingora vs agentgateway
                 </h4>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <StatusChip tone="teal" label="decided · Pingora" />
+                  <StatusChip tone="teal" label="decided: Pingora" />
                 </div>
                 <p className="mt-4 text-sm leading-relaxed text-steel-dark">
                   The same minimal streaming proxy, built two ways: once on
@@ -210,92 +181,85 @@ export function BuildStatus() {
           </div>
         </Reveal>
 
-        {/* The record — six phases wheatpasted on the wall as torn
-            newsprint clippings. Each clipping keeps its clean paper ground
-            (facts never sit on paint); the tears, tape, and stamps carry
-            the collage energy. */}
-        <Reveal className="mt-16">
-          {/* masthead */}
-          <div className="border-y-2 border-ink py-2">
-            <p className="voice-mono text-center text-[0.7rem] uppercase tracking-[0.3em] text-ink">
-              the build record · six phases · each verified by adversarial
-              critique
-            </p>
-          </div>
-
-          <ol
-            aria-label="Phase record"
-            className="mt-12 grid gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3"
-          >
-            {PHASES.map((phase, i) => {
-              const tear = ["clip-tear-a", "clip-tear-b", "clip-tear-c"][i % 3];
-              const tilt = ["-rotate-1", "rotate-[0.75deg]", "rotate-[-0.5deg]", "rotate-1", "rotate-[-1.25deg]", "rotate-[0.5deg]"][i];
-              const drop = ["", "sm:translate-y-4", "sm:-translate-y-2", "sm:translate-y-2", "", "sm:translate-y-3"][i];
-              return (
-                <li key={phase.id} className={`relative ${tilt} ${drop}`}>
-                  {/* tape holding the clipping to the wall */}
+        {/* The roadmap — vertical mono timeline */}
+        <Reveal className="mt-14">
+          <div className="grid gap-10 lg:grid-cols-[1fr_20rem]">
+            <ol aria-label="Phase roadmap" className="relative space-y-0">
+              {PHASES.map((phase, i) => (
+                <li
+                  key={phase.id}
+                  className="relative grid grid-cols-[2rem_1fr] gap-4 pb-8"
+                >
+                  {/* rail */}
+                  {i < PHASES.length - 1 && (
+                    <span
+                      aria-hidden
+                      className="absolute left-[0.9375rem] top-7 h-full w-px bg-steel"
+                    />
+                  )}
                   <span
                     aria-hidden
-                    className="tape left-1/2 top-0 z-10 h-6 w-20 -translate-x-1/2 -translate-y-1/2 rotate-[-3deg]"
-                  />
-                  <div className="tear-shadow h-full">
-                    <article className={`newsprint ${tear} flex h-full flex-col p-6 pb-7`}>
-                      {/* dateline */}
-                      <p className="voice-mono border-b border-ink/60 pb-2 text-[0.65rem] uppercase tracking-[0.18em] text-steel-dark">
-                        phase {phase.id} · closed · august 2026
-                      </p>
-                      <h4 className="voice-print mt-3 text-2xl font-bold leading-tight">
-                        {phase.title}
-                      </h4>
-                      <p className="voice-print mt-3 text-[0.9rem] leading-relaxed text-ink/80">
-                        {phase.note}
-                      </p>
-                      {/* the verification, stamped */}
-                      <div className="mt-auto flex justify-end pt-5">
-                        <span className="stamp -rotate-6 text-[0.65rem] text-teal-deep">
-                          verified
-                        </span>
-                      </div>
-                    </article>
+                    className={`relative z-10 mt-1 flex size-8 items-center justify-center rounded-full border-2 bg-atrium ${
+                      phase.state === "done"
+                        ? "border-teal"
+                        : phase.state === "in progress"
+                          ? "border-gold"
+                          : "border-steel"
+                    }`}
+                  >
+                    <span className="voice-mono text-xs text-ink">
+                      {phase.id}
+                    </span>
+                  </span>
+                  <div className="pt-1">
+                    <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="voice-mono text-sm font-medium text-ink">
+                        phase {phase.id} · {phase.title.toLowerCase()}
+                      </span>
+                      <span
+                        className={`voice-mono text-[0.7rem] ${
+                          phase.state === "done"
+                            ? "text-teal-deep"
+                            : phase.state === "in progress"
+                              ? "text-gold-deep"
+                              : "text-steel-dark"
+                        }`}
+                      >
+                        {phase.state === "done"
+                          ? "● done"
+                          : phase.state === "in progress"
+                            ? "● in progress"
+                            : "— ahead"}
+                      </span>
+                    </p>
+                    <p className="mt-1 max-w-xl text-sm text-steel-dark">
+                      {phase.note}
+                    </p>
                   </div>
                 </li>
-              );
-            })}
-          </ol>
+              ))}
+            </ol>
 
-          {/* classifieds: the deferred items, stated plainly, small print */}
-          <aside
-            aria-label="Deferred work"
-            className="relative mx-auto mt-16 max-w-3xl rotate-[0.5deg]"
-          >
-            <span
-              aria-hidden
-              className="tape -top-3 left-8 z-10 h-6 w-16 rotate-[4deg]"
-            />
-            <span
-              aria-hidden
-              className="tape -top-3 right-10 z-10 h-6 w-16 rotate-[-5deg]"
-            />
-            <div className="tear-shadow">
-              <div className="newsprint clip-tear-b p-6 sm:p-8">
-                <p className="voice-mono border-b-2 border-ink pb-2 text-center text-[0.7rem] uppercase tracking-[0.3em] text-ink">
-                  classifieds · deferred, stated plainly
+            <aside className="lg:pt-1">
+              <div>
+                <p className="voice-mono text-xs text-steel-dark">
+                  deferred, stated plainly
                 </p>
-                <ul className="mt-5 columns-1 gap-8 sm:columns-2 [&>li]:break-inside-avoid">
-                  {DEFERRED.map((item) => (
-                    <li key={item.name} className="mb-5">
-                      <p className="voice-mono text-xs font-semibold uppercase tracking-wide text-ink">
-                        {item.name}
+                <ul className="mt-3 space-y-4">
+                  {NAMED_RISKS.map((risk) => (
+                    <li key={risk.name}>
+                      <p className="voice-mono text-xs font-medium text-ink">
+                        {risk.name}
                       </p>
-                      <p className="voice-print mt-1 text-[0.85rem] leading-relaxed text-ink/75">
-                        {item.body}
+                      <p className="mt-0.5 text-xs leading-relaxed text-steel-dark">
+                        {risk.body}
                       </p>
                     </li>
                   ))}
                 </ul>
               </div>
-            </div>
-          </aside>
+            </aside>
+          </div>
         </Reveal>
       </div>
     </section>

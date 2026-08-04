@@ -38,28 +38,19 @@
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* ------------------------------------------------------------------ *
- * Derived extension — shared verbatim across both sites. The mural
- * tokens above are reserved for non-text (dots, fills, strokes) where
- * they fall short of 4.5:1 on the atrium ground; text set in a mural
- * color uses the darker `-deep` member of the same family (brief
- * section 6: "verify every mural-color-on-white pairing >= 4.5:1 for
- * text, or reserve for non-text"). Roles are never swapped. `-wash`
- * members are the faint section grounds. This block is kept byte-
- * identical across both sites.
- * ------------------------------------------------------------------ */
+/* Derived shades — same semantic roles, AA-safe where the raw mural
+ * tones fall short of 4.5:1 for small text on the atrium ground.
+ * (Roles are never swapped: skylight-deep is still "links", gold-deep
+ * is still "in progress".) */
 :root {
   --skylight-deep: oklch(46% 0.14 250);      /* link text at body sizes */
-  --monarch-deep: oklch(50% 0.155 55);       /* leader/emphasis text */
   --violet-deep: oklch(47% 0.19 300);        /* human-layer small text on washes */
-  --teal-deep: oklch(44% 0.095 195);         /* verified label text */
-  --gold-deep: oklch(48% 0.105 90);          /* in-progress label text */
-  --blossom-deep: oklch(47% 0.185 25);       /* missing/error label text */
+  --gold-deep: oklch(55% 0.12 85);           /* in-progress label text */
+  --teal-deep: oklch(46% 0.1 195);           /* verified label text */
   --violet-wash: oklch(95.5% 0.02 300);      /* community panel ground */
   --gold-wash: oklch(96% 0.03 95);           /* in-progress panel ground */
   --teal-wash: oklch(96% 0.02 195);          /* done/verified panel ground */
   --floor-soft: oklch(30% 0.014 270);        /* floor hairlines */
-  --focus-ring: oklch(53% 0.16 55);          /* darker monarch, AA-safe on atrium */
 }
 
 @theme inline {
@@ -71,7 +62,6 @@
   --color-floor-soft: var(--floor-soft);
   --color-ink: var(--ink);
   --color-monarch: var(--monarch);
-  --color-monarch-deep: var(--monarch-deep);
   --color-violet: var(--violet);
   --color-violet-deep: var(--violet-deep);
   --color-violet-wash: var(--violet-wash);
@@ -84,7 +74,6 @@
   --color-skylight: var(--skylight);
   --color-skylight-deep: var(--skylight-deep);
   --color-blossom: var(--blossom);
-  --color-blossom-deep: var(--blossom-deep);
 
   --font-sans: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex), ui-monospace, "SF Mono", Menlo, monospace;
@@ -111,11 +100,9 @@ body {
   background: oklch(from var(--monarch) l c h / 0.35);
 }
 
-/* Keyboard-visible focus: 2px darker-monarch outline, offset 2px
- * (brief §6). The AA-safe --focus-ring keeps >=3:1 against the atrium
- * ground; identical treatment on the sister site. */
+/* Keyboard-visible focus: 2px monarch outline, offset 2px (brief §6). */
 :focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--monarch);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -157,14 +144,14 @@ section[id] {
   background-image: linear-gradient(
     111deg,
     transparent 0%,
-    transparent 36%,
-    oklch(from var(--skylight) l c h / 0.03) 40%,
-    oklch(from var(--skylight) l c h / 0.03) 50%,
-    transparent 54%,
-    transparent 62%,
-    oklch(from var(--gold) l c h / 0.033) 66%,
-    oklch(from var(--gold) l c h / 0.033) 69%,
-    transparent 73%
+    transparent 38%,
+    oklch(from var(--skylight) l c h / 0.055) 38%,
+    oklch(from var(--skylight) l c h / 0.055) 52%,
+    transparent 52%,
+    transparent 64%,
+    oklch(from var(--gold) l c h / 0.06) 64%,
+    oklch(from var(--gold) l c h / 0.06) 71%,
+    transparent 71%
   );
 }
 
@@ -239,6 +226,32 @@ section[id] {
   transition-delay: var(--reveal-delay, 0ms);
 }
 
+/* The stillness register (monolith bands): 1200ms linear fade, no
+ * translate — the sentence does not move, it only appears. */
+.reveal-armed.reveal-still {
+  transform: none;
+}
+.reveal-armed.reveal-still.is-revealed {
+  transition: opacity 1200ms linear;
+}
+
+/* The watching dot: one per site, inside the monolith band. A slow
+ * opacity breath (>4s), nothing more — no glow, no theatrics. */
+@media (prefers-reduced-motion: no-preference) {
+  .watching-dot {
+    animation: watch-breath 5.5s ease-in-out infinite;
+  }
+}
+@keyframes watch-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 /* Hand strokes: paths carry pathLength=1 so dasharray normalizes. */
 .draw-path {
   stroke-dasharray: 1;
@@ -251,252 +264,6 @@ section[id] {
   stroke-dashoffset: 0;
   transition: stroke-dashoffset 800ms var(--ease-out-expo);
   transition-delay: calc(var(--reveal-delay, 0ms) + 180ms);
-}
-
-/* ------------------------------------------------------------------ *
- * MURAL LAYER — maximal / anarchist. Full-color paint bleeds over the
- * machined wall; graffiti punctuates; clean panels rip open to color.
- * Every readable surface still sits on a clean ground or a scrim, and
- * nothing here animates for reduced-motion users.
- * ------------------------------------------------------------------ */
-
-/* Feathered edge for paint fields whose element box would otherwise crop
- * the wash into a hard rectangle (slice-cropped SVGs). Every edge of the
- * element dissolves into the ground instead of terminating in a line. */
-.feather {
-  -webkit-mask-image: radial-gradient(
-    ellipse 72% 68% at 48% 46%,
-    black 52%,
-    transparent 98%
-  );
-  mask-image: radial-gradient(
-    ellipse 72% 68% at 48% 46%,
-    black 52%,
-    transparent 98%
-  );
-}
-
-/* Horizontal-band variant: fades only top and bottom, for arc bundles
- * that are meant to run off the left/right viewport edges. */
-.feather-y {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    black 18%,
-    black 82%,
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    black 18%,
-    black 82%,
-    transparent 100%
-  );
-}
-
-/* Body copy that must sit near paint gets a legible surface. The scrim
- * is a near-opaque panel with a soft edge so the paint bleeds up to it
- * without ever crossing under the text. */
-.paint-scrim {
-  position: relative;
-  background: oklch(from var(--surface-panel) l c h / 0.9);
-  backdrop-filter: saturate(1.1);
-  box-shadow: 0 1px 0 0 oklch(from var(--steel) l c h / 0.4);
-}
-
-/* A clean machined panel that reads as torn open along its top edge —
- * the ragged line is a repeating SVG-free zigzag mask so the panel's
- * own surface appears ripped, revealing whatever paint sits behind it.
- * The torn strip itself is drawn by ::before as saturated color. */
-.torn-top {
-  position: relative;
-}
-.torn-top::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -16px;
-  height: 24px;
-  background: var(--torn-color, var(--monarch));
-  /* irregular multi-scale tear: uneven spacing, mixed depths, a few long
-   * fibrous spikes — never a repeating zigzag */
-  clip-path: polygon(
-    0 0, 2% 46%, 3.5% 22%, 6% 71%, 7% 38%, 9.5% 55%, 12% 18%, 13% 64%,
-    16% 42%, 17.5% 88%, 20% 30%, 23% 52%, 26.5% 24%, 28% 78%, 31% 45%,
-    34% 61%, 36% 15%, 39.5% 69%, 42% 35%, 44% 93%, 47% 41%, 50% 58%,
-    52.5% 20%, 55% 73%, 58% 33%, 61.5% 50%, 63% 82%, 66% 27%, 69% 63%,
-    72% 44%, 74.5% 16%, 77% 70%, 80% 39%, 82% 86%, 85.5% 31%, 88% 57%,
-    91% 23%, 93.5% 75%, 96% 47%, 98% 66%, 100% 28%, 100% 0
-  );
-  opacity: 0.92;
-  pointer-events: none;
-  /* the torn strip casts a sliver of shadow onto the panel it rips open */
-  filter: drop-shadow(0 2px 1px oklch(0% 0 0 / 0.14));
-}
-
-/* Film grain over paint — pure CSS radial dithering, no external asset.
- * Sits at low opacity, screen-blended, so paint reads as painterly. */
-.grain::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    radial-gradient(oklch(0% 0 0 / 0.5) 0.5px, transparent 0.6px),
-    radial-gradient(oklch(100% 0 0 / 0.4) 0.5px, transparent 0.6px);
-  background-size: 3px 3px, 4px 4px;
-  background-position: 0 0, 1px 2px;
-  opacity: 0.08;
-  mix-blend-mode: overlay;
-}
-
-/* The color-splash arcs and gradient fields breathe: a slow, tiny
- * skew/scale drift so the paint never sits perfectly still. Gated hard
- * on reduced-motion below. */
-@keyframes paint-drift {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
-  }
-  50% {
-    transform: translate3d(1.2%, -1%, 0) rotate(0.6deg) scale(1.015);
-  }
-}
-.paint-live {
-  animation: paint-drift 22s var(--ease-out-expo) infinite;
-  will-change: transform;
-}
-.paint-live-slow {
-  animation: paint-drift 34s var(--ease-out-expo) infinite;
-  animation-delay: -8s;
-  will-change: transform;
-}
-
-/* A sprayed color word: heavy display type, mural-toned, with a soft
- * sprayed edge (text-shadow bloom) and a slight rotation. Decorative
- * only — always aria-hidden in markup, never carries information. */
-.spray-word {
-  font-family: var(--font-sans);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  text-transform: lowercase;
-  line-height: 0.9;
-  color: oklch(from var(--spray, var(--monarch)) l c h / 0.9);
-  text-shadow:
-    0 0 1px oklch(from var(--spray, var(--monarch)) l c h / 0.6),
-    0 0 6px oklch(from var(--spray, var(--monarch)) l c h / 0.28);
-}
-
-/* Marker scrawl caption — the mural voice in a heavier, tighter weight. */
-.marker {
-  font-family: var(--font-hand);
-  font-weight: 400;
-  line-height: 1.15;
-}
-
-/* ------------------------------------------------------------------ *
- * NEWSPRINT LAYER — torn clippings wheatpasted on the machined wall.
- * Tears are irregular multi-scale polygons (three variants so no two
- * neighboring clippings share an edge); the shadow lives on a wrapper
- * with drop-shadow so it follows the torn silhouette, not the box.
- * ------------------------------------------------------------------ */
-
-.voice-print {
-  font-family: Georgia, "Times New Roman", ui-serif, serif;
-  letter-spacing: -0.01em;
-}
-
-/* Slightly yellowed paper with a faint halftone so it reads as newsprint
- * against the cool machined panels. */
-.newsprint {
-  position: relative;
-  background: oklch(95.5% 0.014 95);
-  color: var(--ink);
-}
-.newsprint::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(oklch(30% 0.02 95 / 0.5) 0.5px, transparent 0.6px);
-  background-size: 4px 4px;
-  opacity: 0.05;
-}
-
-/* Torn-silhouette shadow carrier. */
-.tear-shadow {
-  filter: drop-shadow(4px 6px 0 oklch(from var(--steel) l c h / 0.5));
-}
-.polished-floor .tear-shadow,
-.dark-wall .tear-shadow {
-  filter: drop-shadow(4px 6px 0 oklch(0% 0 0 / 0.45));
-}
-
-/* Irregular tears, all four edges, three fingerprints. */
-.clip-tear-a {
-  clip-path: polygon(
-    0.6% 2.1%, 5% 0.4%, 11% 1.8%, 17% 0.2%, 24% 1.5%, 31% 0.5%, 39% 1.9%,
-    47% 0.3%, 55% 1.6%, 63% 0.6%, 71% 1.8%, 79% 0.2%, 87% 1.4%, 94% 0.5%,
-    99.5% 1.9%, 98.9% 9%, 99.8% 18%, 98.6% 28%, 99.7% 39%, 98.8% 51%,
-    99.9% 63%, 98.7% 74%, 99.6% 85%, 98.9% 94%, 99.4% 98.2%, 93% 99.7%,
-    85% 98.4%, 76% 99.8%, 66% 98.6%, 56% 99.6%, 46% 98.3%, 36% 99.7%,
-    27% 98.5%, 18% 99.8%, 10% 98.6%, 3% 99.5%, 0.4% 97.9%, 1.3% 88%,
-    0.2% 77%, 1.4% 65%, 0.3% 53%, 1.2% 41%, 0.2% 30%, 1.3% 19%, 0.4% 9%
-  );
-}
-.clip-tear-b {
-  clip-path: polygon(
-    0.3% 1.2%, 7% 1.9%, 14% 0.3%, 22% 1.7%, 30% 0.4%, 37% 1.8%, 45% 0.2%,
-    53% 1.5%, 61% 0.5%, 69% 1.9%, 77% 0.3%, 85% 1.6%, 92% 0.4%, 99.6% 1.4%,
-    98.8% 12%, 99.9% 24%, 98.6% 37%, 99.8% 49%, 98.7% 61%, 99.7% 72%,
-    98.5% 83%, 99.8% 93%, 98.9% 98.8%, 91% 98.3%, 82% 99.9%, 72% 98.4%,
-    62% 99.7%, 52% 98.2%, 42% 99.8%, 32% 98.5%, 23% 99.6%, 14% 98.4%,
-    6% 99.8%, 0.5% 98.6%, 1.4% 90%, 0.3% 79%, 1.5% 67%, 0.2% 55%,
-    1.3% 44%, 0.3% 33%, 1.5% 21%, 0.2% 10%
-  );
-}
-.clip-tear-c {
-  clip-path: polygon(
-    1.1% 0.4%, 9% 1.6%, 18% 0.2%, 27% 1.8%, 36% 0.5%, 44% 1.4%, 52% 0.3%,
-    60% 1.7%, 68% 0.4%, 76% 1.9%, 84% 0.3%, 92% 1.5%, 99.4% 0.6%,
-    99.9% 10%, 98.7% 21%, 99.8% 33%, 98.5% 46%, 99.9% 58%, 98.6% 70%,
-    99.7% 81%, 98.8% 91%, 99.5% 99.1%, 90% 98.6%, 80% 99.9%, 70% 98.3%,
-    60% 99.8%, 49% 98.5%, 39% 99.7%, 29% 98.2%, 19% 99.6%, 9% 98.5%,
-    2% 99.9%, 0.2% 92%, 1.4% 82%, 0.3% 70%, 1.2% 58%, 0.2% 46%,
-    1.4% 34%, 0.3% 22%, 1.2% 11%
-  );
-}
-
-/* A strip of wheatpaste tape holding a clipping to the wall. */
-.tape {
-  position: absolute;
-  background: oklch(90% 0.025 95 / 0.72);
-  box-shadow: 0 1px 2px oklch(0% 0 0 / 0.12);
-  pointer-events: none;
-}
-
-/* A rubber stamp: inked, slightly rotated, never perfectly crisp. */
-.stamp {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  border: 3px solid currentColor;
-  border-radius: 3px;
-  padding: 0.15rem 0.55rem;
-  opacity: 0.82;
-  -webkit-mask-image: radial-gradient(
-    ellipse 100% 100% at 50% 50%,
-    black 62%,
-    oklch(0% 0 0 / 0.72) 100%
-  );
-  mask-image: radial-gradient(
-    ellipse 100% 100% at 50% 50%,
-    black 62%,
-    oklch(0% 0 0 / 0.72) 100%
-  );
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -514,11 +281,5 @@ section[id] {
   .reveal-armed.is-revealed .draw-path,
   .lift-card {
     transition: none;
-  }
-  /* Paint stops moving; everything stays visible and readable. */
-  .paint-live,
-  .paint-live-slow {
-    animation: none;
-    will-change: auto;
   }
 }

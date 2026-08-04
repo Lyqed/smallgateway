@@ -1,22 +1,14 @@
 import { SITE_CONFIG } from "@/lib/site-config";
-import { SplashArcs } from "@/components/art/PaintField";
 
 /**
  * The polished floor (brief §4): the one dark surface on the site.
- * Dark band with a faint vertical reflection of the content above, mono
- * small print, sister-site and repo links. Splash arcs bleed across the
- * top edge where the light mural meets the dark floor — the paint follows
- * the movement down onto the floor. Links stay fully legible on dark.
+ * Dark band with a faint vertical reflection of the content above,
+ * mono small print, sister-site and repo links.
  */
 export function SiteFooter() {
   return (
-    <footer className="polished-floor relative mt-auto overflow-x-clip text-[oklch(88%_0.01_250)]">
-      {/* the mural spilling onto the floor along the top seam */}
-      <SplashArcs
-        id="footer-arcs"
-        className="paint-live pointer-events-none absolute -left-8 -top-6 h-40 w-[120%] opacity-70"
-      />
-      <div className="relative mx-auto w-full max-w-[80rem] px-5 py-16 sm:px-8">
+    <footer className="polished-floor mt-auto text-[oklch(88%_0.01_250)]">
+      <div className="mx-auto w-full max-w-[80rem] px-5 py-16 sm:px-8">
         <div className="flex flex-col justify-between gap-10 md:flex-row md:items-end">
           <div className="max-w-md">
             <p className="voice-display text-2xl text-atrium">
@@ -25,7 +17,7 @@ export function SiteFooter() {
               Measured by the Baseline.
             </p>
             <p className="voice-mono mt-4 text-xs leading-relaxed text-[oklch(66%_0.012_255)]">
-              &ldquo;{SITE_CONFIG.workingName}&rdquo; is the working name. The
+              &ldquo;{SITE_CONFIG.workingName}&rdquo; is the working name: the
               final name is an open decision, carried openly.
             </p>
           </div>
@@ -34,7 +26,7 @@ export function SiteFooter() {
             <ul className="voice-mono flex flex-col gap-2.5 text-sm md:items-end">
               <li>
                 <a href={SITE_CONFIG.sisterUrl} className="link-floor">
-                  {SITE_CONFIG.sisterName} · the yardstick ↗
+                  {SITE_CONFIG.sisterName}: the yardstick ↗
                 </a>
               </li>
               <li>
@@ -64,7 +56,7 @@ export function SiteFooter() {
             </a>
           </p>
           <p className="voice-mono text-xs text-[oklch(66%_0.012_255)]">
-            No procurement required to build against it.
+            You don&rsquo;t need to buy anything. Yet.
           </p>
         </div>
       </div>

@@ -10,36 +10,10 @@ type MonarchProps = {
 export function Monarch({ className }: MonarchProps) {
   return (
     <svg aria-hidden viewBox="0 0 220 200" fill="none" className={className}>
-      <defs>
-        {/* wing paint: monarch warmed toward gold at the tips */}
-        <radialGradient id="mon-wing" cx="50%" cy="46%" r="70%">
-          <stop offset="0%" stopColor="var(--monarch)" />
-          <stop offset="72%" stopColor="var(--monarch)" />
-          <stop offset="100%" stopColor="var(--gold)" />
-        </radialGradient>
-        {/* crayon roughness so the wings read hand-painted, not vector */}
-        <filter id="mon-crayon" x="-12%" y="-12%" width="124%" height="124%">
-          <feTurbulence
-            type="fractalNoise"
-            baseFrequency="0.9"
-            numOctaves="1"
-            seed="9"
-            result="n"
-          />
-          <feDisplacementMap
-            in="SourceGraphic"
-            in2="n"
-            scale="2.4"
-            xChannelSelector="R"
-            yChannelSelector="G"
-          />
-        </filter>
-      </defs>
-      <g filter="url(#mon-crayon)">
       {/* left forewing */}
       <path
         d="M104 96 C 84 62, 52 30, 26 26 C 6 23, 2 42, 10 62 C 20 87, 52 106, 92 108 C 98 105, 102 101, 104 96 Z"
-        fill="url(#mon-wing)"
+        fill="var(--monarch)"
         stroke="var(--floor)"
         strokeWidth="3"
         strokeLinejoin="round"
@@ -47,7 +21,7 @@ export function Monarch({ className }: MonarchProps) {
       {/* left hindwing */}
       <path
         d="M96 112 C 66 112, 38 124, 30 146 C 24 165, 40 178, 62 172 C 84 166, 100 144, 104 120 C 101 117, 98 114, 96 112 Z"
-        fill="url(#mon-wing)"
+        fill="var(--monarch)"
         stroke="var(--floor)"
         strokeWidth="3"
         strokeLinejoin="round"
@@ -55,7 +29,7 @@ export function Monarch({ className }: MonarchProps) {
       {/* right forewing */}
       <path
         d="M116 96 C 136 60, 170 28, 196 26 C 216 25, 218 45, 208 64 C 196 88, 164 106, 128 108 C 122 105, 118 101, 116 96 Z"
-        fill="url(#mon-wing)"
+        fill="var(--monarch)"
         stroke="var(--floor)"
         strokeWidth="3"
         strokeLinejoin="round"
@@ -63,7 +37,7 @@ export function Monarch({ className }: MonarchProps) {
       {/* right hindwing */}
       <path
         d="M124 112 C 154 114, 180 126, 188 148 C 194 166, 178 178, 156 172 C 136 166, 120 144, 116 120 C 119 117, 122 114, 124 112 Z"
-        fill="url(#mon-wing)"
+        fill="var(--monarch)"
         stroke="var(--floor)"
         strokeWidth="3"
         strokeLinejoin="round"
@@ -88,7 +62,6 @@ export function Monarch({ className }: MonarchProps) {
         strokeWidth="2"
         strokeLinecap="round"
       />
-      </g>
     </svg>
   );
 }
