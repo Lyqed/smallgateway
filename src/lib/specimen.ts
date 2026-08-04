@@ -164,7 +164,11 @@ export type OpenItem = {
   body: string;
 };
 
-/** Not built, deliberately. Stated before anyone has to ask. */
+/**
+ * Not built, deliberately. Currently unrendered: the close of the page
+ * is the terms alone. Kept because the list is accurate and the
+ * decision to show it is a publishing call rather than a code one.
+ */
 export const NOT_YET: readonly OpenItem[] = [
   {
     name: "Kubernetes-native deployment",

@@ -45,11 +45,13 @@ export function SiteHeader() {
                 </a>
               </li>
             ))}
+            {/* Points at this page rather than at the repository: the
+                repo is private, so a real link would send every visitor
+                to a 404. It reads as present without promising access
+                that does not exist yet. */}
             <li>
               <a
-                href={SITE_CONFIG.repoUrl}
-                target="_blank"
-                rel="noreferrer"
+                href="/"
                 className="inline-block py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4 transition-[text-decoration-thickness] duration-150 hover:decoration-[3px]"
               >
                 GitHub ↗

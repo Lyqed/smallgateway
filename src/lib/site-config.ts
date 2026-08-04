@@ -29,5 +29,5 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { label: "Shape", href: "#shape" },
   { label: "Path", href: "#path" },
   { label: "Measured", href: "#measured" },
-  { label: "Open", href: "#open" },
+  { label: "Terms", href: "#open" },
 ] as const;

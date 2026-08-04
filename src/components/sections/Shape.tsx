@@ -68,10 +68,10 @@ export function Shape() {
 
         <Reveal>
           <p className="mt-12 max-w-3xl border-l-2 border-monarch pl-5 text-lg leading-relaxed text-ink">
-            The second binary is where the genuinely new work is, and it is
-            still the one you can walk away from. A tool that only works
-            when you adopt all of it is not offering you a choice, it is
-            offering you a dependency.
+            The split is not architectural taste. It means the thing
+            carrying your traffic has nothing to phone home to, so an
+            outage in the half that manages config cannot become an outage
+            in the half that serves requests.
           </p>
         </Reveal>
       </div>
