@@ -33,9 +33,12 @@ const shantell = Shantell_Sans({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_CONFIG.url),
+  // The tab reads as the name alone. A tagline appended here is
+  // truncated to noise in a narrow tab and repeats what the page says
+  // in its first line anyway.
   title: {
-    default: `${SITE_CONFIG.name} · ${SITE_CONFIG.tagline}`,
-    template: `%s · ${SITE_CONFIG.name}`,
+    default: "Open Source Gateway",
+    template: `%s · Open Source Gateway`,
   },
   description: SITE_CONFIG.description,
   keywords: [
