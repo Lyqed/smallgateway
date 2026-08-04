@@ -28,7 +28,9 @@ export function Masthead() {
           An LLM gateway you can{" "}
           <span className="relative inline-block whitespace-nowrap">
             read
-            <HandCircle className="pointer-events-none absolute -left-[9%] top-1/2 h-[150%] w-[118%] -translate-y-1/2" />
+            {/* Sits a little below centre: the stroke reads better
+                hugging the baseline than bisecting the word. */}
+            <HandCircle className="pointer-events-none absolute -left-[13%] top-[58%] h-[166%] w-[126%] -translate-y-1/2" />
           </span>{" "}
           end to end
         </h1>
