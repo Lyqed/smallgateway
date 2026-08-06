@@ -1110,4 +1110,5 @@ fn otel_request_span_reaches_a_strict_collector_with_attribution() {
 }
 
 // GB-5 / GB-6 conformance lives in its own file (size budget).
+mod contract;
 mod gb5;

@@ -41,9 +41,10 @@ These are acceptance tests, not aspirations — see
 > plan treats all twelve as acceptance tests regardless; scoring status is
 > the standard's concern, not the product's. GB-11 remains the one check
 > where our own row is PARTIAL by our own admission: docs/11 names the two
-> open gaps (default OpenAI streams settle on a published estimate until
-> the D3 decision lands; an aborted body bills at what was metered until D4
-> lands).
+> stated bounds (default OpenAI streams settle on a published estimate,
+> D3 decided against injection on 3 August 2026 and revisitable only by a
+> dated entry; an aborted body bills at what was metered, per the D4
+> settlement taxonomy).
 
 ## Optional: the catalog, triaged
 
