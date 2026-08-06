@@ -67,6 +67,30 @@ pub fn render_terminal_event(
     out
 }
 
+/// GB-4's streaming half for the BEDROCK dialect (docs/11 D4): the same
+/// operator terminal event, rendered as ONE AWS event-stream exception
+/// frame instead of SSE text — splicing SSE into CRC-checked binary framing
+/// hands the client a decode error instead of the operator's words. The
+/// event name becomes the `:exception-type` (default `stream_cut`); an
+/// exception frame is the one shape AWS SDK stream decoders surface to the
+/// caller as a typed error carrying our payload, which is the only in-band
+/// way a binary event stream can say why it ended.
+pub fn render_terminal_frame_bedrock(
+    streaming: &crate::config::StreamingRejection,
+    vars: &[(&str, &str)],
+) -> Vec<u8> {
+    let data = render(&streaming.data, vars);
+    let exception_type = streaming.event.as_deref().unwrap_or("stream_cut");
+    crate::eventstream::encode_frame(
+        &[
+            (":message-type", "exception"),
+            (":exception-type", exception_type),
+            (":content-type", "application/json"),
+        ],
+        data.as_bytes(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +156,52 @@ mod tests {
     fn render_leaves_plain_braces_alone() {
         let t = r#"{"missing":"{{key}}"}"#;
         assert_eq!(render(t, &[("key", "team")]), r#"{"missing":"team"}"#);
+    }
+
+    #[test]
+    fn bedrock_terminal_frame_is_a_decodable_exception() {
+        // The operator's cut event on a Bedrock route must arrive as ONE
+        // valid event-stream exception frame — decodable by the same parser
+        // that reads the provider's own frames, exception-typed so AWS SDKs
+        // surface it as an error carrying the operator's payload.
+        let streaming = crate::config::StreamingRejection {
+            event: Some("cap_exceeded".into()),
+            data: r#"{"error":"budget exhausted for {{key}}","cap":{{cap}}}"#.into(),
+        };
+        let frame = render_terminal_frame_bedrock(
+            &streaming,
+            &[("key", "team=ml"), ("cap", "100000")],
+        );
+        let mut decoder = crate::eventstream::FrameDecoder::new();
+        let frames = decoder.feed(&frame).expect("frame decodes CRC-clean");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            frames[0].headers.get(":message-type").map(String::as_str),
+            Some("exception")
+        );
+        assert_eq!(
+            frames[0].headers.get(":exception-type").map(String::as_str),
+            Some("cap_exceeded")
+        );
+        assert_eq!(
+            frames[0].payload,
+            br#"{"error":"budget exhausted for team=ml","cap":100000}"#
+        );
+        assert_eq!(decoder.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn bedrock_terminal_frame_defaults_the_exception_type() {
+        let streaming = crate::config::StreamingRejection {
+            event: None,
+            data: r#"{"cut":true}"#.into(),
+        };
+        let frame = render_terminal_frame_bedrock(&streaming, &[]);
+        let mut decoder = crate::eventstream::FrameDecoder::new();
+        let frames = decoder.feed(&frame).unwrap();
+        assert_eq!(
+            frames[0].headers.get(":exception-type").map(String::as_str),
+            Some("stream_cut")
+        );
     }
 }

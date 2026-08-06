@@ -448,13 +448,17 @@ pub(crate) fn opt(n: Option<u64>) -> String {
 
 /// GB-5 mid-stream cut: render the operator's GB-4 streaming terminal event
 /// (the typed [`StreamingRejection`] from the request's bound policy) into the
-/// bytes that replace the outgoing chunk. `streaming` is the operator's block,
-/// or `None` — in which case a minimal bare-data frame is used, so the cut
-/// still fires and the stream still stops, only the payload is a default.
+/// bytes that replace the outgoing chunk, in the DIALECT'S OWN FRAMING
+/// (docs/11 D4): an SSE block on SSE dialects, one CRC-framed event-stream
+/// exception frame on Bedrock — SSE text spliced into binary framing hands
+/// the AWS SDK a decode error instead of the operator's words. `streaming`
+/// is the operator's block, or `None` — in which case a minimal default
+/// payload is used, so the cut still fires and the stream still stops.
 ///
 /// [`StreamingRejection`]: gateway_core::config::StreamingRejection
 pub(crate) fn render_cut_event(
     streaming: Option<&StreamingRejection>,
+    kind: ProviderKind,
     id: &CapId,
     cap: u64,
     spent: u64,
@@ -469,13 +473,27 @@ pub(crate) fn render_cut_event(
         ("cap", cap_s.as_str()),
         ("spend", spent_s.as_str()),
     ];
-    let rendered = match streaming {
-        Some(streaming) => template::render_terminal_event(streaming, &vars),
-        None => format!(
-            "data: {{\"error\":\"budget exhausted for {key_s}\",\"cap\":{cap},\"spend\":{spent}}}\n\n"
-        ),
+    // The operator's block, or the default payload in the operator-block
+    // shape — one code path per dialect below, never two.
+    let default_block;
+    let block = match streaming {
+        Some(s) => s,
+        None => {
+            default_block = StreamingRejection {
+                event: None,
+                data: format!(
+                    "{{\"error\":\"budget exhausted for {key_s}\",\"cap\":{cap},\"spend\":{spent}}}"
+                ),
+            };
+            &default_block
+        }
     };
-    Bytes::from(rendered)
+    match kind {
+        ProviderKind::Bedrock => {
+            Bytes::from(template::render_terminal_frame_bedrock(block, &vars))
+        }
+        _ => Bytes::from(template::render_terminal_event(block, &vars)),
+    }
 }
 
 /// docs/11 decision 1: what the response head says the tap should be.
@@ -554,6 +572,90 @@ pub(crate) fn decide_tap(
     // carry no in-band usage by nature. Nothing to meter, and saying so is
     // not a degradation.
     TapPlan::NotApplicable("content-type carries no in-band usage; metering absent")
+}
+
+#[cfg(test)]
+mod cut_render_tests {
+    use super::*;
+
+    #[test]
+    fn sse_dialects_get_an_sse_terminal_block() {
+        let cut = render_cut_event(
+            None,
+            ProviderKind::Anthropic,
+            &CapId::new("team", "ml"),
+            100_000,
+            100_400,
+            "/anthropic",
+        );
+        let text = String::from_utf8(cut.to_vec()).unwrap();
+        assert!(text.starts_with("data: "), "SSE framing: {text}");
+        assert!(text.ends_with("\n\n"), "one complete SSE block");
+        assert!(text.contains("budget exhausted for team=ml"));
+    }
+
+    #[test]
+    fn bedrock_gets_one_decodable_exception_frame_not_sse_text() {
+        // docs/11 D4: SSE text spliced into CRC-checked binary framing hands
+        // the AWS SDK a decode error instead of the operator's words. The
+        // cut on a bedrock route must decode with the event-stream parser.
+        let cut = render_cut_event(
+            None,
+            ProviderKind::Bedrock,
+            &CapId::new("team", "ml"),
+            100_000,
+            100_400,
+            "/bedrock",
+        );
+        let mut decoder = gateway_core::eventstream::FrameDecoder::new();
+        let frames = decoder.feed(&cut).expect("valid event-stream frame");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            frames[0].headers.get(":message-type").map(String::as_str),
+            Some("exception")
+        );
+        assert!(String::from_utf8_lossy(&frames[0].payload)
+            .contains("budget exhausted for team=ml"));
+        assert_eq!(decoder.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn operator_template_renders_placeholders_on_both_dialects() {
+        let streaming = StreamingRejection {
+            event: Some("cap_exceeded".into()),
+            data: r#"{"cap":{{cap}},"spend":{{spend}},"route":"{{route}}"}"#.into(),
+        };
+        let sse = render_cut_event(
+            Some(&streaming),
+            ProviderKind::OpenAi,
+            &CapId::new("t", "x"),
+            10,
+            12,
+            "/openai",
+        );
+        let text = String::from_utf8(sse.to_vec()).unwrap();
+        assert!(text.contains("event: cap_exceeded"));
+        assert!(text.contains(r#"data: {"cap":10,"spend":12,"route":"/openai"}"#));
+
+        let frame = render_cut_event(
+            Some(&streaming),
+            ProviderKind::Bedrock,
+            &CapId::new("t", "x"),
+            10,
+            12,
+            "/bedrock",
+        );
+        let mut decoder = gateway_core::eventstream::FrameDecoder::new();
+        let frames = decoder.feed(&frame).unwrap();
+        assert_eq!(
+            frames[0].headers.get(":exception-type").map(String::as_str),
+            Some("cap_exceeded")
+        );
+        assert_eq!(
+            frames[0].payload,
+            br#"{"cap":10,"spend":12,"route":"/bedrock"}"#
+        );
+    }
 }
 
 #[cfg(test)]

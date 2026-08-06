@@ -74,6 +74,7 @@ pub(crate) fn log_meter_report(
     event_summary: &str,
     chunks: usize,
     bytes: usize,
+    disposition: &str,
     report: &MeterReport,
 ) {
     let err = report
@@ -83,6 +84,7 @@ pub(crate) fn log_meter_report(
     info!(
         "[meter {route_prefix}] cfg=v{cfg_version} provider={provider}({provider_kind}) \
          attribution{{{tag_summary}}} events{{{event_summary}}} chunks={chunks} bytes={bytes} \
+         disposition={disposition} \
          est_output_tokens={} auth_input_tokens={} auth_output_tokens={} est_err={err}",
         report.estimated_output_tokens,
         crate::proxy_support::opt(report.authoritative_input_tokens),
@@ -104,6 +106,7 @@ pub(crate) fn charge_caps_and_cut(
     caps: &[(CapId, CapTerms)],
     delta: u64,
     streaming: Option<&StreamingRejection>,
+    kind: gateway_core::config::ProviderKind,
     route_prefix: &str,
     cfg_version: u64,
     now_unix: u64,
@@ -120,6 +123,7 @@ pub(crate) fn charge_caps_and_cut(
             );
             return Some(crate::proxy_support::render_cut_event(
                 streaming,
+                kind,
                 &id,
                 cap,
                 spent,

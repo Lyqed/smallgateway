@@ -185,9 +185,10 @@ pub(crate) fn apply_header_mutations(
 /// `reason` rides in as the spender id so the operator's template can name it.
 pub(crate) fn render_wasm_cut(
     streaming: Option<&StreamingRejection>,
+    kind: gateway_core::config::ProviderKind,
     reason: &str,
     route_prefix: &str,
 ) -> Bytes {
     let id = CapId::new("wasm-policy", reason);
-    crate::proxy_support::render_cut_event(streaming, &id, 0, 0, route_prefix)
+    crate::proxy_support::render_cut_event(streaming, kind, &id, 0, 0, route_prefix)
 }

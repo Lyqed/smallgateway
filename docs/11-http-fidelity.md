@@ -100,13 +100,13 @@ the D2 exception is narrowed to a caller `AWS4-HMAC-SHA256` signature (a
 caller Bedrock API key signs nothing, so its `Accept-Encoding` is safely
 stripped and metered).
 
-**Known gap, stated not hidden.** A JSON-terminal response whose connection
-drops before the body completes never reaches the single terminal charge, so
-the provider billed and the gateway did not — the same client-abort edge D4
-owns for streams, surfacing on the non-streaming path. D1 does not close it;
-it is D4's to settle (move end-of-stream accounting to the always-runs path).
-Until then the invariant holds as written: an aborted response is billed at
-what was metered before the abort, which for a JSON body is zero.
+**Known gap — closed by D4 (3 August 2026).** A JSON-terminal response
+whose connection drops before the body completes now settles through the
+always-runs path with `disposition=client-abort` (or `upstream-cut`) and a
+loud span stamp on capped routes. The billed number for a truncated JSON
+body remains zero — the tokens are unknowable from half a document — but it
+is now a stamped, queryable population instead of a skipped accounting
+path. See D4's published invariants below.
 
 The stated bound for the terminal parse is **256 MiB** — sized to hold the
 largest legal non-streaming body (a max-batch float embeddings response
@@ -162,7 +162,7 @@ cut). Anywhere a provider ignores the negotiation, the response-head dispatch
 drops the tap, logs UNMETERED, and stamps `meter_degraded` on the span. Coded
 bytes never reach a dialect parser.
 
-## Decision 3 — the OpenAI usage frame is opt-in: inject, or publish estimate-only
+## Decision 3 — the OpenAI usage frame is opt-in: inject, or publish estimate-only (DECIDED: never inject)
 
 **The miss.** On the chat-completions dialect the terminal usage frame
 exists only if the caller sent `stream_options: {"include_usage": true}`.
@@ -175,16 +175,29 @@ the billing thesis and the proxy-not-a-format philosophy: they cannot both
 hold on this dialect, and holding neither in writing is the only wrong
 answer.
 
-**The decision.** Inject. On openai-kind streaming requests where
-`stream_options` is absent, force `include_usage: true` into the body — the
-same bounded JSON merge the GB-8 label path already performs — and suppress
-the one synthetic terminal chunk (`choices: []`) from the client-facing
-stream while metering it. The client receives exactly the dialect it
-requested; the operator receives the authoritative number the product
-promises. The alternative is pass-through purity with a published
-invariant: "estimate-only bound applies to OpenAI-dialect streams without
-`include_usage`" — defensible, but it concedes the flagship claim on the
-majority dialect.
+**The decision: REJECTED, on purpose (3 August 2026).** The gateway does
+NOT inject `include_usage`. Pass-through purity wins: the caller's request
+body crosses this proxy byte-identical, always — the gateway never rewrites
+a request to harvest a number, not even the number its own thesis runs on.
+The industry went the other way (agentgateway, Envoy AI Gateway, and
+Bifrost all force `stream_options.include_usage` today), which makes the
+refusal a distinguishing stance rather than a lag: theirs is a defensible
+engineering choice; ours is the stricter trust posture, and it is now a
+brand property. What made the alternative honest is what makes this one
+honest — the invariant is PUBLISHED, not hidden:
+
+> **Stated invariant.** An OpenAI-dialect stream whose caller did not send
+> `stream_options.include_usage` settles at the estimate, error bound ±50%
+> as measured on real transcripts (spike A). The meter record and the span
+> carry `disposition=completed-no-frame`, so estimate-settled traffic is a
+> query, not a surprise. Callers who want the authoritative number send the
+> flag; the gateway will never send it for them.
+
+Operators who need authoritative numbers on this dialect have two clean
+paths that keep the purity intact: configure clients/SDK defaults to send
+the flag (a one-line SDK setting), or route through a provider whose
+dialect always ships the terminal frame. The rejection is revisitable like
+any decision in this repo — by a dated entry here, never silently.
 
 **The sibling gap.** The OpenAI Responses API (`/v1/responses`) is a
 distinct dialect — semantic `response.*` events, usage nested inside
@@ -235,6 +248,41 @@ cut fixture test that decodes the cut bytes with each dialect's own parser.
 is stated separately from the completed-stream bound." Platform teams trust
 stated error bounds and distrust magic — this is Principle 3 applied to the
 worst five minutes of the product's life.
+
+**Status: implemented (3 August 2026).** All four parts landed:
+
+- **The disposition taxonomy is live.** Every proxied request settles with
+  one of `completed+frame / completed-no-frame / client-abort /
+  upstream-cut / gateway-cut`, stamped on the `[meter]` line and the span
+  (`gateway.stream.disposition`). The invoice disposition of every stream
+  is a query.
+- **Settlement runs exactly once, on every path.** The accounting block
+  moved out of the body filter's happy path into a guarded settle that the
+  `logging` hook (which pingora runs on every request outcome) fires
+  whenever end-of-stream never did. A stop button, a dead upstream, or the
+  gateway's own cut all produce a billing record.
+- **A cut now stops the provider.** After the operator's terminal event is
+  delivered, the next upstream chunk tears the session down; the upstream
+  connection closes with it, so generation — and billing — stops at the cut
+  instead of running to `max_tokens`. Stated residual: the teardown closes
+  both sides rather than finishing the downstream encoding gracefully; the
+  clean drop-upstream-only variant still awaits the pingora change named in
+  the spike README, filed upstream as cloudflare/pingora#951 (6 Aug 2026). A final chunk that arrives together with end-of-stream
+  after a cut is fed to the METER (the usage frame lands if it aligned) and
+  suppressed from the client.
+- **The terminal event speaks the dialect's framing.** SSE block on SSE
+  dialects; on Bedrock, one CRC-framed event-stream EXCEPTION frame
+  (`:exception-type` = the operator's event name, default `stream_cut`) —
+  decodable by the same parser that reads the provider's frames, surfaced
+  by AWS SDKs as a typed error carrying the operator's payload. Per-dialect
+  cut tests decode the cut bytes with each dialect's own parser.
+
+**Published invariants (D4).** An aborted or cut stream bills at what was
+metered before the end — the estimate for streams (its ±50% bound stated
+above), zero for a non-streaming body that never completed (the tokens are
+unknowable from a truncated JSON document; the disposition stamp makes the
+population visible). A gateway cut's provider-side overspend is bounded by
+the chunk in flight at teardown, no longer by `max_tokens`.
 
 ## The ledger
 

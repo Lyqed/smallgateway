@@ -810,22 +810,25 @@ pub struct RejectionTemplate {
     pub content_type: String,
     pub body: String,
     /// GB-4's streaming half: the terminal event emitted when an in-flight
-    /// stream must be cut (budget exhausted mid-generation). The type and
-    /// validation land now; the mid-stream cut itself wires in a later
-    /// phase — it needs the pingora-proxy "finish downstream cleanly"
-    /// change recorded in the spike README.
+    /// stream must be cut (budget exhausted mid-generation). After the
+    /// event is delivered, the session is torn down on the next upstream
+    /// chunk so the provider stops generating (docs/11 D4); the clean
+    /// "finish downstream encoding, drop only upstream" variant still
+    /// awaits the pingora-proxy change recorded in the spike README, and
+    /// that residual is stated in docs/11.
     #[serde(default)]
     pub streaming: Option<StreamingRejection>,
 }
 
 /// Shape of the operator's terminal event for a cut stream, rendered into
 /// the response's native framing (an SSE `event:`/`data:` block for SSE
-/// providers, a single event-stream frame for Bedrock).
+/// providers; for Bedrock, one CRC-framed event-stream EXCEPTION frame —
+/// the shape AWS SDK decoders surface as a typed error with our payload).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamingRejection {
-    /// Event name (`event:` line / `:event-type` header). `None` → a bare
-    /// data frame.
+    /// Event name (`event:` line on SSE; `:exception-type` header on
+    /// Bedrock, default `stream_cut`). `None` → a bare SSE data frame.
     #[serde(default)]
     pub event: Option<String>,
     /// Payload template; same placeholders as the sibling `body`.

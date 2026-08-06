@@ -47,6 +47,9 @@ pub struct SpanRecord {
     pub tokens_estimated: u64,
     pub tokens_authoritative: Option<u64>,
     pub cut: bool,
+    /// docs/11 D4: how the response ended (completed+frame, client-abort,
+    /// gateway-cut, ...) — the invoice disposition, queryable per span.
+    pub disposition: Option<&'static str>,
     pub config_version: u64,
     /// Infra-failure detail (e.g. the STS error code on a 502) — the span's
     /// answer to "why did this request fail", debuggable from the collector.
@@ -187,6 +190,9 @@ pub fn otlp_traces_json(
             if let Some(auth_tokens) = s.tokens_authoritative {
                 attributes.push(int_attr("gateway.tokens.authoritative", auth_tokens));
             }
+            if let Some(disposition) = s.disposition {
+                attributes.push(str_attr("gateway.stream.disposition", disposition));
+            }
             if let Some(error) = &s.error {
                 attributes.push(str_attr("gateway.error", error));
             }
@@ -272,6 +278,7 @@ mod tests {
             tokens_estimated: 42,
             tokens_authoritative: Some(40),
             cut: false,
+            disposition: Some("completed+frame"),
             config_version: 7,
             error: Some("sts: STS returned 403 code=AccessDenied".into()),
         };
@@ -293,6 +300,10 @@ mod tests {
             find("gateway.error").unwrap()["value"]["stringValue"],
             "sts: STS returned 403 code=AccessDenied"
         );
+        assert_eq!(
+            find("gateway.stream.disposition").unwrap()["value"]["stringValue"],
+            "completed+frame"
+        );
         assert_eq!(s["status"]["code"], 1);
     }
 
@@ -310,6 +321,7 @@ mod tests {
             tokens_estimated: 0,
             tokens_authoritative: None,
             cut: false,
+            disposition: None,
             config_version: 1,
             error: None,
         };

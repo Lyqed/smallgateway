@@ -113,6 +113,190 @@ impl Gateway {
         self
     }
 
+    /// docs/11 D4: end-of-stream settlement, runnable from EVERY path and
+    /// guarded to run exactly once. The happy path calls it at
+    /// `end_of_stream` in the body filter (`abort: None`); `logging` calls
+    /// it on abort/error paths with the disposition read from the error
+    /// source. Drains the terminal-parse tap, prints the meter record with
+    /// its disposition, runs the WASM end hook, and settles GB-5 — so a
+    /// client hitting stop, an upstream dying mid-stream, or a gateway cut
+    /// all produce a billing record instead of skipping accounting.
+    fn settle_stream(&self, ctx: &mut ReqCtx, abort: Option<Disposition>) {
+        if ctx.settled || !ctx.proxying {
+            return;
+        }
+        let Some((kind, prefix, provider)) = ctx
+            .route
+            .as_ref()
+            .map(|b| (b.kind, b.prefix.clone(), b.provider.clone()))
+        else {
+            return; // rejected before a route bound; nothing to settle
+        };
+        ctx.settled = true;
+
+        // Terminal-parse taps emit their whole canonical sequence at
+        // finish (docs/11 D1) — drained through the same meter/count
+        // path as streamed events, BEFORE the report below is read, so
+        // a JSON body's usage object lands in the same settle. An Error
+        // event here is the tap's LOUD degradation (overflow past the
+        // bound, a body that would not parse, a shape with no readable
+        // usage): stamp the span and log at error level, matching the
+        // TapPlan::Degraded path, so no unmetered 2xx is a silent zero.
+        let mut adapter = ctx.adapter.take();
+        if let Some(adapter) = adapter.as_mut() {
+            for event in adapter.finish() {
+                if let Event::Error { code, message } = &event {
+                    // Distinguish a GATEWAY metering hole (the body could
+                    // not be read: overflow past the bound, unparseable,
+                    // an unmeterable shape) from a PROVIDER error the
+                    // upstream put in a 2xx envelope. Only the former is
+                    // `meter_degraded` — the operator's signal for
+                    // gateway-side under-metering must not fire on a
+                    // provider's own quota/validation error.
+                    let is_gateway_hole = matches!(
+                        code.as_str(),
+                        "json_body_overflow" | "json_body_parse" | "json_body_shape"
+                    );
+                    if is_gateway_hole {
+                        error!(
+                            "[tap {}] terminal parse degraded ({code}): {message} -> \
+                             UNMETERED cfg=v{}",
+                            kind.name(),
+                            ctx.snapshot.version
+                        );
+                        ctx.error = Some(format!("meter_degraded: {code}"));
+                    } else {
+                        info!(
+                            "[tap {}] provider error in 2xx body ({code}): {message} cfg=v{}",
+                            kind.name(),
+                            ctx.snapshot.version
+                        );
+                    }
+                }
+                ctx.meter.observe(&event);
+                ctx.count(&event);
+                info!("[tap {}] {:?}", kind.name(), event);
+            }
+        }
+        ctx.adapter = adapter;
+
+        // The disposition (docs/11 D4): a gateway cut wins regardless of how
+        // the teardown surfaced; otherwise the abort the caller observed;
+        // otherwise completed, with or without the authoritative frame.
+        let report = ctx.meter.report();
+        let disposition = if ctx.cut {
+            Disposition::GatewayCut
+        } else if let Some(a) = abort {
+            a
+        } else if report.authoritative_input_tokens.is_some()
+            || report.authoritative_output_tokens.is_some()
+        {
+            Disposition::CompletedFrame
+        } else {
+            Disposition::CompletedNoFrame
+        };
+        ctx.disposition = Some(disposition);
+
+        // The attribution→spend join: tags and token counts on ONE
+        // line, so "who spent what" is a grep, not a correlation.
+        // cfg=vN names the version that metered THIS stream — the
+        // bounded-staleness evidence during a drain overlap.
+        crate::proxy_stream::log_meter_report(
+            &prefix,
+            ctx.snapshot.version,
+            &provider,
+            kind.name(),
+            &ctx.tag_summary(),
+            &ctx.event_summary(),
+            ctx.body_chunks,
+            ctx.body_bytes,
+            disposition.label(),
+            &report,
+        );
+
+        // Phase 4: the `on_response_end` WASM hook — the terminal counts
+        // (reconciled) handed to any module that wants them (custom billing
+        // emit, audit). Observability, not enforcement; never Continue.
+        if let Some(modules) = &ctx.modules {
+            crate::proxy_wasm::run_on_response_end(
+                modules,
+                &report,
+                &prefix,
+                ctx.snapshot.version,
+            );
+        }
+
+        // The billed number is the AUTHORITATIVE total, not output alone:
+        // an embeddings body has input tokens and no output, and dropping
+        // input would let stream:false embeddings escape the cap entirely
+        // (docs/11 D1, the "input tokens parsed then dropped" ledger row).
+        // Provider-supplied counts: saturate the sum (every other budget
+        // arithmetic path saturates; an untrusted/buggy upstream sending
+        // u64::MAX must not panic in debug or wrap to a near-zero charge
+        // in release).
+        let auth_total = match (
+            report.authoritative_input_tokens,
+            report.authoritative_output_tokens,
+        ) {
+            (None, None) => None,
+            (i, o) => Some(i.unwrap_or(0).saturating_add(o.unwrap_or(0))),
+        };
+
+        match ctx.tap {
+            Some(TapMode::JsonTerminal) => {
+                // A non-streaming body was metered as ONE terminal
+                // message: nothing was charged during the body, so the
+                // authoritative total goes through the SAME enforcement
+                // `meter` path a stream uses — GB-6 alerts fire, the cut
+                // bound is checked, partition is honored. This is what
+                // closes the stream:false GB-5 bypass end to end. The span
+                // records the BILLED number (input+output), so span-vs-
+                // ledger reconciliation agrees on non-streaming spend.
+                ctx.authoritative_tokens = auth_total;
+                if let Some(total) = auth_total {
+                    self.budgets.charge_terminal_and_log(
+                        &ctx.caps,
+                        total,
+                        &prefix,
+                        ctx.snapshot.version,
+                        now_unix(),
+                    );
+                } else if !ctx.caps.is_empty() {
+                    // A parsed 2xx JSON body on a CAPPED route with no
+                    // authoritative usage read is a metering hole, not a
+                    // free request — and an ABORTED body bills zero by the
+                    // stated invariant (docs/11 D4), loudly either way.
+                    error!(
+                        "[tap {}] non-streaming 2xx on a capped route settled with no \
+                         authoritative usage (disposition={}) -> UNMETERED cfg=v{}",
+                        kind.name(),
+                        disposition.label(),
+                        ctx.snapshot.version
+                    );
+                    ctx.error
+                        .get_or_insert_with(|| "meter_degraded: no_usage_on_capped_route".into());
+                }
+            }
+            _ => {
+                // Streaming path: GB-5 was charged incrementally per
+                // chunk; reconcile the live estimate to the authoritative
+                // terminal frame (docs/01 Q3) and log the billing number.
+                // On abort paths the frame never arrived and the estimate
+                // stands — the stated invariant, now stamped with its
+                // disposition instead of skipped.
+                ctx.authoritative_tokens = report.authoritative_output_tokens;
+                self.budgets.settle_and_log(
+                    &ctx.caps,
+                    ctx.meter.estimated_output_tokens(),
+                    report.authoritative_output_tokens,
+                    &prefix,
+                    ctx.snapshot.version,
+                    ctx.cut,
+                    now_unix(),
+                );
+            }
+        }
+    }
 }
 
 /// What the matched route pins down for the rest of the request's life.
@@ -183,6 +367,14 @@ pub struct ReqCtx {
     /// GB-5: the capped spenders this request bills — one per resolved
     /// attribution tag that has a composed cap. `(CapId, cap_tokens)`.
     caps: Vec<(CapId, gateway_core::budget::CapTerms)>,
+    /// GB-4's streaming half, bound from this request's EFFECTIVE policy at
+    /// bind time so a mid-stream cut speaks with the scoped template —
+    /// route and app overrides apply to cuts exactly as they do to
+    /// admission refusals. `cut_streaming` is the WASM-cut voice
+    /// (missing_attribution); `cap_cut_streaming` is the GB-5 voice
+    /// (cap_exceeded, falling back to missing_attribution).
+    cut_streaming: Option<gateway_core::config::StreamingRejection>,
+    cap_cut_streaming: Option<gateway_core::config::StreamingRejection>,
     /// GB-5: the last estimated-output-token reading fed to the budget, so each
     /// tap computes the INCREMENT since the previous chunk (the Meter's
     /// estimate is cumulative). Reconciled to the authoritative frame at end.
@@ -210,6 +402,16 @@ pub struct ReqCtx {
     /// through the enforcement `meter` path at the end. `None` until the
     /// response head arrives (or on a request rejected before proxying).
     tap: Option<TapMode>,
+    /// docs/11 D4: set once the request is actually sent upstream — the gate
+    /// for abort-path settlement (a request rejected at the door has nothing
+    /// to settle, and no disposition).
+    proxying: bool,
+    /// docs/11 D4: end-of-stream accounting runs EXACTLY once, on whichever
+    /// path fires first — end_of_stream in the body filter on the happy
+    /// path, `logging` on every abort/error path.
+    settled: bool,
+    /// docs/11 D4: how the response ended, once settlement decided it.
+    disposition: Option<Disposition>,
 }
 
 /// Which metering tap the response head bound (docs/11 D1). Distinguishes the
@@ -221,6 +423,40 @@ enum TapMode {
     /// A non-streaming JSON body: one terminal message, authoritative total
     /// charged through the enforcement path at the end.
     JsonTerminal,
+}
+
+/// docs/11 D4: how a response actually ended — stamped on the meter record
+/// and the request span, so the invoice disposition of every stream is a
+/// query, not a guess. The billing posture per value is a stated invariant:
+/// completed streams reconcile to the frame when one landed; everything
+/// else bills at what was metered before the end, never silently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Disposition {
+    /// Completed, and the provider's terminal usage frame landed.
+    CompletedFrame,
+    /// Completed with no authoritative frame (the stated D3 posture:
+    /// billed at the published estimate; the gateway does not rewrite
+    /// request bodies to harvest one).
+    CompletedNoFrame,
+    /// The downstream client went away mid-response.
+    ClientAbort,
+    /// The upstream died mid-response.
+    UpstreamCut,
+    /// The gateway cut the stream (GB-5 cap / WASM policy): terminal event
+    /// delivered, session torn down so the provider stops generating.
+    GatewayCut,
+}
+
+impl Disposition {
+    fn label(self) -> &'static str {
+        match self {
+            Disposition::CompletedFrame => "completed+frame",
+            Disposition::CompletedNoFrame => "completed-no-frame",
+            Disposition::ClientAbort => "client-abort",
+            Disposition::UpstreamCut => "upstream-cut",
+            Disposition::GatewayCut => "gateway-cut",
+        }
+    }
 }
 
 impl ReqCtx {
@@ -253,6 +489,8 @@ impl ReqCtx {
             body_chunks: 0,
             event_counts: [0; 6],
             caps: Vec::new(),
+            cut_streaming: None,
+            cap_cut_streaming: None,
             last_metered_est: 0,
             cut: false,
             modules,
@@ -260,6 +498,9 @@ impl ReqCtx {
             wasm_header_remove: Vec::new(),
             wasm_per_event,
             tap: None,
+            proxying: false,
+            settled: false,
+            disposition: None,
         }
     }
 
@@ -724,6 +965,13 @@ impl ProxyHttp for Gateway {
         ctx.attr_headers = policy.headers.clone();
         ctx.tags = tags;
         ctx.caps = caps;
+        ctx.cut_streaming = policy.missing_attribution.streaming.clone();
+        ctx.cap_cut_streaming = policy
+            .cap_exceeded
+            .as_ref()
+            .unwrap_or(&policy.missing_attribution)
+            .streaming
+            .clone();
         info!("[attr {}] {} cfg=v{v}", route.prefix, ctx.tag_summary());
 
         // Phase 4: tier-2 WASM `on_request` chain (adjudicated request in,
@@ -790,6 +1038,10 @@ impl ProxyHttp for Gateway {
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // docs/11 D4: from here on the provider may generate and bill, so
+        // an abort after this point MUST still settle (the gate `logging`
+        // checks before running abort-path settlement).
+        ctx.proxying = true;
         // Only the resolved contract crosses this boundary: strip every
         // operator-NAMED attribution header the caller may have sent, then
         // insert the adjudicated tags under those exact names. A key the
@@ -1106,11 +1358,21 @@ impl ProxyHttp for Gateway {
             return Ok(None); // rejected before proxying; nothing to tap
         };
 
-        // Once cut, suppress all further upstream content: the client already
-        // received the terminal event; nothing else should reach it.
-        if ctx.cut && !end_of_stream {
+        // Once cut, the client already holds the operator's terminal event.
+        // Tear the session down on the NEXT upstream chunk (docs/11 D4): the
+        // upstream connection closes with it, so the provider stops
+        // generating — and billing — at the cut instead of running to
+        // max_tokens. `logging` still fires and settles with
+        // disposition=gateway-cut. The clean finish-downstream-then-drop-
+        // upstream variant awaits the pingora change named in the spike
+        // README; the torn session is the stated interim (docs/11).
+        let cut_at_entry = ctx.cut;
+        if cut_at_entry && !end_of_stream {
             *body = None;
-            return Ok(None);
+            return Err(Error::explain(
+                InternalError,
+                "mid-stream cut: session torn down after the terminal event",
+            ));
         }
 
         // Phase 4: the per-event WASM decision, collected while the adapter
@@ -1151,17 +1413,13 @@ impl ProxyHttp for Gateway {
         // A WASM per-event cut and the GB-5 mid-stream cut both use the SAME
         // GB-4 terminal-event machinery: replace the outgoing chunk with the
         // operator's streaming template and latch `ctx.cut` so later chunks are
-        // suppressed. The bound snapshot's streaming template is shared by both.
-        let rejections = &ctx.snapshot.config.rejections;
-        let streaming = rejections.missing_attribution.streaming.clone();
+        // suppressed. The templates were bound from the request's EFFECTIVE
+        // policy in request_filter, so route and app rejection overrides
+        // apply to cuts exactly as they do to admission refusals.
+        let streaming = ctx.cut_streaming.clone();
         // The GB-5 cut speaks with the dedicated cap template when one
         // exists; the WASM cut keeps the missing_attribution voice.
-        let cap_streaming = rejections
-            .cap_exceeded
-            .as_ref()
-            .unwrap_or(&rejections.missing_attribution)
-            .streaming
-            .clone();
+        let cap_streaming = ctx.cap_cut_streaming.clone();
         let route_prefix = ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
         if let Some(reason) = wasm_cut_reason {
             if !ctx.cut {
@@ -1170,7 +1428,12 @@ impl ProxyHttp for Gateway {
                      event cfg=v{}",
                     ctx.snapshot.version
                 );
-                *body = Some(crate::proxy_wasm::render_wasm_cut(streaming.as_ref(), &reason, &route_prefix));
+                *body = Some(crate::proxy_wasm::render_wasm_cut(
+                    streaming.as_ref(),
+                    kind,
+                    &reason,
+                    &route_prefix,
+                ));
                 ctx.cut = true;
             }
         }
@@ -1184,7 +1447,7 @@ impl ProxyHttp for Gateway {
             ctx.last_metered_est = est;
             let caps = ctx.caps.clone();
             if let Some(cut) = crate::proxy_stream::charge_caps_and_cut(
-                &self.budgets, &caps, delta, cap_streaming.as_ref(), &route_prefix,
+                &self.budgets, &caps, delta, cap_streaming.as_ref(), kind, &route_prefix,
                 ctx.snapshot.version, now_unix(),
             ) {
                 *body = Some(cut);
@@ -1192,161 +1455,47 @@ impl ProxyHttp for Gateway {
             }
         }
 
+        // A final chunk arriving WITH end_of_stream after a cut: it was fed
+        // to the adapter above (the provider's terminal usage frame, if it
+        // aligned, lands in the meter) but the client must not see it — the
+        // terminal event already ended their stream (docs/11 D4).
+        if cut_at_entry && end_of_stream {
+            *body = None;
+        }
+
         if end_of_stream {
-            // Terminal-parse taps emit their whole canonical sequence at
-            // finish (docs/11 D1) — drained through the same meter/count
-            // path as streamed events, BEFORE the report below is read, so
-            // a JSON body's usage object lands in the same settle. An Error
-            // event here is the tap's LOUD degradation (overflow past the
-            // bound, a body that would not parse, a shape with no readable
-            // usage): stamp the span and log at error level, matching the
-            // TapPlan::Absent path, so no unmetered 2xx is a silent zero.
-            let mut adapter = ctx.adapter.take();
-            if let Some(adapter) = adapter.as_mut() {
-                for event in adapter.finish() {
-                    if let Event::Error { code, message } = &event {
-                        // Distinguish a GATEWAY metering hole (the body could
-                        // not be read: overflow past the bound, unparseable,
-                        // an unmeterable shape) from a PROVIDER error the
-                        // upstream put in a 2xx envelope. Only the former is
-                        // `meter_degraded` — the operator's signal for
-                        // gateway-side under-metering must not fire on a
-                        // provider's own quota/validation error.
-                        let is_gateway_hole = matches!(
-                            code.as_str(),
-                            "json_body_overflow" | "json_body_parse" | "json_body_shape"
-                        );
-                        if is_gateway_hole {
-                            error!(
-                                "[tap {}] terminal parse degraded ({code}): {message} -> \
-                                 UNMETERED cfg=v{}",
-                                kind.name(),
-                                ctx.snapshot.version
-                            );
-                            ctx.error = Some(format!("meter_degraded: {code}"));
-                        } else {
-                            info!(
-                                "[tap {}] provider error in 2xx body ({code}): {message} cfg=v{}",
-                                kind.name(),
-                                ctx.snapshot.version
-                            );
-                        }
-                    }
-                    ctx.meter.observe(&event);
-                    ctx.count(&event);
-                    info!("[tap {}] {:?}", kind.name(), event);
-                }
-            }
-            ctx.adapter = adapter;
-
-            let binding = ctx.route.as_ref().expect("route bound above");
-            // The attribution→spend join: tags and token counts on ONE
-            // line, so "who spent what" is a grep, not a correlation.
-            // cfg=vN names the version that metered THIS stream — the
-            // bounded-staleness evidence during a drain overlap.
-            let report = ctx.meter.report();
-            crate::proxy_stream::log_meter_report(
-                &binding.prefix,
-                ctx.snapshot.version,
-                &binding.provider,
-                binding.kind.name(),
-                &ctx.tag_summary(),
-                &ctx.event_summary(),
-                ctx.body_chunks,
-                ctx.body_bytes,
-                &report,
-            );
-
-            // Phase 4: the `on_response_end` WASM hook — the terminal counts
-            // (reconciled) handed to any module that wants them (custom billing
-            // emit, audit). Observability, not enforcement; never Continue.
-            if let Some(modules) = &ctx.modules {
-                crate::proxy_wasm::run_on_response_end(
-                    modules,
-                    &report,
-                    &binding.prefix,
-                    ctx.snapshot.version,
-                );
-            }
-
-            // The billed number is the AUTHORITATIVE total, not output alone:
-            // an embeddings body has input tokens and no output, and dropping
-            // input would let stream:false embeddings escape the cap entirely
-            // (docs/11 D1, the "input tokens parsed then dropped" ledger row).
-            // Provider-supplied counts: saturate the sum (every other budget
-            // arithmetic path saturates; an untrusted/buggy upstream sending
-            // u64::MAX must not panic in debug or wrap to a near-zero charge
-            // in release).
-            let auth_total = match (
-                report.authoritative_input_tokens,
-                report.authoritative_output_tokens,
-            ) {
-                (None, None) => None,
-                (i, o) => Some(i.unwrap_or(0).saturating_add(o.unwrap_or(0))),
-            };
-
-            match ctx.tap {
-                Some(TapMode::JsonTerminal) => {
-                    // A non-streaming body was metered as ONE terminal
-                    // message: nothing was charged during the body, so the
-                    // authoritative total goes through the SAME enforcement
-                    // `meter` path a stream uses — GB-6 alerts fire, the cut
-                    // bound is checked, partition is honored. This is what
-                    // closes the stream:false GB-5 bypass end to end. The span
-                    // records the BILLED number (input+output), so span-vs-
-                    // ledger reconciliation agrees on non-streaming spend.
-                    ctx.authoritative_tokens = auth_total;
-                    if let Some(total) = auth_total {
-                        self.budgets.charge_terminal_and_log(
-                            &ctx.caps,
-                            total,
-                            &binding.prefix,
-                            ctx.snapshot.version,
-                            now_unix(),
-                        );
-                    } else if !ctx.caps.is_empty() {
-                        // A parsed 2xx JSON body on a CAPPED route with no
-                        // authoritative usage read is a metering hole, not a
-                        // free request: stamp the span so it is never a silent
-                        // zero. (Usage-free bodies on uncapped routes — a
-                        // models list, say — are legitimately nothing to bill.)
-                        error!(
-                            "[tap {}] non-streaming 2xx on a capped route carried no \
-                             authoritative usage -> UNMETERED cfg=v{}",
-                            kind.name(),
-                            ctx.snapshot.version
-                        );
-                        ctx.error
-                            .get_or_insert_with(|| "meter_degraded: no_usage_on_capped_route".into());
-                    }
-                }
-                _ => {
-                    // Streaming path: GB-5 was charged incrementally per
-                    // chunk; reconcile the live estimate to the authoritative
-                    // terminal frame (docs/01 Q3) and log the billing number.
-                    // The span records the authoritative output the stream
-                    // billed (streams are output-dominated; the input-token
-                    // ledger row is tracked separately in docs/11).
-                    ctx.authoritative_tokens = report.authoritative_output_tokens;
-                    self.budgets.settle_and_log(
-                        &ctx.caps,
-                        ctx.meter.estimated_output_tokens(),
-                        report.authoritative_output_tokens,
-                        &binding.prefix,
-                        ctx.snapshot.version,
-                        ctx.cut,
-                        now_unix(),
-                    );
-                }
-            }
+            // docs/11 D4: the happy-path half of settlement. The whole
+            // accounting block lives in `settle_stream`, guarded to run
+            // exactly once — `logging` runs it instead on every abort and
+            // error path, so no stream ends without a billing record.
+            self.settle_stream(ctx, None);
         }
         Ok(None)
     }
 
-    /// End of request, every path (proxied, rejected, errored): emit the
+    /// End of request, every path (proxied, rejected, errored): settle any
+    /// stream the happy path never settled (docs/11 D4), then emit the
     /// request span carrying the ADJUDICATED attribution. One bounded
     /// try_send; telemetry never blocks or fails a request.
-    async fn logging(&self, session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {
+    async fn logging(&self, session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
+        // docs/11 D4: the abort half of settlement. A client hitting stop,
+        // an upstream dying mid-stream, or the gateway's own cut teardown
+        // never reaches end_of_stream — this hook runs on EVERY path, so
+        // the billing record is written here with the disposition read from
+        // the error's source. Guarded inside settle_stream: at most one
+        // settlement per request, and none for requests that never went
+        // upstream.
+        if ctx.proxying && !ctx.settled {
+            let abort = match e.map(|err| err.esource()) {
+                Some(pingora::ErrorSource::Upstream) => Disposition::UpstreamCut,
+                // Downstream write failures, internal teardown, and a
+                // vanished client without a recorded error all bill the
+                // same way; client-abort is the honest default.
+                _ => Disposition::ClientAbort,
+            };
+            self.settle_stream(ctx, Some(abort));
+        }
+
         let Some(otel) = &self.otel else { return };
         let head = session.req_header();
         otel.record(crate::otel::SpanRecord {
@@ -1365,6 +1514,7 @@ impl ProxyHttp for Gateway {
             tokens_estimated: ctx.meter.estimated_output_tokens(),
             tokens_authoritative: ctx.authoritative_tokens,
             cut: ctx.cut,
+            disposition: ctx.disposition.map(Disposition::label),
             config_version: ctx.snapshot.version,
             error: ctx.error.take(),
         });
