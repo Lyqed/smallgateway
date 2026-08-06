@@ -144,8 +144,9 @@ fn response_body_filter(&self, session: &mut Session,
   generating (and billing) until it finishes. Doing GB-4 properly needs a
   small pingora-proxy change (filter returns "this is the last chunk; finish
   the downstream encoding cleanly and drop upstream") — a fork-and-patch or
-  upstream PR. This is the one place where Pingora's abstraction is actively
-  in the way, and it is bounded.
+  upstream PR. Filed upstream as cloudflare/pingora#951 (6 Aug 2026; draft
+  in upstream-issue-draft.md). This is the one place where Pingora's
+  abstraction is actively in the way, and it is bounded.
 - **Per-session policy state beyond one request.** CTX is per-request.
   Cross-request state (budget counters, app quotas) lives in our own shared
   structures — expected for any foundation, just noting Pingora gives no
