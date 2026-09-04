@@ -1,0 +1,259 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ *
+ * Design tokens — copied verbatim from docs/DESIGN.md §2 (binding).
+ * Machined precision × hand-painted humanity. Light-first by
+ * conviction; the single dark surface is the polished-floor footer.
+ * ------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+
+  /* Architecture */
+  --surface-atrium: oklch(97.5% 0.004 95);   /* warm gallery white — page ground */
+  --surface-panel: oklch(94.5% 0.005 250);   /* cool panel white — cards, wells */
+  --steel: oklch(76% 0.01 250);              /* brushed rail — borders, rules */
+  --steel-dark: oklch(52% 0.014 255);        /* fixture gray — secondary text */
+  --floor: oklch(21% 0.012 270);             /* polished dark floor — footer, dark band */
+  --ink: oklch(19% 0.016 270);               /* primary text */
+
+  /* Murals (semantic, never decorative-only) */
+  --monarch: oklch(69% 0.185 55);            /* monarch orange — leadership, emphasis, CTAs */
+  --violet: oklch(54% 0.21 300);             /* mural violet — the human layer: annotations, community */
+  --teal: oklch(64% 0.115 195);              /* sky teal — conformance, verified, success */
+  --gold: oklch(80% 0.15 90);                /* sun gold — partial, in-progress, caution */
+  --skylight: oklch(63% 0.14 250);           /* skylight blue — links, interactive */
+  --blossom: oklch(58% 0.2 25);              /* blossom red — missing, errors, hard stops */
+
+  /* Type scale */
+  --text-base: clamp(1rem, 0.94rem + 0.3vw, 1.125rem);
+  --text-hero: clamp(2.75rem, 1.2rem + 6.5vw, 7rem);
+  --text-section: clamp(1.75rem, 1.2rem + 2.2vw, 3rem);
+
+  /* Rhythm */
+  --space-section: clamp(5rem, 3.5rem + 6vw, 11rem);
+
+  /* Motion */
+  --duration-fast: 150ms;
+  --duration-normal: 320ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Derived shades — same semantic roles, AA-safe where the raw mural
+ * tones fall short of 4.5:1 for small text on the atrium ground.
+ * (Roles are never swapped: skylight-deep is still "links", gold-deep
+ * is still "in progress".) */
+:root {
+  --skylight-deep: oklch(46% 0.14 250);      /* link text at body sizes */
+  --violet-deep: oklch(47% 0.19 300);        /* human-layer small text on washes */
+  --gold-deep: oklch(55% 0.12 85);           /* in-progress label text */
+  --teal-deep: oklch(46% 0.1 195);           /* verified label text */
+  --violet-wash: oklch(95.5% 0.02 300);      /* community panel ground */
+  --gold-wash: oklch(96% 0.03 95);           /* in-progress panel ground */
+  --teal-wash: oklch(96% 0.02 195);          /* done/verified panel ground */
+  --floor-soft: oklch(30% 0.014 270);        /* floor hairlines */
+}
+
+@theme inline {
+  --color-atrium: var(--surface-atrium);
+  --color-panel: var(--surface-panel);
+  --color-steel: var(--steel);
+  --color-steel-dark: var(--steel-dark);
+  --color-floor: var(--floor);
+  --color-floor-soft: var(--floor-soft);
+  --color-ink: var(--ink);
+  --color-monarch: var(--monarch);
+  --color-violet: var(--violet);
+  --color-violet-deep: var(--violet-deep);
+  --color-violet-wash: var(--violet-wash);
+  --color-teal: var(--teal);
+  --color-teal-deep: var(--teal-deep);
+  --color-teal-wash: var(--teal-wash);
+  --color-gold: var(--gold);
+  --color-gold-deep: var(--gold-deep);
+  --color-gold-wash: var(--gold-wash);
+  --color-skylight: var(--skylight);
+  --color-skylight-deep: var(--skylight-deep);
+  --color-blossom: var(--blossom);
+
+  --font-sans: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-hand: var(--font-shantell), cursive;
+}
+
+/* ------------------------------------------------------------------ *
+ * Base
+ * ------------------------------------------------------------------ */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--surface-atrium);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: oklch(from var(--monarch) l c h / 0.35);
+}
+
+/* Keyboard-visible focus: 2px monarch outline, offset 2px (brief §6). */
+:focus-visible {
+  outline: 2px solid var(--monarch);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Anchored sections clear the sticky header. */
+section[id] {
+  scroll-margin-top: 5rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Voices
+ * ------------------------------------------------------------------ */
+.voice-display {
+  font-family: var(--font-sans);
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+.voice-mono {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* The mural voice — hand annotations only, never body text. */
+.voice-hand {
+  font-family: var(--font-hand);
+  color: var(--violet);
+  line-height: 1.3;
+}
+
+/* ------------------------------------------------------------------ *
+ * Vocabulary — architecture (the grid's own ornament)
+ * ------------------------------------------------------------------ */
+
+/* Skylight bands: hard-edged diagonal light. Light, not lines. */
+.skylight-band {
+  background-image: linear-gradient(
+    111deg,
+    transparent 0%,
+    transparent 38%,
+    oklch(from var(--skylight) l c h / 0.055) 38%,
+    oklch(from var(--skylight) l c h / 0.055) 52%,
+    transparent 52%,
+    transparent 64%,
+    oklch(from var(--gold) l c h / 0.06) 64%,
+    oklch(from var(--gold) l c h / 0.06) 71%,
+    transparent 71%
+  );
+}
+
+/* Polished floor: dark band with a faint vertical reflection of the
+ * light content above it. */
+.polished-floor {
+  background-color: var(--floor);
+  background-image: linear-gradient(
+    to bottom,
+    oklch(from var(--surface-atrium) l c h / 0.09),
+    oklch(from var(--surface-atrium) l c h / 0.02) 22%,
+    transparent 55%
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Interaction — sunlight, not blur
+ * ------------------------------------------------------------------ */
+
+/* Cards lift 2px with a hard-edged shadow shifting like sunlight. */
+.lift-card {
+  transition:
+    transform var(--duration-fast) var(--ease-out-expo),
+    box-shadow var(--duration-fast) var(--ease-out-expo);
+}
+.lift-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 6px 8px 0 0 oklch(from var(--steel) l c h / 0.45);
+}
+
+/* Text links: skylight role, plain underline; swash affordance on hover
+ * via a thicker hand-toned underline. */
+.link-skylight {
+  color: var(--skylight-deep);
+  text-decoration: underline;
+  text-decoration-color: oklch(from var(--skylight) l c h / 0.5);
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--duration-fast) ease;
+}
+.link-skylight:hover {
+  text-decoration-color: var(--violet);
+  text-decoration-thickness: 2px;
+}
+
+/* Quiet links on the polished floor. */
+.link-floor {
+  color: oklch(88% 0.01 250);
+  text-decoration: none;
+}
+.link-floor:hover {
+  color: var(--surface-atrium);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--monarch);
+}
+
+/* ------------------------------------------------------------------ *
+ * Motion — the machined layer fades with precision; the hand layer
+ * draws itself. IntersectionObserver adds .is-revealed (see Reveal).
+ * Reduced motion: everything visible, nothing animates.
+ * ------------------------------------------------------------------ */
+.reveal-armed {
+  opacity: 0;
+  transform: translateY(14px);
+}
+.reveal-armed.is-revealed {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--duration-normal) var(--ease-out-expo),
+    transform var(--duration-normal) var(--ease-out-expo);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+
+/* Hand strokes: paths carry pathLength=1 so dasharray normalizes. */
+.draw-path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+}
+.reveal-armed .draw-path {
+  stroke-dashoffset: 1;
+}
+.reveal-armed.is-revealed .draw-path {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 800ms var(--ease-out-expo);
+  transition-delay: calc(var(--reveal-delay, 0ms) + 180ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .reveal-armed {
+    opacity: 1;
+    transform: none;
+  }
+  .reveal-armed .draw-path {
+    stroke-dashoffset: 0;
+  }
+  .reveal-armed.is-revealed,
+  .reveal-armed.is-revealed .draw-path,
+  .lift-card {
+    transition: none;
+  }
+}
