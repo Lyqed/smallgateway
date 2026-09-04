@@ -102,7 +102,7 @@ export default async function Image() {
             maxWidth: 900,
           }}
         >
-          The Open Source Gateway
+          Open Source Gateway
         </div>
         <div
           style={{

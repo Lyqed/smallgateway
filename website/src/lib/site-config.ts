@@ -1,19 +1,19 @@
 /**
  * Single source of truth for site-wide constants.
- * Site B of the Gateway Baseline / Gateway Project pair.
+ * Site for Open Source Gateway, a small experimental gateway project.
  *
  * Temperament: the specimen sheet. The product's argument is that it is
  * small enough to read end to end, so the site is built to be read the
  * same way: numbered, precise, and full of values you can go check.
  */
 export const SITE_CONFIG = {
-  name: "The Open Source Gateway",
-  workingName: "The Gateway Project",
+  name: "Open Source Gateway",
+  workingName: "Open Source Gateway",
   tagline: "Small enough to read end to end",
   description:
     "An LLM gateway you can read in an afternoon. Two binaries and a Git repository, no database in the request path, and every number on this page measured rather than claimed.",
   url: "https://opensourcegateway.com",
-  repoUrl: "https://github.com/Lyqed/thegatewayproject",
+  repoUrl: "https://github.com/Lyqed/opensourcegateway",
   sisterUrl: "https://thegatewaybaseline.com",
   sisterName: "The Gateway Baseline",
   locale: "en",

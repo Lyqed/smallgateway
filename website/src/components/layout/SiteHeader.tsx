@@ -1,4 +1,5 @@
 import { RepoLink } from "@/components/layout/RepoLink";
+import { Wordmark } from "@/components/art/Wordmark";
 import { NAV_ITEMS, SITE_CONFIG } from "@/lib/site-config";
 
 /**
@@ -14,23 +15,7 @@ export function SiteHeader() {
           href="#main"
           className="flex items-center gap-2.5 text-sm font-medium tracking-tight text-ink"
         >
-          <svg aria-hidden viewBox="0 0 28 28" className="size-6 shrink-0">
-            <circle
-              cx="14"
-              cy="14"
-              r="11"
-              fill="none"
-              stroke="var(--ink)"
-              strokeWidth="2"
-            />
-            <path
-              d="M5 20 C 10 15, 18 11, 25 9"
-              fill="none"
-              stroke="var(--violet)"
-              strokeWidth="3"
-              strokeLinecap="round"
-            />
-          </svg>
+          <Wordmark aria-hidden className="w-6 shrink-0" />
           {SITE_CONFIG.name}
         </a>
 
