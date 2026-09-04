@@ -220,7 +220,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
    hit." No dot (it was spent in 3b), no other content.
 6. **Reference implementation** — one restrained cross-link band: "A
    community gateway is being built against this bar" → theopensourcegateway.com
-   (+ github.com/Lyqed/thegatewayproject).
+   (+ github.com/Lyqed/opensourcegateway).
 7. **Footer** — polished floor: dark band, mono small print, sister-site
    link, "Verified cells, not marketing pages" as the standing line.
 
@@ -230,7 +230,7 @@ contact antonbraverman1@gmail.com (the tracker's correction address).
 ## 8. Site B — theopensourcegateway.com
 
 **Brand headline: "The Open Source Gateway" (the project's working name,
-"The Gateway Project", appears in copy; final naming is an open decision —
+"Open Source Gateway", appears in copy; final naming is an open decision —
 docs/04 names the collision risk). Temperament: the mural.** 60% machined /
 40% mural — this is the community site; the human layer leads. Same tokens,
 same vocabulary, more paint: brush fields larger, annotations more frequent

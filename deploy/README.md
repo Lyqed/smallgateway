@@ -1,4 +1,4 @@
-# Deploying The Gateway Project on Kubernetes
+# Deploying Open Source Gateway on Kubernetes
 
 Kubernetes is the primary deployment target. This directory makes the k8s path
 first-class: a `LLMGateway` CRD, an operator that reconciles it into a running
@@ -29,9 +29,9 @@ deploy/
 deploy/images/build.sh
 
 # 2. Import the images into the k3d dev cluster.
-k3d image import thegatewayproject/gatewayd:smoke \
-                 thegatewayproject/gatewayctl:smoke \
-                 thegatewayproject/gateway-operator:smoke -c dev
+k3d image import opensourcegateway/gatewayd:smoke \
+                 opensourcegateway/gatewayctl:smoke \
+                 opensourcegateway/gateway-operator:smoke -c dev
 
 # 3. Install the operator (CRD + controller + RBAC). Zero overrides.
 helm install gwop deploy/charts/gateway-operator -n gateway-system --create-namespace --wait
@@ -65,7 +65,7 @@ kubectl run c --rm -i --restart=Never --image=curlimages/curl -n gateway-system 
 
 ## The LLMGateway CRD
 
-Group/version: `gateway.thegatewayproject.io/v1alpha1`, kind `LLMGateway`
+Group/version: `gateway.opensourcegateway.com/v1alpha1`, kind `LLMGateway`
 (shortname `llmgw`). This is a **one-way-door public API**, kept conservative:
 `v1alpha1`, a status subresource, and a spec that maps 1:1 onto the existing
 gateway config model — it does not invent a parallel policy model.

@@ -27,7 +27,7 @@ spec:
       chart: deploy/charts/gateway-operator
       sourceRef:
         kind: GitRepository
-        name: thegatewayproject
+        name: opensourcegateway
         namespace: flux-system
       interval: 1m
   values:

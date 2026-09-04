@@ -1,5 +1,5 @@
 // Package v1alpha1 is the Go type surface for the LLMGateway CRD
-// (gateway.thegatewayproject.io/v1alpha1). The fields mirror the CRD's
+// (gateway.opensourcegateway.com/v1alpha1). The fields mirror the CRD's
 // openAPIV3Schema 1:1; they map onto the existing gateway-core config model,
 // never a parallel one. See deploy/crds/llmgateway.yaml for the authoritative
 // schema and deploy/README.md for the field reference.
@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	GroupName = "gateway.thegatewayproject.io"
+	GroupName = "gateway.opensourcegateway.com"
 	Version   = "v1alpha1"
 )
 

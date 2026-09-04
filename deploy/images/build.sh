@@ -9,9 +9,9 @@
 #
 # Usage, from anywhere:   deploy/images/build.sh
 # Then, for a k3d dev cluster:
-#   k3d image import thegatewayproject/gatewayd:smoke \
-#                    thegatewayproject/gatewayctl:smoke \
-#                    thegatewayproject/gateway-operator:smoke -c dev
+#   k3d image import opensourcegateway/gatewayd:smoke \
+#                    opensourcegateway/gatewayctl:smoke \
+#                    opensourcegateway/gateway-operator:smoke -c dev
 set -eu
 
 cd "$(dirname "$0")/../.."
@@ -23,15 +23,15 @@ cargo build --release --bin gatewayctl --bin gatewayd --bin mock_upstream
 cp target/release/gatewayd target/release/mock_upstream deploy/images/gatewayd/
 rm -rf deploy/images/gatewayd/fixtures
 cp -r spikes/event-model/fixtures deploy/images/gatewayd/fixtures
-docker build -t thegatewayproject/gatewayd:smoke deploy/images/gatewayd
+docker build -t opensourcegateway/gatewayd:smoke deploy/images/gatewayd
 
 # gatewayctl: the control plane.
 cp target/release/gatewayctl deploy/images/gatewayctl/
-docker build -t thegatewayproject/gatewayctl:smoke deploy/images/gatewayctl
+docker build -t opensourcegateway/gatewayctl:smoke deploy/images/gatewayctl
 
 # gateway-operator: Go controller, multi-stage, distroless. The build
 # context is deploy/operator; only the Dockerfile lives here.
 docker build -f deploy/images/operator/Dockerfile \
-  -t thegatewayproject/gateway-operator:smoke deploy/operator
+  -t opensourcegateway/gateway-operator:smoke deploy/operator
 
-echo "built: thegatewayproject/{gatewayd,gatewayctl,gateway-operator}:smoke"
+echo "built: opensourcegateway/{gatewayd,gatewayctl,gateway-operator}:smoke"

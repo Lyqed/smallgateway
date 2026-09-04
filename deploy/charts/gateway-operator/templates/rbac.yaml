@@ -21,13 +21,13 @@ metadata:
     {{- include "gateway-operator.labels" . | nindent 4 }}
 rules:
   # The CRD this operator reconciles.
-  - apiGroups: ["gateway.thegatewayproject.io"]
+  - apiGroups: ["gateway.opensourcegateway.com"]
     resources: ["llmgateways"]
     verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["gateway.thegatewayproject.io"]
+  - apiGroups: ["gateway.opensourcegateway.com"]
     resources: ["llmgateways/status"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["gateway.thegatewayproject.io"]
+  - apiGroups: ["gateway.opensourcegateway.com"]
     resources: ["llmgateways/finalizers"]
     verbs: ["update"]
   # Owned children: the control plane, data planes, their Services, the config

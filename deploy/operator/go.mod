@@ -1,4 +1,4 @@
-module github.com/thegatewayproject/gateway-operator
+module github.com/Lyqed/opensourcegateway/deploy/operator
 
 go 1.21
 

@@ -1,4 +1,4 @@
-# Data-plane smoke-test image for The Gateway Project.
+# Data-plane smoke-test image for Open Source Gateway.
 #
 # Ships the PREBUILT release binaries (gatewayd + mock_upstream) rather than
 # compiling in-image: the binaries are glibc-linked (wasmtime + pingora), so

@@ -1,6 +1,6 @@
 # Contributing
 
-The Gateway Project is a community solution. It has no owner-vendor and no
+Open Source Gateway is a community solution. It has no owner-vendor and no
 roadmap you have to lobby to change. The way in is to make a change and stand
 behind it.
 

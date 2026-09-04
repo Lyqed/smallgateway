@@ -1,4 +1,4 @@
-# The Gateway Project workspace — Phase 1: the standalone data plane.
+# Open Source Gateway workspace — Phase 1: the standalone data plane.
 # The Phase 0 spikes under spikes/ are a frozen historical record and build
 # standalone; they are excluded here, never members.
 

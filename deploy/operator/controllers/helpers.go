@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	gwv1 "github.com/thegatewayproject/gateway-operator/api/v1alpha1"
+	gwv1 "github.com/Lyqed/opensourcegateway/deploy/operator/api/v1alpha1"
 )
 
 // schemeAlias is the concrete scheme type injected by main.go.

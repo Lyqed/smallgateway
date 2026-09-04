@@ -42,9 +42,9 @@ are the project's views; the market can judge them.
 
 ```sh
 deploy/images/build.sh
-k3d image import thegatewayproject/gatewayd:smoke \
-                 thegatewayproject/gatewayctl:smoke \
-                 thegatewayproject/gateway-operator:smoke -c <cluster>
+k3d image import opensourcegateway/gatewayd:smoke \
+                 opensourcegateway/gatewayctl:smoke \
+                 opensourcegateway/gateway-operator:smoke -c <cluster>
 ```
 
 No cluster? The single-binary file mode needs only a Linux box:
@@ -69,7 +69,7 @@ topology.
 
 ```yaml
 # gateway.yaml
-apiVersion: gateway.thegatewayproject.io/v1alpha1
+apiVersion: gateway.opensourcegateway.com/v1alpha1
 kind: LLMGateway
 metadata:
   name: demo

@@ -1,12 +1,12 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: llmgateways.gateway.thegatewayproject.io
+  name: llmgateways.gateway.opensourcegateway.com
   labels:
     app.kubernetes.io/part-of: the-gateway-project
     app.kubernetes.io/component: crd
 spec:
-  group: gateway.thegatewayproject.io
+  group: gateway.opensourcegateway.com
   scope: Namespaced
   names:
     kind: LLMGateway

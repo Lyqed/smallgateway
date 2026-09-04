@@ -8,7 +8,7 @@ use spike_event_model::adapters::Adapter;
 use spike_event_model::event::Event;
 use spike_event_model::metering::Meter;
 
-const EXPECTED_TEXT: &str = "The Gateway Project keeps truth in Git.";
+const EXPECTED_TEXT: &str = "Open Source Gateway keeps truth in Git.";
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));

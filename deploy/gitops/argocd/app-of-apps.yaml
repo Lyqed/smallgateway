@@ -27,7 +27,7 @@ spec:
 
   source:
     # Point at your fork/clone.
-    repoURL: https://github.com/thegatewayproject/thegatewayproject
+    repoURL: https://github.com/Lyqed/opensourcegateway
     targetRevision: main
     path: deploy/gitops/argocd
     directory:

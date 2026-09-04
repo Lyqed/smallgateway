@@ -1,7 +1,7 @@
 apiVersion: v2
 name: gateway-operator
 description: >-
-  The Gateway Project Kubernetes operator. Installs the LLMGateway CRD and the
+  Open Source Gateway Kubernetes operator. Installs the LLMGateway CRD and the
   controller that reconciles an LLMGateway CR into a running gatewayctl control
   plane and one or more gatewayd data planes joined over gRPC, enforcing
   cost-attribution (GB-1), operator pins (GB-3), operator-owned rejections
@@ -15,4 +15,4 @@ keywords:
   - llm
   - cost-attribution
   - operator
-home: https://github.com/thegatewayproject
+home: https://github.com/Lyqed/opensourcegateway

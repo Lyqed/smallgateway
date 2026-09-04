@@ -14,7 +14,7 @@
 # This example points at the in-cluster mock upstream (deploy/samples/mock.yaml)
 # so the GitOps loop is demonstrable on k3d without a real provider. Swap the
 # provider `upstream` for a real endpoint in your own repo.
-apiVersion: gateway.thegatewayproject.io/v1alpha1
+apiVersion: gateway.opensourcegateway.com/v1alpha1
 kind: LLMGateway
 metadata:
   name: demo

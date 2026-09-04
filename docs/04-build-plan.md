@@ -123,7 +123,7 @@ overspend bound under partition is measured and documented, not estimated.
 
 ## Named risks, carried openly
 
-- **The name.** "The Gateway Project" collides hard with Kubernetes Gateway
+- **The name.** "Open Source Gateway" collides hard with Kubernetes Gateway
   API mindshare — it will be misread in exactly the community we are
   recruiting from. Renaming is cheap until the repo is public; the decision is
   deferred but the deadline is Phase 1's tracker row.

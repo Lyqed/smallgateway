@@ -1,76 +1,95 @@
-# The Gateway Project
+# Open Source Gateway
 
-A community-built LLM gateway that platform teams can be proud of — designed
-from scratch, owned end to end, and conformant with the
-[Gateway Baseline](https://antonbraverman.com/gateways) (GB-1..GB-9) from day
-one.
+[Website](https://opensourcegateway.com) · [Gateway Baseline](https://thegatewaybaseline.com) · [Documentation](docs/10-getting-started.md) · [Contributing](CONTRIBUTING.md)
 
-Every gateway on the verified matrix is either a single instance with a config
-surface or a k8s-CRD system that outsources fleet management to ArgoCD. The
-genuinely novel product here is not another gateway binary — it is the control
-plane. Nobody has GitOps for gateway fleets: desired state in Git, a reconciler
-that converges the fleet, and nothing else does this across heterogeneous
-fleets (VMs, DMZ boxes, multiple clouds, edge — not just clusters). The
-reconciler is domain-aware: it understands routes, spend limits, attribution,
-and token-aware canary analysis rather than diffing opaque YAML.
+Open Source Gateway is an experimental LLM gateway and fleet control plane for platform teams that need attribution, spending controls, provider-native traffic, and Git-managed configuration.
 
-## You don't need to buy anything. Yet.
+The repository contains two runnable components:
 
-Everything in this design runs on open source and Git. No procurement, no
-platform subscription, no per-seat pricing, no "talk to sales." If a vendor
-pitch lands in your inbox promising all of this today, hold it against the
-Baseline matrix — the verified one, not the marketing page. Defer the purchase.
-Defer the framework commitment. Defer the rewrite. Every deferral keeps a
-decision reversible, and reversible decisions are the only ones a small team
-can afford to make quickly. See [docs/00-principles.md](docs/00-principles.md).
+- `gatewayd`, the data plane. It proxies provider-native requests, applies policy, meters streaming responses, and exports telemetry.
+- `gatewayctl`, the control plane. It renders versioned configuration from Git and reconciles that configuration across a gateway fleet.
 
-## The ownership rule
+The data plane can run by itself from a local file. The control plane is optional.
 
-This is a community solution, and the community's contract is full ownership:
-**if something breaks because of a change you made six months ago — you are
-responsible.** Not blamed; responsible. You show up, you diagnose, you fix or
-revert, and the postmortem names the mechanism, not the person. Nothing is
-impossible anymore — the tooling closes the skill gap — so the differentiator
-is knowing how to build, collaborate, and stand behind changes for their whole
-lifetime.
+> **Project status:** active development, pre-1.0. The implementation and test suite are public, but there is no published stable release or production support commitment yet. Interfaces may change.
 
-## Reading order
+## What is implemented
 
-| Doc | What it answers |
-|-----|-----------------|
-| [10-getting-started.md](docs/10-getting-started.md) | **Start here**: zero to an enforcing gateway in ten minutes, plus the two ways a large organization splits ownership |
-| [00-principles.md](docs/00-principles.md) | The operating constraints: two binaries plus Git, defer-by-default, ownership |
-| [01-design-questions.md](docs/01-design-questions.md) | The central questions every decision hangs off |
-| [02-architecture.md](docs/02-architecture.md) | Data plane and control plane design |
-| [03-hot-swap.md](docs/03-hot-swap.md) | Hot-swappable config: the promise, the three limitations, the mitigations |
-| [04-build-plan.md](docs/04-build-plan.md) | Step-by-step build from scratch, with the risk-ordered sequencing |
-| [05-features.md](docs/05-features.md) | Baseline-required features, plus the optional catalog (everything LiteLLM does, triaged) |
-| [06-prior-art.md](docs/06-prior-art.md) | What we steal and from whom, including agentgateway's own path to 6/8 |
-| [07-control-plane.md](docs/07-control-plane.md) | Truth in Git, rendered manifests, waves, canaries, the fleet |
-| [09-live-cloud.md](docs/09-live-cloud.md) | Pointing the mock-proven mechanisms at real AWS and GCP |
-| [deploy/README.md](deploy/README.md) | Kubernetes: the LLMGateway CRD, the operator, Helm, GitOps |
+| Area | Current implementation |
+| --- | --- |
+| Provider traffic | OpenAI, Anthropic, Bedrock, and Vertex adapters |
+| Attribution | Required labels, operator-pinned values, and optional verified JWT claims |
+| Cost controls | Token budgets, alerts, and deliberate mid-stream termination |
+| Configuration | Static files, atomic reloads, versioned snapshots, and ACK/NACK handling |
+| Fleet operations | Git-backed reconciliation, drift reporting, waves, and canary evaluation |
+| Extensions | Signed WASM modules with execution bounds |
+| Deployment | Containers, Helm, an `LLMGateway` CRD, and Argo CD and Flux examples |
 
-## Status
+These are implementation claims, not a production-readiness claim. The tests exercise the contracts in this repository. They do not establish suitability for a particular environment.
 
-**Phase 0 closed (1 August 2026); Phase 1 begun.** Spike A proved the
-canonical event model on three wire formats and measured the metering error
-bound from 17 machine-recorded transcripts
-([spikes/event-model/](spikes/event-model/)). Spike B chose the foundation:
-the data plane is built on **Pingora** ([spikes/proxy-pingora/](spikes/proxy-pingora/)
-demonstrated the streaming tap without buffering), with the agentgateway
-GB-4/GB-8 changes proceeding as parallel upstream contributions
-([docs/spike-b/agentgateway-embed.md](docs/spike-b/agentgateway-embed.md)).
-Phase 1 — the standalone, Baseline-conformant-from-a-file data plane — is
-under way in `crates/`.
+## Quick start
 
-## Contributing
+The shortest complete path is the [getting-started guide](docs/10-getting-started.md). For local development:
 
-Provider adapters are the most accessible first contribution. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) for the ownership contract, where to start,
-and the conformance bar. Participation is governed by the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+```sh
+git clone https://github.com/Lyqed/opensourcegateway.git
+cd opensourcegateway
+cargo test --workspace
+```
+
+Run the standalone data plane with a configuration file:
+
+```sh
+cargo run -p gatewayd -- --config crates/gatewayd/demo/gateway.yaml
+```
+
+The Kubernetes path, including local image builds and the Helm chart, is in [deploy/README.md](deploy/README.md).
+
+## Architecture
+
+```text
+applications
+    |
+    v
+gatewayd  ---> provider APIs
+    ^
+    | versioned snapshots
+    |
+gatewayctl <--- Git
+```
+
+`gatewayd` stays in the request path. `gatewayctl` stays outside it. A control plane outage therefore does not require a data-plane outage, although stale configuration remains an operational risk and is reported explicitly.
+
+The design is documented in [principles](docs/00-principles.md), [architecture](docs/02-architecture.md), [the build plan](docs/04-build-plan.md), [feature status](docs/05-features.md), [the control plane](docs/07-control-plane.md), [live cloud integration](docs/09-live-cloud.md), [HTTP fidelity](docs/11-http-fidelity.md), and the [rejection contract](docs/13-rejection-contract.md).
+
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| `crates/gatewayd` | Data-plane binary |
+| `crates/gatewayctl` | Fleet control-plane binary |
+| `crates/gateway-core` | Configuration, policy, adapters, metering, and attribution |
+| `crates/gateway-proto` | Fleet distribution protocol |
+| `crates/gateway-wasm` | Sandboxed extension host |
+| `deploy` | Operator, chart, images, and GitOps examples |
+| `spikes` | Frozen experiments that informed the current design |
+| `upstream` | Contributions prepared for related open-source projects |
+
+## Verification
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+(cd deploy/operator && go test ./...)
+```
+
+CI runs the same Rust and Go checks on every pull request and push to `main`.
+
+## Contributing and security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. For usage questions, see [SUPPORT.md](SUPPORT.md). Please report security issues through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE). This matches the ecosystem we intend to
-upstream into; the working assumption is now the committed one.
+Apache-2.0. See [LICENSE](LICENSE).

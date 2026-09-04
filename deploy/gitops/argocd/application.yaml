@@ -35,7 +35,7 @@ spec:
 
   source:
     # Point this at YOUR fork/clone. The path is the self-contained config dir.
-    repoURL: https://github.com/thegatewayproject/thegatewayproject
+    repoURL: https://github.com/Lyqed/opensourcegateway
     targetRevision: main
     path: deploy/gitops/config
 

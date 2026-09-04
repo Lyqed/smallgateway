@@ -18,11 +18,11 @@
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
-  name: thegatewayproject
+  name: opensourcegateway
   namespace: flux-system
 spec:
   interval: 1m
-  url: https://github.com/thegatewayproject/thegatewayproject
+  url: https://github.com/Lyqed/opensourcegateway
   ref:
     branch: main
 ---
@@ -39,7 +39,7 @@ spec:
   prune: true
   sourceRef:
     kind: GitRepository
-    name: thegatewayproject
+    name: opensourcegateway
   # Surface the operator HelmRelease's own readiness, so gateway-demo's
   # dependsOn actually waits for the operator to be healthy, not merely applied.
   healthChecks:
@@ -61,7 +61,7 @@ spec:
   prune: true
   sourceRef:
     kind: GitRepository
-    name: thegatewayproject
+    name: opensourcegateway
   # The hard ordering constraint: wait for the operator (and its CRD) to be
   # healthy before applying any LLMGateway.
   dependsOn:
@@ -70,7 +70,7 @@ spec:
   # Report the LLMGateway's own Ready condition up to Flux, so
   # `flux get kustomizations` reflects real gateway health.
   healthChecks:
-    - apiVersion: gateway.thegatewayproject.io/v1alpha1
+    - apiVersion: gateway.opensourcegateway.com/v1alpha1
       kind: LLMGateway
       name: demo
       namespace: gateway-system

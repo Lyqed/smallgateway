@@ -27,7 +27,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	gwv1 "github.com/thegatewayproject/gateway-operator/api/v1alpha1"
+	gwv1 "github.com/Lyqed/opensourcegateway/deploy/operator/api/v1alpha1"
 )
 
 // Fragment is one repo file: a relative path and its bytes.
