@@ -29,9 +29,9 @@ deploy/
 deploy/images/build.sh
 
 # 2. Import the images into the k3d dev cluster.
-k3d image import opensourcegateway/gatewayd:smoke \
-                 opensourcegateway/gatewayctl:smoke \
-                 opensourcegateway/gateway-operator:smoke -c dev
+k3d image import smallgateway/gatewayd:smoke \
+                 smallgateway/gatewayctl:smoke \
+                 smallgateway/gateway-operator:smoke -c dev
 
 # 3. Install the operator (CRD + controller + RBAC). Zero overrides.
 helm install gwop deploy/charts/gateway-operator -n gateway-system --create-namespace --wait

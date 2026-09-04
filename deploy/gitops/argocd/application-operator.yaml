@@ -28,7 +28,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/Lyqed/opensourcegateway
+    repoURL: https://github.com/Lyqed/smallgateway
     targetRevision: main
     path: deploy/charts/gateway-operator
     helm:

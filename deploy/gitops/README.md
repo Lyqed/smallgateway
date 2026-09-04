@@ -124,7 +124,7 @@ quick start (see `../README.md`). The GitOps proof is the *round trip*:
 ## Notes
 
 - **Point the repoURL at your own fork/clone.** The examples reference
-  `github.com/Lyqed/opensourcegateway`; change it to wherever your
+  `github.com/Lyqed/smallgateway`; change it to wherever your
   config actually lives. In real use you would keep `config/` in a
   deploy repo separate from the source tree.
 - **`config/mock-upstream.yaml` is demo-only.** It exists so the loop is

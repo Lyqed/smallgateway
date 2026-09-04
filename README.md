@@ -32,7 +32,7 @@ These are implementation claims, not a production-readiness claim. The tests exe
 The shortest complete path is the [getting-started guide](docs/10-getting-started.md). For local development:
 
 ```sh
-git clone https://github.com/Lyqed/opensourcegateway.git
+git clone https://github.com/Lyqed/smallgateway.git
 cd opensourcegateway
 cargo test --workspace
 ```

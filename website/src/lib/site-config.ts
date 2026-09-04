@@ -13,7 +13,7 @@ export const SITE_CONFIG = {
   description:
     "An LLM gateway you can read in an afternoon. Two binaries and a Git repository, no database in the request path, and every number on this page measured rather than claimed.",
   url: "https://opensourcegateway.com",
-  repoUrl: "https://github.com/Lyqed/opensourcegateway",
+  repoUrl: "https://github.com/Lyqed/smallgateway",
   sisterUrl: "https://thegatewaybaseline.com",
   sisterName: "The Gateway Baseline",
   locale: "en",

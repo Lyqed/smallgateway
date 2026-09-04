@@ -220,7 +220,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
    hit." No dot (it was spent in 3b), no other content.
 6. **Reference implementation** — one restrained cross-link band: "A
    community gateway is being built against this bar" → theopensourcegateway.com
-   (+ github.com/Lyqed/opensourcegateway).
+   (+ github.com/Lyqed/smallgateway).
 7. **Footer** — polished floor: dark band, mono small print, sister-site
    link, "Verified cells, not marketing pages" as the standing line.
 

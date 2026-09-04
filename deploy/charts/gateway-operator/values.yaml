@@ -7,7 +7,7 @@
 # Operator controller image and defaults it passes to the workloads it manages.
 operator:
   image:
-    repository: opensourcegateway/gateway-operator
+    repository: smallgateway/gateway-operator
     tag: smoke
     # IfNotPresent because the image is imported into k3d, never pulled.
     # Set to Always (and a real registry) for a pullable production image.
@@ -22,8 +22,8 @@ operator:
   # Deployments it creates. A CR may override per-instance via
   # spec.controlPlane.image / spec.dataPlanes.image.
   defaultImages:
-    gatewayctl: opensourcegateway/gatewayctl:smoke
-    gatewayd: opensourcegateway/gatewayd:smoke
+    gatewayctl: smallgateway/gatewayctl:smoke
+    gatewayd: smallgateway/gatewayd:smoke
   # -- Controller resource requests/limits. The operator is lightweight.
   resources:
     requests:

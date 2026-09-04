@@ -39,8 +39,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	gwv1 "github.com/Lyqed/opensourcegateway/deploy/operator/api/v1alpha1"
-	"github.com/Lyqed/opensourcegateway/deploy/operator/internal/render"
+	gwv1 "github.com/Lyqed/smallgateway/deploy/operator/api/v1alpha1"
+	"github.com/Lyqed/smallgateway/deploy/operator/internal/render"
 )
 
 const (

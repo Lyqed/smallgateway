@@ -42,9 +42,9 @@ are the project's views; the market can judge them.
 
 ```sh
 deploy/images/build.sh
-k3d image import opensourcegateway/gatewayd:smoke \
-                 opensourcegateway/gatewayctl:smoke \
-                 opensourcegateway/gateway-operator:smoke -c <cluster>
+k3d image import smallgateway/gatewayd:smoke \
+                 smallgateway/gatewayctl:smoke \
+                 smallgateway/gateway-operator:smoke -c <cluster>
 ```
 
 No cluster? The single-binary file mode needs only a Linux box:

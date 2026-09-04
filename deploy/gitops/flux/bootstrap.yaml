@@ -22,7 +22,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 1m
-  url: https://github.com/Lyqed/opensourcegateway
+  url: https://github.com/Lyqed/smallgateway
   ref:
     branch: main
 ---

@@ -28,7 +28,7 @@ spec:
     spec:
       containers:
         - name: mock-upstream
-          image: opensourcegateway/gatewayd:smoke
+          image: smallgateway/gatewayd:smoke
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/mock_upstream"]
           args:

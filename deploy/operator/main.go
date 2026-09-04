@@ -22,8 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	gwv1 "github.com/Lyqed/opensourcegateway/deploy/operator/api/v1alpha1"
-	"github.com/Lyqed/opensourcegateway/deploy/operator/controllers"
+	gwv1 "github.com/Lyqed/smallgateway/deploy/operator/api/v1alpha1"
+	"github.com/Lyqed/smallgateway/deploy/operator/controllers"
 )
 
 var scheme = runtime.NewScheme()
@@ -41,8 +41,8 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint bind address")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe bind address")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election for HA operators")
-	flag.StringVar(&gatewaydImage, "gatewayd-image", "opensourcegateway/gatewayd:smoke", "default gatewayd data-plane image")
-	flag.StringVar(&gatewayctlImage, "gatewayctl-image", "opensourcegateway/gatewayctl:smoke", "default gatewayctl control-plane image")
+	flag.StringVar(&gatewaydImage, "gatewayd-image", "smallgateway/gatewayd:smoke", "default gatewayd data-plane image")
+	flag.StringVar(&gatewayctlImage, "gatewayctl-image", "smallgateway/gatewayctl:smoke", "default gatewayctl control-plane image")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
