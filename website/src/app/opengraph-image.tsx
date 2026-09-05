@@ -142,7 +142,7 @@ export default async function Image() {
               color: "#22242e",
             }}
           >
-            opensourcegateway.com
+            smallgateway.vercel.app
           </div>
         </div>
       </div>

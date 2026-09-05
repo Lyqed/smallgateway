@@ -12,7 +12,7 @@ export const SITE_CONFIG = {
   tagline: "Small enough to read end to end",
   description:
     "An LLM gateway you can read in an afternoon. Two binaries and a Git repository, no database in the request path, and every number on this page measured rather than claimed.",
-  url: "https://opensourcegateway.com",
+  url: "https://smallgateway.vercel.app",
   repoUrl: "https://github.com/Lyqed/smallgateway",
   sisterUrl: "https://thegatewaybaseline.com",
   sisterName: "The Gateway Baseline",

@@ -124,7 +124,7 @@ overspend bound under partition is measured and documented, not estimated.
 ## Named risks, carried openly
 
 - **The name.** The project is now called smallgateway. The gateway code and
-  website share one repository; the site remains at opensourcegateway.com.
+  website share one repository; the site is at smallgateway.vercel.app.
 - **WASM on the hot path.** Per-event hooks on streaming paths need real
   performance validation before we promise them. That is why they sit in
   Phase 4, behind a spike, not in the pitch.

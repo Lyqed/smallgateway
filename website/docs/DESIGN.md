@@ -1,6 +1,7 @@
 # Design brief — thegatewaybaseline.com & opensourcegateway.com
 
 Current framing (5 September 2026): the project is smallgateway. Use that
+name at smallgateway.vercel.app, the primary site address. Use the same
 name in the header, headline, page title, and share image. The header carries
 the only icon at the top of the page. Put experimental status in a separate
 badge. Keep descriptions concrete and conversational.

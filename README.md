@@ -2,7 +2,7 @@
 
 A small gateway for LLM traffic, with an optional control plane for managing several instances from Git. An experimental project by Anton Braverman.
 
-[Website](https://opensourcegateway.com) · [Getting started](docs/10-getting-started.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://smallgateway.vercel.app) · [Getting started](docs/10-getting-started.md) · [Contributing](CONTRIBUTING.md)
 
 ## What it does
 
@@ -33,7 +33,7 @@ The demo needs an upstream service. See the [getting-started guide](docs/10-gett
 | `crates/gateway-proto` | Configuration distribution protocol |
 | `crates/gateway-wasm` | Extension runtime |
 | `deploy` | Operator, Helm chart, containers, and deployment examples |
-| `website` | The Next.js site at opensourcegateway.com |
+| `website` | The Next.js site at smallgateway.vercel.app |
 | `docs` | Design notes and guides |
 | `spikes` | Earlier experiments |
 | `upstream` | Work prepared for related projects |
