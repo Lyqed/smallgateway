@@ -1,4 +1,9 @@
-# Build plan — from scratch, step by step
+# Original build plan
+
+Historical design notes. This records earlier experiments, including ideas
+that were not implemented. Phase numbers, competitive claims, and planned
+features below are not current commitments. See the [current scope](05-features.md)
+for what smallgateway focuses on now.
 
 *Risk-ordered: the highest-risk novel claim gets validated first, and every
 phase ships something a platform team can run. Anti-goal at every step: don't

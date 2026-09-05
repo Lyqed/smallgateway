@@ -1,81 +1,53 @@
 # Architecture
 
-*Two binaries plus Git. The data plane makes streaming a first-class citizen;
-the control plane is GitOps for gateway fleets: desired state in Git, a
-reconciler that converges the fleet.*
+The core is `gatewayd`, a request proxy that can run from a local configuration
+file. `gatewayctl` is an optional way to distribute configuration from Git.
 
-## The thesis, stated honestly
-
-Every gateway on the verified matrix is either a single instance with a config
-surface (LiteLLM, Bifrost, Portkey) or a k8s-CRD system that outsources fleet
-management to ArgoCD itself (Envoy AI Gateway, agentgateway via kgateway). The
-honest competitive framing: for a k8s-only shop, CRDs plus ArgoCD already
-approximate GitOps gateway management. Our bet is the two things that
-combination cannot do:
-
-1. **Heterogeneous fleets** — VMs, DMZ boxes, multiple clouds, edge; not just
-   clusters.
-2. **Domain-aware reconciliation** — the reconciler understands routes, spend
-   limits, attribution, and token-aware canary analysis rather than diffing
-   opaque YAML.
-
-Kong's decK is the closest prior art for "gateway config in Git," and it is an
-imperative sync CLI, not a reconciler. That gap is real.
+These notes describe the implementation and earlier extension experiments.
+The [current scope](05-features.md) is forwarding, attribution, token metering,
+and token limits. Optional fleet and extension mechanisms do not make a broader
+platform the project's goal.
 
 ## Data plane
 
-### Canonical event stream — the streaming answer
+### Canonical event stream
 
-The APIM policy had `!isStreaming` guards around token metrics and payload
-logging because APIM can only transform what it buffers. Fix this at the
-foundation: provider adapters normalize every provider's wire format (OpenAI
-SSE deltas, Anthropic events, Bedrock event-stream) into one internal event
-model —
+Adapters observe supported provider formats, including OpenAI SSE, Anthropic
+events, and Bedrock event-stream, through one internal event model:
 
 ```
 MessageStart / ContentDelta / ToolCallDelta / UsageDelta / MessageEnd / Error
 ```
 
-— flowing through the response path with backpressure, never buffered whole.
-Policies get `on_request`, `on_response_event`, `on_response_end` hooks. Every
-capability that made streaming a second-class citizen becomes uniform:
+Streaming responses pass through while adapters observe events. Non-streaming
+JSON responses use a bounded parser to read terminal usage.
 
-- **Token metering on streams** — incremental tally, reconciled against the
-  provider's terminal usage frame (design question Q3).
-- **PII redaction on deltas.**
-- **Format rewriting** between provider dialects.
-- **Mid-stream enforcement** — a budget exhausted mid-generation cuts the
-  stream with an operator-defined terminal event. This is GB-4 extended to
-  streaming; nothing in the matrix does it.
+- Live token estimates can be compared with the provider's final usage count.
+- Token limits can end a stream with an operator-configured terminal event.
+- Missing usage and interrupted responses have explicit handling; see
+  [metering decisions](11-http-fidelity.md).
 
-### Policy chain with scoped inheritance — APIM's best idea
+### Scoped policy
 
-The single best thing in APIM's policy XML is not the C#, it is `<base/>`:
-scoped policies (global → product → API → operation) that compose. Real-world
-policy blobs go flat precisely because APIM's scoping isn't granular enough.
-Do it properly: chains compose **fleet → project → route → app**, each level
-prepends/appends around an explicit base marker, and each level maps to a Git
-directory. The STS credential chain becomes a fleet-level policy, attribution
-enforcement a project-level one, a per-app TPM override a route-level values
-file.
+Policies compose through fleet, project, route, and app scopes. An explicit
+base marker lets a lower scope include inherited values. A local configuration
+can use the same rules without running the control plane.
 
-### Two-tier extensibility — the extend answer
+### Existing extension mechanisms
 
-- **Tier 1: CEL expressions** for conditions, derivations, header logic.
-  Sandboxed, no I/O, microseconds. agentgateway validated this in this exact
-  domain.
-- **Tier 2: WASM policy modules** for real programs — custom protocol
-  adapters, bespoke redaction, org-specific enforcement. Signed modules only
-  (admission-checked at the PR), epoch-based preemption and per-event fuel
-  budgets on the hot path. Performance validation is a named risk in doc 04 —
-  we do not promise per-event WASM hooks until the spike proves them.
+These mechanisms are optional implementation experiments. Expanding them is
+not a separate roadmap.
+
+- CEL expressions provide conditions, derivations, and header logic.
+- Signed WASM modules provide optional hooks with execution limits.
+  Per-event hooks are off by default. See the extension crate's tests and
+  documentation before using them.
 
 ## Control plane
 
-The control plane is built from a small set of GitOps capabilities, each with a
-concrete form for gateway fleets. The shape is structural, not cosmetic:
+The optional control plane has the following mechanisms:
 
-| GitOps capability | Gateway Project form |
+| Capability | Implementation |
 |---|---|
 | Hub-and-spoke distribution | Control plane manages N data planes over an xDS-style gRPC stream (versioned snapshots, ACK/NACK) |
 | Desired state in Git | Routes, policy chains, limits, attribution rules, provider refs in a config repo |
@@ -85,7 +57,6 @@ concrete form for gateway fleets. The shape is structural, not cosmetic:
 | Drift detection / self-heal | Reconciler converges divergent data planes; divergence is surfaced, never silent |
 | Progressive delivery with analysis | **Config canaries**: wave rollouts by failure domain, analyzed on error rate, p99, and token-spend anomaly from the gateway's own telemetry, auto-rollback |
 | Admission policies | CEL validations on config PRs: "no route without attribution keys," "no unsigned WASM module," "no override >5x default without label" |
-| Hierarchical control planes | Regional control planes consuming a root's rendered fleet config (v2) |
 
 The break-glass-with-TTL detail matters more than it looks: gateways get
 emergency-edited at 3am in ways ArgoCD-managed clusters don't tolerate, and
@@ -105,7 +76,8 @@ magic.
 
 ## The Baseline connection
 
-This product is the reference implementation of the Gateway Baseline:
+Some implementation tests use Gateway Baseline check names. The comparison
+does not define a roadmap or certify this project:
 
 - **GB-1** required attribution keys as a route field
 - **GB-2** claim mappings from verified logins (built, but deferred by

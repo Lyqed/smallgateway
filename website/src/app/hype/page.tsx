@@ -13,10 +13,7 @@ import {
 } from "@/components/art/graffiti";
 
 /**
- * The hype landing (no-scroll, one viewport). The whole project stated as
- * one shout: the name huge, one promise line, two CTAs, and the murals
- * loud around it. Machined-meets-handmade collision compressed onto a
- * single screen. The full multi-section site lives at /full.
+ * An alternate single-screen landing page. The full site lives at /.
  */
 export default function HypePage() {
   return (
@@ -50,46 +47,42 @@ export default function HypePage() {
         <p className="voice-mono text-sm font-medium tracking-[0.18em] text-ink">
           {SITE_CONFIG.name.toUpperCase()}
         </p>
-        <p className="voice-mono text-xs text-steel-dark">built in the open</p>
+        <p className="voice-mono text-xs text-steel-dark">experimental</p>
       </header>
 
       {/* The shout: centered, one screen. */}
       <div className="relative z-20 flex flex-1 flex-col items-start justify-center px-6 sm:px-10">
         <div className="max-w-5xl">
           <p className="voice-mono mb-6 text-sm uppercase tracking-[0.22em] text-monarch-deep">
-            Build it. Own it. Answer for it.
+            A small gateway for model traffic
           </p>
 
           <h1 className="voice-display text-[clamp(2.75rem,10vw,8rem)] font-semibold leading-[0.92] tracking-tight text-ink">
-            The{" "}
             <span className="relative inline-block">
-              Open
+              {SITE_CONFIG.name}
               <CrayonUnderline
                 className="pointer-events-none absolute -bottom-2 left-0 h-3 w-full"
                 color="var(--monarch)"
               />
-            </span>{" "}
-            Source
-            <br />
-            Gateway
+            </span>
           </h1>
 
           <p className="mt-8 max-w-2xl text-lg leading-relaxed text-ink sm:text-xl">
             <span className="relative inline-block">
-              A gateway platform teams build, own, and answer for.
+              Forward requests. Track token usage. Apply token limits.
               <span aria-hidden className="marker absolute -right-8 -top-6 hidden rotate-6 text-lg text-violet sm:block">
-                yours
+                small
               </span>
             </span>
           </p>
 
           <div className="mt-10 flex flex-wrap items-center gap-4">
             <ButtonLink href={SITE_CONFIG.repoUrl} variant="monarch" target="_blank" rel="noreferrer">
-              Read the design docs ↗
+              View the repository ↗
             </ButtonLink>
             <div className="relative">
               <ButtonLink href={SITE_CONFIG.sisterUrl} variant="outline">
-                The cost-attribution standard
+                {SITE_CONFIG.sisterName}
               </ButtonLink>
               <ScribbleCircle className="pointer-events-none absolute -inset-2 h-[calc(100%+1rem)] w-[calc(100%+1rem)]" />
             </div>
@@ -106,7 +99,7 @@ export default function HypePage() {
           href="/"
           className="voice-mono text-xs text-skylight-deep underline decoration-steel underline-offset-4 hover:text-monarch-deep"
         >
-          See the full build →
+          How it works →
         </Link>
       </footer>
     </main>

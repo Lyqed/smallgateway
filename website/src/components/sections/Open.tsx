@@ -5,10 +5,8 @@ import { ButtonLink } from "@/components/ui/ButtonLink";
 import { SITE_CONFIG } from "@/lib/site-config";
 
 /**
- * The close: the terms, and nothing else. After three sections about
- * the system, the last one is about the people. The ownership sentence
- * carries the section heading and the one hand-circled moment in the
- * back half of the page; the monarch lands beside it, once.
+ * The close: current scope and ways to contribute. The monarch and
+ * hand-drawn circle keep the same layout as the technical sections.
  */
 export function Open() {
   return (
@@ -18,8 +16,7 @@ export function Open() {
       className="scroll-mt-20 border-t border-steel py-[var(--space-section)]"
     >
       <div className="mx-auto w-full max-w-[80rem] px-5 sm:px-8">
-        {/* The terms. The one place on the page that is about people
-            rather than about the system. */}
+        {/* Project scope and contribution notes. */}
         <Reveal>
           <div className="relative">
             {/* Hidden on the narrowest screens: below 480px it would
@@ -27,7 +24,7 @@ export function Open() {
             <Monarch className="pointer-events-none absolute -top-10 right-2 hidden w-20 rotate-6 min-[480px]:block sm:right-8 sm:w-28" />
 
             <p className="voice-mono text-xs uppercase tracking-[0.28em] text-steel-dark">
-              04 · The terms
+              04 · The project
             </p>
 
             {/* The circle is hidden below lg. The mark is a fixed-aspect
@@ -42,32 +39,27 @@ export function Open() {
                 id="open-heading"
                 className="voice-display relative text-3xl leading-[1.14] sm:text-5xl"
               >
-                You answer for what you merged, for as long as it runs.
+                A small project, with room for small fixes.
               </h2>
             </div>
 
             <div className="mt-10 grid max-w-4xl gap-8 sm:grid-cols-2">
               <p className="text-lg leading-relaxed text-ink">
-                Six months later, when something breaks and the commit has
-                your name on it, you turn up. You find it, you fix it or you
-                revert it, and the write-up afterward describes the
-                mechanism rather than the person. That is the whole
-                contract, and the technical design exists to make it
-                survivable: truth in Git is what lets you reconstruct a
-                night you were not there for.
+                The focus is forwarding model requests, identifying who
+                made them, recording token usage, and applying token limits.
+                Provider billing tags are included where the API supports
+                them. Invoice reconciliation and dollar allocation sit
+                outside this project.
               </p>
               <p className="leading-relaxed text-steel-dark">
-                Tooling has closed most of the gaps that used to separate
-                engineers, which leaves standing behind your own work as
-                one of the few things still worth anything. Owned by the
-                people who run it, open from the first commit, with nothing
-                held back behind a paywall.
+                This is an experimental project by Anton Braverman, with
+                no stable release or production support commitment yet.
+                Bug reports, small fixes, and clearer examples are welcome.
+                The Gateway Baseline is a related comparison of attribution
+                features.
               </p>
             </div>
 
-            {/* No repository button while the repo is private: the page
-                closes on the standard it is measured against, which is
-                the one thing a reader can go and check today. */}
             <div className="mt-12 flex flex-wrap items-center gap-x-6 gap-y-4">
               <ButtonLink href={SITE_CONFIG.sisterUrl}>
                 {SITE_CONFIG.sisterName}

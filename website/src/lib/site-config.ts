@@ -9,9 +9,9 @@
 export const SITE_CONFIG = {
   name: "smallgateway",
   workingName: "smallgateway",
-  tagline: "Know who used the models",
+  tagline: "A deliberately small gateway",
   description:
-    "An experimental LLM gateway for token usage, caller attribution, and provider billing tags, with an optional control plane managed from Git.",
+    "A deliberately small, experimental gateway for LLM request forwarding, attribution, token metering, and token limits.",
   url: "https://smallgateway.vercel.app",
   repoUrl: "https://github.com/Lyqed/smallgateway",
   sisterUrl: "https://thegatewaybaseline.com",
@@ -29,5 +29,5 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { label: "Shape", href: "#shape" },
   { label: "Path", href: "#path" },
   { label: "Measured", href: "#measured" },
-  { label: "Terms", href: "#open" },
+  { label: "Project", href: "#open" },
 ] as const;

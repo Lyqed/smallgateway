@@ -64,15 +64,6 @@ These are local, single-team recipes. The team and application are assigned by t
 
 For streaming calls, request `stream_options.include_usage` where the endpoint supports it. Verify the terminal usage frame on your deployed model. For ordinary JSON calls, omit the streaming fields; the JSON tap reads the response's usage object. Missing usage stays unknown. Neither path produces an invoice charge.
 
-## The next billing experiment
+## Scope
 
-This is planned work, not an implemented importer:
-
-1. Capture requests for two teams with known project or deployment ownership and a defined UTC window.
-2. Obtain the provider's charges for that same scope. Keep currency, adjustments, credits, and idle capacity visible.
-3. Match at the narrowest supported level. For a shared GPU deployment, document how costs are allocated and keep unallocated amounts explicit.
-4. Reconcile the totals after the period closes. Publish the sample, matching rule, and remaining differences.
-
-A token-weighted split can allocate a known GPU bill, but it does not measure the actual compute cost of each call. Prefill, output generation, batching, and idle capacity can have different costs. For a dedicated team deployment, ownership may be enough to assign the whole charge. Both cases should retain the rule that produced the result.
-
-The repository currently provides the request path, token usage, and attribution. It does not yet import these providers' invoices or compute their dollar allocations.
+These recipes cover request forwarding, attribution, and token metering through the existing adapter. Importing invoices and allocating GPU costs are outside smallgateway's current scope. Use the provider's billing records and your own cost-reporting tools for that work.

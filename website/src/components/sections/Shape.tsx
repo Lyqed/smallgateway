@@ -28,11 +28,9 @@ export function Shape() {
             </h2>
           </div>
           <p className="max-w-2xl self-end leading-relaxed text-steel-dark">
-            Platform tools tend to grow until running them is its own job.
-            The budget here was fixed before the first line: one thing in
-            the request path, one thing beside it, and a Git repository
-            they both agree to obey. Anything that wanted to be a third
-            component had to justify itself against that, and nothing has.
+            Start with a gateway and a configuration file. The optional
+            control plane distributes configuration from Git when you have
+            several instances to manage.
           </p>
         </div>
 
@@ -68,10 +66,10 @@ export function Shape() {
 
         <Reveal>
           <p className="mt-12 max-w-3xl border-l-2 border-monarch pl-5 text-lg leading-relaxed text-ink">
-            The split is not architectural taste. It means the thing
-            carrying your traffic has nothing to phone home to, so an
-            outage in the half that manages config cannot become an outage
-            in the half that serves requests.
+            The standalone gateway needs no control plane. With fleet
+            management enabled, gateways retain their current configuration
+            if that connection drops. Shared token limits have separate
+            partition behavior, described in the deployment notes.
           </p>
         </Reveal>
       </div>

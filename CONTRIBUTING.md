@@ -4,6 +4,8 @@ Thanks for taking a look. A bug report, a clearer example, or a documentation co
 
 For a larger change, open an issue first so we can discuss the scope before you spend much time on it.
 
+The [current scope](docs/05-features.md) is forwarding, attribution, token metering, and token limits. Focus contributions on that request path. The optional control plane and deployment tools do not create a broader platform roadmap.
+
 ## Finding your way around
 
 The gateway code is in `crates/`, deployment examples are in `deploy/`, and the website is in `website/`. The [architecture notes](docs/02-architecture.md) explain how the pieces fit together.

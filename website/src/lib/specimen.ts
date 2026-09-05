@@ -33,21 +33,21 @@ export const HEADLINE_FIGURES: readonly Figure[] = [
     value: "0",
     label: "databases in the request path",
     source:
-      "Runtime state lives in memory and Git holds the truth. Nothing your traffic depends on can be down because a database is down.",
+      "The gateway keeps runtime state in memory and can read configuration from a local file. Its request path makes no database calls.",
     kind: "bounded",
   },
   {
     value: "~11μs",
     label: "cost of one sandboxed extension call",
     source:
-      "Measured on the WASM path, then used as a budget: per-event streaming hooks stay switched off because that cost times every token is not worth paying.",
+      "Measured on the WASM path in a local benchmark. Per-event streaming hooks are off by default. This is an extension measurement, not overall request latency.",
     kind: "measured",
   },
   {
     value: "17",
     label: "real transcripts behind the error bound",
     source:
-      "Recorded from live traffic rather than written by hand, because fixtures you author agree with you and traffic does not.",
+      "Recorded from live traffic and replayed to compare token estimates with provider-reported usage. A small sample, not a guarantee for every model.",
     kind: "measured",
   },
 ] as const;
@@ -65,18 +65,18 @@ export type ShapePiece = {
 export const SHAPE: readonly ShapePiece[] = [
   {
     index: "01",
-    name: "The data plane",
-    role: "Sits in the request path and does the work",
+    name: "gatewayd",
+    role: "The request proxy",
     detail:
-      "A proxy that reads every provider dialect into one internal event model, meters tokens as they stream, redacts on the way past, and stops a request when its budget is gone. It reads a file, it serves traffic. If the rest of this page disappeared it would keep doing that.",
+      "Forwards requests to model providers, resolves caller attribution, records token usage, and applies token limits. Supported adapters read streaming responses as they arrive. Run it with a local configuration file.",
     standalone: true,
   },
   {
     index: "02",
-    name: "The control plane",
-    role: "Sits beside the path and keeps the fleet honest",
+    name: "gatewayctl",
+    role: "Optional configuration management",
     detail:
-      "It compiles what is in Git into exactly what each data plane should be running, ships it, watches for divergence, and pulls anything that drifted back into line. It is the interesting half, and it is also the half you can decline.",
+      "Renders configuration from Git, distributes snapshots to gateway instances, and tracks which version each instance is running. This code is available when several gateways need shared configuration.",
     standalone: false,
   },
 ] as const;
@@ -93,27 +93,27 @@ export type PathStep = {
 export const PATH: readonly PathStep[] = [
   {
     index: "01",
-    title: "It arrives wearing a provider's clothes",
-    body: "Server-sent events from one vendor, a different event framing from another, raw binary frames with their own checksums from a third. Three shapes for one idea.",
-    holds: "No dialect gets a privileged path through the code",
+    title: "Read the provider response",
+    body: "Providers use different streaming formats, including server-sent events and binary event frames. The configured adapter parses the supported format.",
+    holds: "Support is checked per provider and request shape",
   },
   {
     index: "02",
-    title: "It becomes one internal shape",
-    body: "Adapters translate each dialect into a single event model. Replay the same response at chunk sizes of one byte, seven, sixty-four, or all at once, and the events that come out are identical.",
-    holds: "Chunk boundaries are an accident of the network, never of the meaning",
+    title: "Translate into internal events",
+    body: "Adapters expose content and usage through a shared event model. Replay tests check that splitting the same response into different network chunks produces the same events.",
+    holds: "Chunk boundaries should not change the parsed events",
   },
   {
     index: "03",
-    title: "It is counted while it moves",
-    body: "Tokens are tallied as they pass, then reconciled against the provider's own final count. Nothing is held back to be counted at the end, because holding it back would be the same as breaking streaming.",
-    holds: "The response is never buffered whole",
+    title: "Track usage while forwarding",
+    body: "Token estimates support live enforcement. A provider's final usage count replaces the estimate when available. Missing usage and interrupted responses have documented limits.",
+    holds: "Token usage is not a billed dollar amount",
   },
   {
     index: "04",
-    title: "It stops when the money runs out",
-    body: "A budget exhausted halfway through a generation ends that stream deliberately, with a terminal event the operator chose, in the dialect the caller is already speaking.",
-    holds: "A cut looks like an ending, never like a crash",
+    title: "Apply the token limit",
+    body: "An exhausted token allowance can end a stream with the operator's configured terminal event. The local estimate and any distributed allowance affect when that happens.",
+    holds: "Limits are measured in tokens",
   },
 ] as const;
 
@@ -130,60 +130,31 @@ export type Measured = {
  */
 export const MEASURED: readonly Measured[] = [
   {
-    claim: "Token estimates land within about half of the true count",
+    claim: "Token estimates were within about half of the reported count in most sample streams",
     method:
       "Seventeen recorded transcripts replayed against the provider's own reported usage.",
     caveat:
       "All but one stream. The misses are structural rather than random: tool-call scaffolding and very short responses are where the estimate is worst.",
   },
   {
-    claim: "Spending stays under the cap across a whole fleet",
+    claim: "Gateway instances can share a token allowance",
     method:
-      "Each gateway holds a share of the budget, and the shares provably sum to no more than the cap.",
+      "The control plane allocates token shares to gateways. Tests exercise enforcement and measure overshoot when a gateway loses its connection.",
     caveat:
-      "During a network partition, spend can exceed the cap by a bounded amount. The bound is published rather than hidden, because a system that claims a hard cap under partition is claiming something it cannot do.",
+      "Token usage can exceed the configured allowance during a network partition. The documented bound depends on the configuration. These are token limits, not dollar budgets.",
   },
   {
-    claim: "A bad extension cannot take the gateway down",
+    claim: "Extensions run with execution limits",
     method:
       "Extensions run sandboxed with no ambient access, on a fuel budget, interruptible mid-execution. They must be signed.",
     caveat:
-      "This is why per-event hooks are off. The safety costs about eleven microseconds each time, which is affordable once per request and indefensible once per token.",
+      "A local benchmark measured about eleven microseconds per call. Per-event hooks are off by default. Sandboxing does not establish that every extension or workload is safe.",
   },
   {
     claim: "The fleet's running config can be rebuilt from a commit",
     method:
       "Git is the source of truth, and every rollout is a rendered snapshot tied to the commit that produced it.",
     caveat:
-      "Break-glass exists for the night when Git is not the fastest way to fix production. It is visible, it expires on its own, and it is the exception that the design admits to.",
-  },
-] as const;
-
-export type OpenItem = {
-  name: string;
-  body: string;
-};
-
-/**
- * Not built, deliberately. Currently unrendered: the close of the page
- * is the terms alone. Kept because the list is accurate and the
- * decision to show it is a publishing call rather than a code one.
- */
-export const NOT_YET: readonly OpenItem[] = [
-  {
-    name: "Kubernetes-native deployment",
-    body: "Custom resources, an operator, a production chart. The control plane already talks to any data plane over its own protocol, so this is ergonomics rather than capability. It is next, and it is not claimed today.",
-  },
-  {
-    name: "A public repository",
-    body: "The code is private for now. That is a judgment call about timing, not a permanent condition, and it is the thing standing between this page and a reader who wants to check it.",
-  },
-  {
-    name: "Durable spend counters",
-    body: "Counters live in memory. Making them survive a restart means putting a database somewhere near the request path, and that trade has not earned itself yet.",
-  },
-  {
-    name: "Identity from a verified login",
-    body: "Written and working, switched off. It ships when the login story around it is worth turning on, and not on the day it merely compiles.",
+      "Temporary overrides can differ from Git until they expire. This describes configuration history, not a durable record of every request.",
   },
 ] as const;

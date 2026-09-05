@@ -1,35 +1,31 @@
 # Design principles
 
-These are the working preferences behind smallgateway. They can change when the code or operating experience gives us a reason.
+Smallgateway is deliberately small. These preferences guide current work; earlier plans do not commit the project to additional features.
 
-## Keep the basic setup small
+## One useful request path
 
-The data plane should run on its own with a configuration file. The optional control plane manages configuration across instances. Git holds the desired configuration.
+Concentrate on forwarding, attribution, token metering, and token limits. Correctness, clear configuration, and useful failure messages come before new features.
 
-This makes it possible to try the gateway without first setting up a fleet-management system.
+Provider billing tags belong here because they must be attached before a request reaches the provider. Importing invoices and allocating their costs are outside the current scope.
 
-## Add things when there is a reason
+## Start with a file
 
-A dependency, service, or protocol adds work for the people maintaining it. Before introducing one, describe the problem it solves and the simpler options considered.
+The gateway should work with one local configuration file. Git-based configuration distribution is optional. Existing operator and extension code can be used for experiments without becoming prerequisites for the basic setup.
 
-An existing gateway may already fit a team's needs. Building this project does not make it the right choice for every deployment.
+## Grow when a concrete use needs it
 
-## Make changes traceable
+A new feature should solve a reproducible problem for this request path. Prefer a small change to an existing adapter or policy over a new service, protocol, or subsystem.
 
-Configuration changes should be attributable and reversible. Rollout records should let an operator work out which configuration an instance received.
+Another project's feature list is not a backlog.
 
-Emergency overrides need an expiry and an audit trail. A rollback should be a documented operation, not something the operator has to invent during an incident.
+## Make failures understandable
 
-## Describe the limits
+Document what happens when usage is missing, a stream ends early, a limit is reached, or configuration changes. Tests should exercise those cases.
 
-Streaming, distributed budgets, and configuration updates have failure cases. Document the behavior during partial failures, including stale configuration and possible overspend.
+Keep caller assertions distinguishable from operator assignments and verified claims. Preserve the difference between an estimated token count, provider-reported usage, and billed money.
 
-Tests should exercise those limits. If a claim only holds in a local test or a particular setup, say so.
+## Keep claims close to evidence
 
-## Reuse the ordinary parts
+A mock test demonstrates local behavior. It does not establish live provider compatibility or invoice coverage.
 
-Use existing libraries for HTTP, TLS, and other routine infrastructure where they fit. Spend project effort on the gateway behavior being explored: attribution, metering, configuration, and fleet management.
-
-## Use comparisons as references
-
-The Gateway Baseline helps describe cost-attribution requirements. Its definitions and comparison rows may change. A claim about this project's behavior should point to code, tests, and the conditions under which it was checked.
+The Gateway Baseline is a related comparison, not a certification or a requirement to expand this project. Link claims to the code, tests, and conditions under which they hold.

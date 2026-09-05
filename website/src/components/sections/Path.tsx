@@ -28,10 +28,9 @@ export function Path() {
             </h2>
           </div>
           <p className="max-w-2xl self-end leading-relaxed text-steel-dark">
-            Streaming is where gateways quietly give up. Counting is easier
-            once the whole response has arrived, so a lot of tooling waits,
-            and waiting is indistinguishable from being slow. Everything
-            below happens while the bytes are still moving.
+            For supported streaming responses, the gateway reads usage
+            while forwarding bytes to the caller. Token estimates help
+            enforce limits before a provider sends its final usage count.
           </p>
         </div>
 
