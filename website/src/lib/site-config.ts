@@ -1,14 +1,14 @@
 /**
  * Single source of truth for site-wide constants.
- * Site for Open Source Gateway, a small experimental gateway project.
+ * Site for smallgateway, a small experimental gateway project.
  *
  * Temperament: the specimen sheet. The product's argument is that it is
  * small enough to read end to end, so the site is built to be read the
  * same way: numbered, precise, and full of values you can go check.
  */
 export const SITE_CONFIG = {
-  name: "Open Source Gateway",
-  workingName: "Open Source Gateway",
+  name: "smallgateway",
+  workingName: "smallgateway",
   tagline: "Small enough to read end to end",
   description:
     "An LLM gateway you can read in an afternoon. Two binaries and a Git repository, no database in the request path, and every number on this page measured rather than claimed.",

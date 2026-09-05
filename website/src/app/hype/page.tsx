@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { SITE_CONFIG } from "@/lib/site-config";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { Astronaut } from "@/components/art/Astronaut";
@@ -99,14 +100,14 @@ export default function HypePage() {
       {/* Footer strip: quiet, on the machined base. */}
       <footer className="relative z-20 flex items-center justify-between px-6 pb-6 sm:px-10">
         <p className="voice-mono text-xs text-steel-dark">
-          Open source. Built in public.
+          smallgateway. An experimental project.
         </p>
-        <a
+        <Link
           href="/"
           className="voice-mono text-xs text-skylight-deep underline decoration-steel underline-offset-4 hover:text-monarch-deep"
         >
           See the full build →
-        </a>
+        </Link>
       </footer>
     </main>
   );

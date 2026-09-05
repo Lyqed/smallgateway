@@ -123,10 +123,8 @@ overspend bound under partition is measured and documented, not estimated.
 
 ## Named risks, carried openly
 
-- **The name.** "Open Source Gateway" collides hard with Kubernetes Gateway
-  API mindshare — it will be misread in exactly the community we are
-  recruiting from. Renaming is cheap until the repo is public; the decision is
-  deferred but the deadline is Phase 1's tracker row.
+- **The name.** The project is now called smallgateway. The gateway code and
+  website share one repository; the site remains at opensourcegateway.com.
 - **WASM on the hot path.** Per-event hooks on streaming paths need real
   performance validation before we promise them. That is why they sit in
   Phase 4, behind a spike, not in the pitch.

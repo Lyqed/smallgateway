@@ -60,11 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-[INSERT CONTACT METHOD].
-
-> Placeholder: a real reporting contact (a monitored email address or an
-> equivalent private channel) must be filled in here before this project goes
-> public. Do not launch with the bracket unresolved.
+[hello@itslyqed.com](mailto:hello@itslyqed.com).
 
 All complaints will be reviewed and investigated promptly and fairly.
 

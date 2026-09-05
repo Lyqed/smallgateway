@@ -1,81 +1,54 @@
-# Open Source Gateway
+# smallgateway
 
-[Website](https://opensourcegateway.com) · [Gateway Baseline](https://thegatewaybaseline.com) · [Documentation](docs/10-getting-started.md) · [Contributing](CONTRIBUTING.md)
+A small gateway for LLM traffic, with an optional control plane for managing several instances from Git. An experimental project by Anton Braverman.
 
-Open Source Gateway is an experimental LLM gateway and fleet control plane for platform teams that need attribution, spending controls, provider-native traffic, and Git-managed configuration.
+[Website](https://opensourcegateway.com) · [Getting started](docs/10-getting-started.md) · [Contributing](CONTRIBUTING.md)
 
-The repository contains two runnable components:
+## What it does
 
-- `gatewayd`, the data plane. It proxies provider-native requests, applies policy, meters streaming responses, and exports telemetry.
-- `gatewayctl`, the control plane. It renders versioned configuration from Git and reconciles that configuration across a gateway fleet.
+`gatewayd` sits between an application and its model provider. It forwards requests, tracks usage, attaches attribution labels, and applies spending limits.
 
-The data plane can run by itself from a local file. The control plane is optional.
+`gatewayctl` reads configuration from Git and rolls it out to gateway instances. You can also run `gatewayd` on its own with a local configuration file.
 
-> **Project status:** active development, pre-1.0. The implementation and test suite are public, but there is no published stable release or production support commitment yet. Interfaces may change.
+The repository includes provider adapters, streaming tests, a Kubernetes operator, and deployment examples. It is still experimental. There is no stable release or production support commitment yet.
 
-## What is implemented
-
-| Area | Current implementation |
-| --- | --- |
-| Provider traffic | OpenAI, Anthropic, Bedrock, and Vertex adapters |
-| Attribution | Required labels, operator-pinned values, and optional verified JWT claims |
-| Cost controls | Token budgets, alerts, and deliberate mid-stream termination |
-| Configuration | Static files, atomic reloads, versioned snapshots, and ACK/NACK handling |
-| Fleet operations | Git-backed reconciliation, drift reporting, waves, and canary evaluation |
-| Extensions | Signed WASM modules with execution bounds |
-| Deployment | Containers, Helm, an `LLMGateway` CRD, and Argo CD and Flux examples |
-
-These are implementation claims, not a production-readiness claim. The tests exercise the contracts in this repository. They do not establish suitability for a particular environment.
-
-## Quick start
-
-The shortest complete path is the [getting-started guide](docs/10-getting-started.md). For local development:
+## Try it locally
 
 ```sh
 git clone https://github.com/Lyqed/smallgateway.git
-cd opensourcegateway
+cd smallgateway
 cargo test --workspace
-```
-
-Run the standalone data plane with a configuration file:
-
-```sh
 cargo run -p gatewayd -- --config crates/gatewayd/demo/gateway.yaml
 ```
 
-The Kubernetes path, including local image builds and the Helm chart, is in [deploy/README.md](deploy/README.md).
+The demo needs an upstream service. See the [getting-started guide](docs/10-getting-started.md) for a complete setup and [deployment notes](deploy/README.md) for Kubernetes.
 
-## Architecture
+## In this repository
 
-```text
-applications
-    |
-    v
-gatewayd  ---> provider APIs
-    ^
-    | versioned snapshots
-    |
-gatewayctl <--- Git
+| Path | Contents |
+| --- | --- |
+| `crates/gatewayd` | Request proxy |
+| `crates/gatewayctl` | Configuration and fleet management |
+| `crates/gateway-core` | Provider adapters, policy, metering, and attribution |
+| `crates/gateway-proto` | Configuration distribution protocol |
+| `crates/gateway-wasm` | Extension runtime |
+| `deploy` | Operator, Helm chart, containers, and deployment examples |
+| `website` | The Next.js site at opensourcegateway.com |
+| `docs` | Design notes and guides |
+| `spikes` | Earlier experiments |
+| `upstream` | Work prepared for related projects |
+
+## Website
+
+```sh
+cd website
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-`gatewayd` stays in the request path. `gatewayctl` stays outside it. A control plane outage therefore does not require a data-plane outage, although stale configuration remains an operational risk and is reported explicitly.
+Run `pnpm build` in that directory to build the site. A deployment from the combined repository should use `website/` as its root directory.
 
-The design is documented in [principles](docs/00-principles.md), [architecture](docs/02-architecture.md), [the build plan](docs/04-build-plan.md), [feature status](docs/05-features.md), [the control plane](docs/07-control-plane.md), [live cloud integration](docs/09-live-cloud.md), [HTTP fidelity](docs/11-http-fidelity.md), and the [rejection contract](docs/13-rejection-contract.md).
-
-## Repository layout
-
-| Path | Purpose |
-| --- | --- |
-| `crates/gatewayd` | Data-plane binary |
-| `crates/gatewayctl` | Fleet control-plane binary |
-| `crates/gateway-core` | Configuration, policy, adapters, metering, and attribution |
-| `crates/gateway-proto` | Fleet distribution protocol |
-| `crates/gateway-wasm` | Sandboxed extension host |
-| `deploy` | Operator, chart, images, and GitOps examples |
-| `spikes` | Frozen experiments that informed the current design |
-| `upstream` | Contributions prepared for related open-source projects |
-
-## Verification
+## Development checks
 
 ```sh
 cargo fmt --all --check
@@ -84,11 +57,17 @@ cargo test --workspace
 (cd deploy/operator && go test ./...)
 ```
 
-CI runs the same Rust and Go checks on every pull request and push to `main`.
+These are local checks. Passing them does not establish how the gateway will behave in your environment.
 
-## Contributing and security
+## Design notes
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. For usage questions, see [SUPPORT.md](SUPPORT.md). Please report security issues through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md).
+Start with the [design principles](docs/00-principles.md), [architecture](docs/02-architecture.md), and [control plane](docs/07-control-plane.md). The [build plan](docs/04-build-plan.md) records the original sequence of work; some notes describe plans rather than current behavior.
+
+[The Gateway Baseline](https://thegatewaybaseline.com) is a related comparison of cost-attribution features. It is a useful reference for this work, not a certification.
+
+## Contributions
+
+Small fixes, failing examples, and clearer documentation are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). For a security concern, contact [hello@itslyqed.com](mailto:hello@itslyqed.com) privately.
 
 ## License
 

@@ -37,8 +37,8 @@ export const metadata: Metadata = {
   // truncated to noise in a narrow tab and repeats what the page says
   // in its first line anyway.
   title: {
-    default: "Open Source Gateway",
-    template: `%s · Open Source Gateway`,
+    default: SITE_CONFIG.name,
+    template: `%s · ${SITE_CONFIG.name}`,
   },
   description: SITE_CONFIG.description,
   keywords: [

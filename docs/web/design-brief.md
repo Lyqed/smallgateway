@@ -1,5 +1,10 @@
 # Design brief — thegatewaybaseline.com & theopensourcegateway.com
 
+Historical design brief. The project is now smallgateway, with its website
+at opensourcegateway.com and source under website/ in the combined repository.
+For the current framing, see website/docs/DESIGN.md. Earlier brand names and
+ownership language below have been superseded.
+
 *The binding art direction for both sites. Derived from one photograph: the
 Astra launch-site atrium — a rocket standing in a white circular gallery,
 hard skylight geometry on brushed metal, and hand-painted murals bleeding

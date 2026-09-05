@@ -31,10 +31,6 @@ export function SiteHeader() {
                 </a>
               </li>
             ))}
-            {/* Clickable while the repository is private, but it
-                reloads rather than navigates: browsers restore scroll
-                position across a reload, so the reader stays put. See
-                RepoLink for why href="/" and href="#" both move them. */}
             <li>
               <RepoLink className="inline-block py-1.5 text-ink underline decoration-monarch decoration-2 underline-offset-4 transition-[text-decoration-thickness] duration-150 hover:decoration-[3px]" />
             </li>

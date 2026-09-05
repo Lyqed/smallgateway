@@ -1,5 +1,3 @@
-import { HandCircle } from "@/components/art/marks";
-import { Wordmark } from "@/components/art/Wordmark";
 import { Reveal } from "@/components/reveal/Reveal";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { SITE_CONFIG } from "@/lib/site-config";
@@ -12,25 +10,18 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 /**
- * The masthead reads as the header of a specimen sheet rather than a
- * landing hero: the claim, then immediately four figures with their
- * provenance. Nothing here asks for a signup. The only thing circled by
- * hand is the phrase the whole project is staked on.
+ * Project name and status, followed by the figures and their sources.
  */
 export function Masthead() {
   return (
     <header className="relative overflow-x-clip border-b border-steel">
       <div className="mx-auto w-full max-w-[80rem] px-5 pb-16 pt-14 sm:px-8 sm:pb-24 sm:pt-20">
-        <div className="mb-12 sm:mb-16">
-          <Wordmark className="w-11 sm:w-14" />
-        </div>
-
         <div className="inline-flex items-center gap-2 border border-monarch/50 bg-monarch/10 px-3 py-1.5 voice-mono text-[0.65rem] uppercase tracking-[0.18em] text-monarch">
           <span aria-hidden className="size-1.5 rounded-full bg-monarch" />
           Experimental release
         </div>
         <h1 className="voice-display mt-5 max-w-[16ch] text-[length:var(--text-hero)] leading-[0.94]">
-          Open Source Gateway
+          {SITE_CONFIG.name}
         </h1>
 
         <div className="mt-10 grid gap-x-12 gap-y-6 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">

@@ -1,5 +1,13 @@
 # Design brief — thegatewaybaseline.com & opensourcegateway.com
 
+Current framing (5 September 2026): the project is smallgateway. Use that
+name in the header, headline, page title, and share image. The header carries
+the only icon at the top of the page. Put experimental status in a separate
+badge. Keep descriptions concrete and conversational.
+
+The brief below records earlier design directions. Its older names and
+ownership language have been superseded.
+
 *The binding art direction for both sites. Derived from one photograph: the
 Astra launch-site atrium — a rocket standing in a white circular gallery,
 hard skylight geometry on brushed metal, and hand-painted murals bleeding
