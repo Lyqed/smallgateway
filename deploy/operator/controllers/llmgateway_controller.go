@@ -238,7 +238,7 @@ func (r *Reconciler) ensureRepoConfigMap(ctx context.Context, gw *gwv1.LLMGatewa
 		if cm.Annotations == nil {
 			cm.Annotations = map[string]string{}
 		}
-		cm.Annotations["gateway.opensourcegateway.com/config-hash"] = res.Hash
+		cm.Annotations["gateway.smallgateway.vercel.app/config-hash"] = res.Hash
 		// Repo fragments become ConfigMap keys with '/' flattened to '__' (a
 		// ConfigMap key cannot contain '/'); the init step reconstructs the
 		// directory tree into the gatewayctl --repo mount. See the gatewayctl
@@ -273,7 +273,7 @@ func (r *Reconciler) ensureControlPlane(ctx context.Context, gw *gwv1.LLMGateway
 			dep.Spec.Template.Annotations = map[string]string{}
 		}
 		// Roll the control plane when the rendered config changes.
-		dep.Spec.Template.Annotations["gateway.opensourcegateway.com/config-hash"] = configHash
+		dep.Spec.Template.Annotations["gateway.smallgateway.vercel.app/config-hash"] = configHash
 
 		dep.Spec.Template.Spec.Volumes = []corev1.Volume{
 			{Name: "repo-src", VolumeSource: corev1.VolumeSource{

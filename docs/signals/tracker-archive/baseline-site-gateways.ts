@@ -59,7 +59,7 @@ export const GATEWAYS: readonly GatewayRow[] = [
     id: "the-gateway-baseline",
     name: "The Open Source Gateway",
     kind: "reference",
-    url: "https://opensourcegateway.com",
+    url: "https://smallgateway.vercel.app",
     ours: true,
     lastVerified: "2026-08-03",
     cells: {

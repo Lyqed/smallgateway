@@ -54,7 +54,7 @@ auth:
   jwt:
     hs256_secret: conformance-secret
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'
@@ -278,7 +278,7 @@ fn gb4_scoped_rejection_template_overrides_down_the_chain() {
             concat!(
                 "  - prefix: /openai\n    provider: openai-main\n",
                 "    rejections:\n",
-                "      missing_attribution:\n",
+                "      default_response:\n",
                 "        status: 451\n",
                 "        content_type: text/plain\n",
                 "        body: 'route scope says: {{key}} required'",
@@ -325,7 +325,7 @@ auth:
   jwt:
     hs256_secret: conformance-secret
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'
@@ -449,7 +449,7 @@ auth:
   jwt:
     hs256_secret: conformance-secret
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'
@@ -652,7 +652,7 @@ apps:
       attribution:
         pinned: {{ cost: app-cost }}
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"attribution_required","missing":"{{{{key}}}}"}}'
@@ -723,7 +723,7 @@ auth:
   jwt:
     hs256_secret: conformance-secret
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'
@@ -873,7 +873,7 @@ routes:
       - key: team
         from_attribution: team
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"attribution_required","missing":"{{{{key}}}}","route":"{{{{route}}}}"}}'

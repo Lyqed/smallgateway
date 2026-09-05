@@ -20,7 +20,7 @@ routes:
       headers: { team: x-attr-team }
       pinned: { env: prod }
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"missing {{key}} on {{route}}"}'

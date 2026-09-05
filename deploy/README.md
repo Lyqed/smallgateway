@@ -1,4 +1,7 @@
-# Deploying Open Source Gateway on Kubernetes
+# Deploying smallgateway on Kubernetes
+
+Existing installation? Chart 0.2.0 changes the Kubernetes API group. Read the
+[migration notes](../docs/14-naming-migration.md) before upgrading.
 
 Kubernetes is the primary deployment target. This directory makes the k8s path
 first-class: a `LLMGateway` CRD, an operator that reconciles it into a running
@@ -65,7 +68,7 @@ kubectl run c --rm -i --restart=Never --image=curlimages/curl -n gateway-system 
 
 ## The LLMGateway CRD
 
-Group/version: `gateway.opensourcegateway.com/v1alpha1`, kind `LLMGateway`
+Group/version: `gateway.smallgateway.vercel.app/v1alpha1`, kind `LLMGateway`
 (shortname `llmgw`). This is a **one-way-door public API**, kept conservative:
 `v1alpha1`, a status subresource, and a spec that maps 1:1 onto the existing
 gateway config model — it does not invent a parallel policy model.
@@ -86,7 +89,7 @@ distribute.
 | `spec.fleet.attribution.pinned`   | GB-3     | `fleet/base.chain.yaml` → `attribution.pinned` |
 | `spec.projects.<p>.attribution`   | —        | `projects/<p>/base.chain.yaml`                |
 | `spec.routes[]`                   | —        | `routes/<name>.route.yaml` (one per route)    |
-| `spec.rejections.missingAttribution` / `unknownRoute` | GB-4 | `rejections.yaml` (operator-owned bodies) |
+| `spec.rejections.defaultResponse` / `unknownRoute` | GB-4 | `rejections.yaml` (operator-owned bodies) |
 | `spec.spendCaps.caps[]`           | GB-5     | `fleet/base.chain.yaml` → `attribution.spend_caps` (token ceilings + window + alertAt) |
 | `spec.controlPlane`               | —        | gatewayctl Deployment topology                |
 | `spec.dataPlanes`                 | —        | gatewayd Deployment topology (replicas, labels, port) |

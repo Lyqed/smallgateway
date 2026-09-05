@@ -190,7 +190,7 @@ mod tests {
             labels: Vec::new(),
             spend_caps: std::collections::BTreeMap::new(),
             models: None,
-            missing_attribution: template(),
+            default_response: template(),
             unknown_route: template(),
             model_not_allowed: template(),
             value_not_allowed: None,

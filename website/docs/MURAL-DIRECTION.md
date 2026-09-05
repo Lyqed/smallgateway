@@ -1,6 +1,6 @@
 # Mural direction — maximal / anarchist
 
-The opensourcegateway site (community site only, not the baseline) leans hard
+The smallgateway site (community site only, not the baseline) leans hard
 into the mural side of the design. This is the loud half of "machined precision
 x hand-painted humanity": the engineering layer (spec, build status, the event
 stream, the numbers) stays present and readable, but color and hand-art

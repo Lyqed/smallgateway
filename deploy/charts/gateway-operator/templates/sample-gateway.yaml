@@ -4,7 +4,7 @@
 # plane + gatewayd data plane(s), enforcing GB-1 attribution and metering. The
 # providers point at an in-cluster mock (gateway-mock) reachable cross-pod
 # because mock_upstream is run with `--bind 0.0.0.0` (see deploy/samples/mock.yaml).
-apiVersion: gateway.opensourcegateway.com/v1alpha1
+apiVersion: gateway.smallgateway.vercel.app/v1alpha1
 kind: LLMGateway
 metadata:
   name: {{ .Values.sampleGateway.name }}
@@ -32,7 +32,7 @@ spec:
   # GB-4: operator-owned rejection bodies. Placeholders {{ "{{key}}" }} / {{ "{{route}}" }}
   # are rendered by the data plane at rejection time.
   rejections:
-    missingAttribution:
+    defaultResponse:
       status: 428
       contentType: application/json
       body: '{"error":"attribution_required","missing":"{{ "{{key}}" }}","route":"{{ "{{route}}" }}"}'

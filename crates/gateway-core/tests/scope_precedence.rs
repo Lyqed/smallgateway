@@ -48,7 +48,7 @@ apps:
         required_keys: @app_required@
         pinned: { cost: app-cost }
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"missing {{key}} on {{route}}"}'
@@ -169,7 +169,7 @@ fn rejection_templates_override_per_reason_down_the_chain() {
             "projects:\n  ml:\n    attribution:",
             concat!(
                 "projects:\n  ml:\n    rejections:\n",
-                "      missing_attribution:\n",
+                "      default_response:\n",
                 "        status: 451\n",
                 "        content_type: text/plain\n",
                 "        body: 'project says no: {{key}}'\n",
@@ -180,7 +180,7 @@ fn rejection_templates_override_per_reason_down_the_chain() {
             "      attribution:\n        required_keys: []\n        pinned: { cost: app-cost }",
             concat!(
                 "      rejections:\n",
-                "        missing_attribution:\n",
+                "        default_response:\n",
                 "          status: 452\n",
                 "          content_type: text/plain\n",
                 "          body: 'app says no: {{key}}'\n",
@@ -192,12 +192,12 @@ fn rejection_templates_override_per_reason_down_the_chain() {
     let cfg = Config::from_yaml(&yaml).unwrap();
     let p = cfg.routes[0].policy();
     // Project override applies to the route chain...
-    assert_eq!(p.missing_attribution.status, 451);
+    assert_eq!(p.default_response.status, 451);
     // ...the other reason still comes from fleet scope.
     assert_eq!(p.unknown_route.status, 404);
     // The app layer overrides again.
     let app = cfg.routes[0].app_policy("ml-research").unwrap();
-    assert_eq!(app.missing_attribution.status, 452);
+    assert_eq!(app.default_response.status, 452);
     assert_eq!(app.unknown_route.status, 404);
 }
 

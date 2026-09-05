@@ -90,7 +90,7 @@ guest sees:
 
 Decisions map onto primitives that already exist (reused, not parallel):
 `Continue`, `MutateHeaders`, `Reject` (→ the operator's GB-4
-`missing_attribution` template), `CutStream` (→ the GB-4 streaming terminal
+`default_response` template), `CutStream` (→ the GB-4 streaming terminal
 event, the same machinery GB-5 mid-stream enforcement uses).
 
 Fixtures are `.wat` (loaded via wasmtime's `wat` feature — no external

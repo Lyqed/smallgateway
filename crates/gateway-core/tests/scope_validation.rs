@@ -26,7 +26,7 @@ routes:
       headers: { team: x-attr-team }
       pinned: { env: prod }
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"missing {{key}} on {{route}}"}'
@@ -637,7 +637,7 @@ fn dedicated_refusal_templates_compose_and_absent_means_fallback() {
     assert_eq!(policy.cap_exceeded.as_ref().unwrap().status, 429);
 
     // Absent, both stay None: the enforcement sites fall back to
-    // missing_attribution (exercised end-to-end in conformance).
+    // default_response (exercised end-to-end in conformance).
     let plain = Config::from_yaml(&base_yaml()).unwrap();
     let policy = plain.routes[0].policy();
     assert!(policy.value_not_allowed.is_none());

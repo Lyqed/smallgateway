@@ -1,5 +1,5 @@
 // Package v1alpha1 is the Go type surface for the LLMGateway CRD
-// (gateway.opensourcegateway.com/v1alpha1). The fields mirror the CRD's
+// (gateway.smallgateway.vercel.app/v1alpha1). The fields mirror the CRD's
 // openAPIV3Schema 1:1; they map onto the existing gateway-core config model,
 // never a parallel one. See deploy/crds/llmgateway.yaml for the authoritative
 // schema and deploy/README.md for the field reference.
@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	GroupName = "gateway.opensourcegateway.com"
+	GroupName = "gateway.smallgateway.vercel.app"
 	Version   = "v1alpha1"
 )
 
@@ -49,17 +49,17 @@ type LLMGatewayList struct {
 // LLMGatewaySpec is the desired gateway. Every field renders into a fragment
 // of the existing gatewayctl config-repo layout.
 type LLMGatewaySpec struct {
-	Providers    map[string]Provider `json:"providers"`
-	Fleet        *Scope              `json:"fleet,omitempty"`
-	Routes       []Route             `json:"routes"`
-	Projects     map[string]Scope    `json:"projects,omitempty"`
-	Rejections   *Rejections         `json:"rejections,omitempty"`
-	SpendCaps    *SpendCaps          `json:"spendCaps,omitempty"`
+	Providers  map[string]Provider `json:"providers"`
+	Fleet      *Scope              `json:"fleet,omitempty"`
+	Routes     []Route             `json:"routes"`
+	Projects   map[string]Scope    `json:"projects,omitempty"`
+	Rejections *Rejections         `json:"rejections,omitempty"`
+	SpendCaps  *SpendCaps          `json:"spendCaps,omitempty"`
 	// GB-2 JWT auth is deliberately NOT in v1alpha1 — it is project-deferred
 	// (see README "Follow-ups"). No auth field is exposed so a CR cannot claim
 	// JWT enforcement the operator does not implement.
 	ControlPlane *ControlPlaneSpec `json:"controlPlane,omitempty"`
-	DataPlanes   *DataPlanesSpec     `json:"dataPlanes,omitempty"`
+	DataPlanes   *DataPlanesSpec   `json:"dataPlanes,omitempty"`
 	// GatewayClassName, if set, claims a standard gateway.networking.k8s.io
 	// GatewayClass (the standards path adapter). See README "Gateway API".
 	GatewayClassName string `json:"gatewayClassName,omitempty"`
@@ -109,8 +109,9 @@ type Route struct {
 
 // Rejections holds GB-4 operator-owned rejection bodies.
 type Rejections struct {
-	MissingAttribution *RejectionTemplate `json:"missingAttribution,omitempty"`
-	UnknownRoute       *RejectionTemplate `json:"unknownRoute,omitempty"`
+	// DefaultResponse handles attribution failures and refusals without a dedicated template.
+	DefaultResponse *RejectionTemplate `json:"defaultResponse,omitempty"`
+	UnknownRoute    *RejectionTemplate `json:"unknownRoute,omitempty"`
 }
 
 // RejectionTemplate is one rejection body.

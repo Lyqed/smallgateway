@@ -13,7 +13,7 @@ routes:
   - prefix: /openai
     provider: this-provider-does-not-exist
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required"}'

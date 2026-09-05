@@ -115,7 +115,7 @@ auth:
 # event emitted when an in-flight stream is cut (type validated now; the
 # mid-stream cut wires in a later phase).
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","hint":"send the operator-named attribution headers (this demo: x-attr-team)"}'

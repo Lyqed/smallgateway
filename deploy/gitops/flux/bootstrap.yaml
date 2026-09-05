@@ -18,7 +18,7 @@
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
-  name: opensourcegateway
+  name: smallgateway
   namespace: flux-system
 spec:
   interval: 1m
@@ -39,7 +39,7 @@ spec:
   prune: true
   sourceRef:
     kind: GitRepository
-    name: opensourcegateway
+    name: smallgateway
   # Surface the operator HelmRelease's own readiness, so gateway-demo's
   # dependsOn actually waits for the operator to be healthy, not merely applied.
   healthChecks:
@@ -61,7 +61,7 @@ spec:
   prune: true
   sourceRef:
     kind: GitRepository
-    name: opensourcegateway
+    name: smallgateway
   # The hard ordering constraint: wait for the operator (and its CRD) to be
   # healthy before applying any LLMGateway.
   dependsOn:
@@ -70,7 +70,7 @@ spec:
   # Report the LLMGateway's own Ready condition up to Flux, so
   # `flux get kustomizations` reflects real gateway health.
   healthChecks:
-    - apiVersion: gateway.opensourcegateway.com/v1alpha1
+    - apiVersion: gateway.smallgateway.vercel.app/v1alpha1
       kind: LLMGateway
       name: demo
       namespace: gateway-system

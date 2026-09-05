@@ -135,7 +135,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(text, "Open Source Gateway keeps truth in Git.");
+        assert_eq!(text, "The Gateway Project keeps truth in Git.");
 
         // Terminal usage frame precedes MessageEnd; the meter reconciles.
         let last_usage = events

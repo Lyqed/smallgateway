@@ -1,4 +1,4 @@
-# Design brief — thegatewaybaseline.com & opensourcegateway.com
+# Design brief — thegatewaybaseline.com & smallgateway.vercel.app
 
 Current framing (5 September 2026): the project is smallgateway. Use that
 name at smallgateway.vercel.app, the primary site address. Use the same
@@ -228,7 +228,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
    atrium white this time, centered mono: "Someone is told when a cap is
    hit." No dot (it was spent in 3b), no other content.
 6. **Reference implementation** — one restrained cross-link band: "A
-   community gateway is being built against this bar" → opensourcegateway.com
+   community gateway is being built against this bar" → smallgateway.vercel.app
    (+ github.com/Lyqed/smallgateway).
 7. **Footer** — polished floor: dark band, mono small print, sister-site
    link, "Verified cells, not marketing pages" as the standing line.
@@ -236,7 +236,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
 `site-config`: name "The Gateway Baseline", url https://thegatewaybaseline.com,
 contact antonbraverman1@gmail.com (the tracker's correction address).
 
-## 8. Site B — opensourcegateway.com
+## 8. Site B — smallgateway.vercel.app
 
 **Brand headline: "Open Source Gateway" (the project's working name,
 "Open Source Gateway", appears in copy; final naming is an open decision —
@@ -285,7 +285,7 @@ Single page, anchored nav (`Principles · Architecture · Build · Contribute`):
 7. **Footer** — polished floor, sister link to the Baseline, repo link.
 
 `site-config`: name "Open Source Gateway", url
-https://opensourcegateway.com.
+https://smallgateway.vercel.app.
 
 ## 9. What both sites must NOT be
 

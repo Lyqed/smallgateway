@@ -17,7 +17,7 @@ routes:
       pinned: { env: canary }
 
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     # ERROR 2: {{keys}} is not a known placeholder ({{key}} is).

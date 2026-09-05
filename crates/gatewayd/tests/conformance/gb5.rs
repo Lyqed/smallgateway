@@ -31,7 +31,7 @@ routes:
   - prefix: /openai
     provider: openai-main
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"budget_or_attribution","key":"{{{{key}}}}","cap":"{{{{cap}}}}","spend":"{{{{spend}}}}"}}'
@@ -110,7 +110,7 @@ fn gb5_cap_refusal_and_cut_wear_the_dedicated_cap_exceeded_voice() {
             // template (429, its own body, its own streaming event). Both the
             // mid-stream cut and the admission refusal must speak with it —
             // and a plain missing-key refusal must still speak
-            // missing_attribution, proving the templates stay separate.
+            // default_response, proving the templates stay separate.
             let _mock = spawn_mock(p[0], &spike_fixture("openai.sse"), "openai", false);
             let cfg = budget_cfg(p[0], 3)
                 + concat!(
@@ -125,7 +125,7 @@ fn gb5_cap_refusal_and_cut_wear_the_dedicated_cap_exceeded_voice() {
             let _gw = spawn_gatewayd(&cfg, p[1], "gb5v");
 
             // First stream crosses the cap mid-generation: cut with the
-            // DEDICATED terminal event, not missing_attribution's.
+            // DEDICATED terminal event, not default_response's.
             let first = http(
                 p[1],
                 "POST",
@@ -152,7 +152,7 @@ fn gb5_cap_refusal_and_cut_wear_the_dedicated_cap_exceeded_voice() {
             assert!(body.contains("token_budget_exhausted"), "{body}");
             assert!(body.contains(r#""cap":"3""#), "cap named: {body}");
 
-            // A missing attribution key still speaks missing_attribution.
+            // A missing attribution key still speaks default_response.
             let missing = http(p[1], "POST", "/openai/v1/chat", &[], b"{}");
             assert_eq!(missing.status, 428);
             assert!(missing.body_text().contains("budget_or_attribution"));
@@ -310,7 +310,7 @@ routes:
           event: route-cap
           data: '{{"error":"route_cut","who":"{{{{key}}}}"}}'
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"no_attr","key":"{{{{key}}}}"}}'

@@ -55,7 +55,7 @@ func main() {
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "gateway-operator.opensourcegateway.io",
+		LeaderElectionID:       "gateway-operator.smallgateway.vercel.app",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

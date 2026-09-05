@@ -439,7 +439,7 @@ pub mod testrepo {
         std::fs::write(
             root.join("rejections.yaml"),
             concat!(
-                "missing_attribution:\n",
+                "default_response:\n",
                 "  status: 428\n",
                 "  content_type: application/json\n",
                 "  body: '{\"error\":\"missing {{key}} on {{route}}\"}'\n",

@@ -371,8 +371,8 @@ pub struct ReqCtx {
     /// bind time so a mid-stream cut speaks with the scoped template —
     /// route and app overrides apply to cuts exactly as they do to
     /// admission refusals. `cut_streaming` is the WASM-cut voice
-    /// (missing_attribution); `cap_cut_streaming` is the GB-5 voice
-    /// (cap_exceeded, falling back to missing_attribution).
+    /// (default_response); `cap_cut_streaming` is the GB-5 voice
+    /// (cap_exceeded, falling back to default_response).
     cut_streaming: Option<gateway_core::config::StreamingRejection>,
     cap_cut_streaming: Option<gateway_core::config::StreamingRejection>,
     /// GB-5: the last estimated-output-token reading fed to the budget, so each
@@ -630,12 +630,12 @@ impl ProxyHttp for Gateway {
         if !resolution.ok() {
             let missing_list = resolution.missing.join(", ");
             info!(
-                "[req] {method} {path} -> route={} (rejecting: missing_attribution: {missing_list}) cfg=v{v}",
+                "[req] {method} {path} -> route={} (rejecting: default_response: {missing_list}) cfg=v{v}",
                 route.prefix
             );
             respond_rejection(
                 session,
-                &policy.missing_attribution,
+                &policy.default_response,
                 &[("key", missing_list.as_str()), ("route", route.prefix.as_str())],
             )
             .await?;
@@ -651,12 +651,12 @@ impl ProxyHttp for Gateway {
             Err(d) => {
                 info!(
                     "[gb5 {}] {} DENIED at admission: spent {}/{} tokens \
-                     (rejecting: missing_attribution) cfg=v{v}",
+                     (rejecting: default_response) cfg=v{v}",
                     route.prefix, d.id, d.spent, d.cap
                 );
                 respond_rejection(
                     session,
-                    policy.cap_exceeded.as_ref().unwrap_or(&policy.missing_attribution),
+                    policy.cap_exceeded.as_ref().unwrap_or(&policy.default_response),
                     &[
                         ("key", d.id.to_string().as_str()),
                         ("route", route.prefix.as_str()),
@@ -695,7 +695,7 @@ impl ProxyHttp for Gateway {
                     );
                     respond_rejection(
                         session,
-                        &policy.missing_attribution,
+                        &policy.default_response,
                         &[("key", e.key.as_str()), ("route", route.prefix.as_str())],
                     )
                     .await?;
@@ -731,13 +731,13 @@ impl ProxyHttp for Gateway {
                     );
                     // The allow-list gate (a refused VALUE) gets its dedicated
                     // template when the operator wrote one; every other tag
-                    // failure — and the fallback — is missing_attribution.
+                    // failure — and the fallback — is default_response.
                     let template = match value {
                         Some(_) => policy
                             .value_not_allowed
                             .as_ref()
-                            .unwrap_or(&policy.missing_attribution),
-                        None => &policy.missing_attribution,
+                            .unwrap_or(&policy.default_response),
+                        None => &policy.default_response,
                     };
                     let value = value.unwrap_or_default();
                     respond_rejection(
@@ -843,7 +843,7 @@ impl ProxyHttp for Gateway {
                     );
                     respond_rejection(
                         session,
-                        &policy.missing_attribution,
+                        &policy.default_response,
                         &[("key", key.as_str()), ("route", route.prefix.as_str())],
                     )
                     .await?;
@@ -937,7 +937,7 @@ impl ProxyHttp for Gateway {
                         );
                         respond_rejection(
                             session,
-                            &policy.missing_attribution,
+                            &policy.default_response,
                             &[("key", "body"), ("route", route.prefix.as_str())],
                         )
                         .await?;
@@ -965,11 +965,11 @@ impl ProxyHttp for Gateway {
         ctx.attr_headers = policy.headers.clone();
         ctx.tags = tags;
         ctx.caps = caps;
-        ctx.cut_streaming = policy.missing_attribution.streaming.clone();
+        ctx.cut_streaming = policy.default_response.streaming.clone();
         ctx.cap_cut_streaming = policy
             .cap_exceeded
             .as_ref()
-            .unwrap_or(&policy.missing_attribution)
+            .unwrap_or(&policy.default_response)
             .streaming
             .clone();
         info!("[attr {}] {} cfg=v{v}", route.prefix, ctx.tag_summary());
@@ -997,7 +997,7 @@ impl ProxyHttp for Gateway {
             Some(crate::proxy_wasm::RequestOutcome::Reject { reason }) => {
                 respond_rejection(
                     session,
-                    &policy.missing_attribution,
+                    &policy.default_response,
                     &[("key", reason.as_str()), ("route", route.prefix.as_str())],
                 )
                 .await?;
@@ -1418,7 +1418,7 @@ impl ProxyHttp for Gateway {
         // apply to cuts exactly as they do to admission refusals.
         let streaming = ctx.cut_streaming.clone();
         // The GB-5 cut speaks with the dedicated cap template when one
-        // exists; the WASM cut keeps the missing_attribution voice.
+        // exists; the WASM cut keeps the default_response voice.
         let cap_streaming = ctx.cap_cut_streaming.clone();
         let route_prefix = ctx.route.as_ref().map(|b| b.prefix.clone()).unwrap_or_default();
         if let Some(reason) = wasm_cut_reason {

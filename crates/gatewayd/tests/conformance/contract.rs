@@ -6,7 +6,7 @@
 
 use crate::harness::*;
 
-/// Fleet config whose missing_attribution body uses the optional GB-5
+/// Fleet config whose default_response body uses the optional GB-5
 /// placeholders, so the "-" defaults are observable on a non-budget
 /// rejection; no streaming block anywhere, so a cut wears the built-in
 /// default payload.
@@ -28,7 +28,7 @@ routes:
   - prefix: /openai
     provider: openai-main
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"no_attr","key":"{{{{key}}}}","cap":"{{{{cap}}}}","spend":"{{{{spend}}}}"}}'

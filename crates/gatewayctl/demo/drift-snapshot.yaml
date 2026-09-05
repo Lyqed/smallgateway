@@ -23,7 +23,7 @@ routes:
   - prefix: /openai
     provider: openai-demo
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'

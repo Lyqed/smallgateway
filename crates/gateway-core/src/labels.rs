@@ -14,7 +14,7 @@
 //! - fail closed: a label whose value cannot be resolved (absent
 //!   attribution key, erroring expression, or a value Google Cloud would
 //!   reject) is an error the proxy turns into the route's effective GB-4
-//!   `missing_attribution` rejection — the request never reaches the
+//!   `default_response` rejection — the request never reaches the
 //!   provider unattributed.
 
 use std::collections::BTreeMap;

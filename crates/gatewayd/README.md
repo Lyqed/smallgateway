@@ -186,7 +186,7 @@ Operator labels win key conflicts (a caller cannot override the
 gateway's cost attribution); non-conflicting client labels pass through.
 Keys/static values are validated against Google Cloud's label rules at
 load, dynamic values per request. Unresolvable → the route's effective
-GB-4 `missing_attribution` rejection, fail closed, before the provider
+GB-4 `default_response` rejection, fail closed, before the provider
 sees the request. On labeled vertex routes the request body is buffered
 for the merge (upstream leg re-framed chunked); a body that is not a
 JSON object is refused with a plain 400 — no spend can have occurred.

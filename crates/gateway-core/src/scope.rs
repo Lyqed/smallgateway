@@ -79,14 +79,14 @@ pub struct EffectivePolicy {
     /// built-in convention exists). A key absent here has no caller channel
     /// and its adjudicated value is not forwarded upstream.
     pub headers: BTreeMap<String, String>,
-    pub missing_attribution: RejectionTemplate,
+    pub default_response: RejectionTemplate,
     pub unknown_route: RejectionTemplate,
     /// The model-gate refusal body (operator's, or the built-in default).
     pub model_not_allowed: RejectionTemplate,
-    /// Allow-list refusal body; `None` = `missing_attribution` speaks.
+    /// Allow-list refusal body; `None` = `default_response` speaks.
     pub value_not_allowed: Option<RejectionTemplate>,
     /// Budget refusal body (admission + the mid-stream terminal event via
-    /// its `streaming:` half); `None` = `missing_attribution` speaks.
+    /// its `streaming:` half); `None` = `default_response` speaks.
     pub cap_exceeded: Option<RejectionTemplate>,
 }
 
@@ -153,7 +153,7 @@ struct Layer {
     labels: Vec<LabelItem>,
     spend_caps: BTreeMap<String, crate::budget::KeyCap>,
     models: Option<Vec<String>>,
-    missing_attribution: Option<RejectionTemplate>,
+    default_response: Option<RejectionTemplate>,
     unknown_route: Option<RejectionTemplate>,
     model_not_allowed: Option<RejectionTemplate>,
     value_not_allowed: Option<RejectionTemplate>,
@@ -789,7 +789,7 @@ fn compile_layer(
         labels: label_items,
         spend_caps,
         models: attr.models.clone(),
-        missing_attribution: rejections.and_then(|o| o.missing_attribution.clone()),
+        default_response: rejections.and_then(|o| o.default_response.clone()),
         unknown_route: rejections.and_then(|o| o.unknown_route.clone()),
         model_not_allowed: rejections.and_then(|o| o.model_not_allowed.clone()),
         value_not_allowed: rejections.and_then(|o| o.value_not_allowed.clone()),
@@ -924,7 +924,7 @@ fn compose(
     }
 
     // Rejections: base, then per-reason overrides down the chain.
-    let mut missing_attribution = base.missing_attribution.clone();
+    let mut default_response = base.default_response.clone();
     let mut unknown_route = base.unknown_route.clone();
     let mut model_not_allowed = base
         .model_not_allowed
@@ -933,8 +933,8 @@ fn compose(
     let mut value_not_allowed = base.value_not_allowed.clone();
     let mut cap_exceeded = base.cap_exceeded.clone();
     for layer in chain {
-        if let Some(t) = &layer.missing_attribution {
-            missing_attribution = t.clone();
+        if let Some(t) = &layer.default_response {
+            default_response = t.clone();
         }
         if let Some(t) = &layer.unknown_route {
             unknown_route = t.clone();
@@ -959,7 +959,7 @@ fn compose(
         labels: final_labels,
         spend_caps,
         models,
-        missing_attribution,
+        default_response,
         unknown_route,
         model_not_allowed,
         value_not_allowed,
@@ -991,4 +991,3 @@ fn dedup_keep_first(list: &mut Vec<String>) {
     let mut seen = BTreeSet::new();
     list.retain(|k| seen.insert(k.clone()));
 }
-

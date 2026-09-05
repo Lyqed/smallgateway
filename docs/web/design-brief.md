@@ -1,7 +1,7 @@
-# Design brief — thegatewaybaseline.com & theopensourcegateway.com
+# Design brief — thegatewaybaseline.com & smallgateway.vercel.app
 
 Historical design brief. The project is now smallgateway, with its website
-at opensourcegateway.com and source under website/ in the combined repository.
+at smallgateway.vercel.app and source under website/ in the combined repository.
 For the current framing, see website/docs/DESIGN.md. Earlier brand names and
 ownership language below have been superseded.
 
@@ -224,7 +224,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
    atrium white this time, centered mono: "Someone is told when a cap is
    hit." No dot (it was spent in 3b), no other content.
 6. **Reference implementation** — one restrained cross-link band: "A
-   community gateway is being built against this bar" → theopensourcegateway.com
+   community gateway is being built against this bar" → smallgateway.vercel.app
    (+ github.com/Lyqed/smallgateway).
 7. **Footer** — polished floor: dark band, mono small print, sister-site
    link, "Verified cells, not marketing pages" as the standing line.
@@ -232,7 +232,7 @@ Single page, anchored nav (`Checks · Matrix · Method · History`), sections:
 `site-config`: name "The Gateway Baseline", url https://thegatewaybaseline.com,
 contact antonbraverman1@gmail.com (the tracker's correction address).
 
-## 8. Site B — theopensourcegateway.com
+## 8. Site B — smallgateway.vercel.app
 
 **Brand headline: "The Open Source Gateway" (the project's working name,
 "Open Source Gateway", appears in copy; final naming is an open decision —
@@ -282,7 +282,7 @@ Single page, anchored nav (`Principles · Architecture · Build · Contribute`):
 7. **Footer** — polished floor, sister link to the Baseline, repo link.
 
 `site-config`: name "The Open Source Gateway", url
-https://theopensourcegateway.com.
+https://smallgateway.vercel.app.
 
 ## 9. What both sites must NOT be
 

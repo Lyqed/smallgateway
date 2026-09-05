@@ -534,7 +534,7 @@ impl Route {
 #[serde(deny_unknown_fields)]
 pub struct Attribution {
     /// GB-1: keys that must be present (from any origin) or the request is
-    /// rejected with the effective `missing_attribution` template. May
+    /// rejected with the effective `default_response` template. May
     /// contain the `<base>` marker to splice the parent scope's list.
     #[serde(default)]
     pub required_keys: Vec<String>,
@@ -653,8 +653,11 @@ pub struct LabelSpec {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rejections {
+    /// Default refusal response: required attribution failures and fallback
+    /// for rejection reasons without a dedicated template.
     /// Placeholders: `{{key}}` (the missing keys), `{{route}}` (the prefix).
-    pub missing_attribution: RejectionTemplate,
+    #[serde(alias = "missing_attribution")]
+    pub default_response: RejectionTemplate,
     /// Placeholders: `{{route}}` (the unmatched request path).
     pub unknown_route: RejectionTemplate,
     /// Model gate refusal (scopes with a `models:` allow-list).
@@ -666,13 +669,13 @@ pub struct Rejections {
     /// Allow-list refusal: a resolved attribution VALUE outside the
     /// operator's closed set (`sts.allow`). Placeholders: `{{key}}`,
     /// `{{value}}` (the refused value), `{{route}}`. OPTIONAL: absent,
-    /// `missing_attribution` speaks for this refusal too.
+    /// `default_response` speaks for this refusal too.
     #[serde(default)]
     pub value_not_allowed: Option<RejectionTemplate>,
     /// Budget refusal (GB-5) — at admission, and mid-stream through its
     /// `streaming:` half (the terminal event of a cut). Placeholders:
     /// `{{key}}`, `{{route}}`, `{{cap}}`, `{{spend}}` (tokens). OPTIONAL:
-    /// absent, `missing_attribution` speaks with the same placeholders.
+    /// absent, `default_response` speaks with the same placeholders.
     #[serde(default)]
     pub cap_exceeded: Option<RejectionTemplate>,
 }
@@ -741,7 +744,8 @@ pub fn default_model_not_allowed() -> RejectionTemplate {
     RejectionTemplate {
         status: 403,
         content_type: "application/json".to_string(),
-        body: r#"{"error":"model_not_allowed","model":"{{model}}","route":"{{route}}"}"#.to_string(),
+        body: r#"{"error":"model_not_allowed","model":"{{model}}","route":"{{route}}"}"#
+            .to_string(),
         streaming: None,
     }
 }
@@ -750,8 +754,8 @@ pub fn default_model_not_allowed() -> RejectionTemplate {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RejectionOverrides {
-    #[serde(default)]
-    pub missing_attribution: Option<RejectionTemplate>,
+    #[serde(default, alias = "missing_attribution")]
+    pub default_response: Option<RejectionTemplate>,
     #[serde(default)]
     pub unknown_route: Option<RejectionTemplate>,
     #[serde(default)]
@@ -927,12 +931,12 @@ impl Config {
             .iter()
             .enumerate()
             .filter(|(_, r)| prefix_matches(&r.prefix, path))
-            .filter(|(_, r)| {
-                match &r.compiled.as_ref().expect("config finalized").condition {
+            .filter(
+                |(_, r)| match &r.compiled.as_ref().expect("config finalized").condition {
                     None => true,
                     Some(cond) => cond.eval_bool(ctx).unwrap_or(false),
-                }
-            })
+                },
+            )
             .max_by_key(|(i, r)| {
                 (
                     r.prefix.trim_end_matches('/').len(),
@@ -1035,7 +1039,10 @@ pub(crate) fn prefix_matches(prefix: &str, path: &str) -> bool {
     if p.is_empty() {
         return true; // prefix was "/" (or "//"): the catch-all route
     }
-    path == p || path.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
+    path == p
+        || path
+            .strip_prefix(p)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 #[cfg(test)]
@@ -1057,7 +1064,7 @@ routes:
       headers: { team: x-attr-team }
       pinned: { env: prod }
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"missing {{key}} on {{route}}"}'
@@ -1087,20 +1094,50 @@ rejections:
         let policy = cfg.routes[0].policy();
         assert_eq!(policy.pinned["env"], "prod");
         assert_eq!(policy.required_keys, vec!["team"]);
-        let streaming = cfg.rejections.missing_attribution.streaming.as_ref().unwrap();
+        let streaming = cfg.rejections.default_response.streaming.as_ref().unwrap();
         assert_eq!(streaming.event.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn legacy_rejection_template_name_still_parses() {
+        let yaml = valid_yaml().replace("default_response:", "missing_attribution:");
+        let cfg = Config::from_yaml(&yaml).unwrap();
+        assert_eq!(cfg.rejections.default_response.status, 428);
+        let overrides: RejectionOverrides = serde_yaml::from_str(
+            "missing_attribution:\n  status: 403\n  content_type: text/plain\n  body: denied\n",
+        )
+        .unwrap();
+        assert_eq!(overrides.default_response.unwrap().body, "denied");
+    }
+
+    #[test]
+    fn duplicate_rejection_template_names_are_rejected() {
+        let yaml = valid_yaml().replace(
+            "  unknown_route:",
+            "  missing_attribution:\n    status: 403\n    content_type: text/plain\n    body: denied\n  unknown_route:",
+        );
+        assert!(matches!(
+            Config::from_yaml(&yaml),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]
     fn unknown_yaml_field_fails_parse() {
         let yaml = valid_yaml().replace("kind: openai", "kind: openai\n    typo_field: 1");
-        assert!(matches!(Config::from_yaml(&yaml), Err(ConfigError::Parse(_))));
+        assert!(matches!(
+            Config::from_yaml(&yaml),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]
     fn normalize_path_resolves_dot_segments() {
         // The exact live-probe bypass: must resolve to the /claims resource.
-        assert_eq!(normalize_path("/openai/../claims/v1/chat"), "/claims/v1/chat");
+        assert_eq!(
+            normalize_path("/openai/../claims/v1/chat"),
+            "/claims/v1/chat"
+        );
         assert_eq!(normalize_path("/a/./b"), "/a/b");
         assert_eq!(normalize_path("/a/b/.."), "/a/");
         assert_eq!(normalize_path("/a/b/."), "/a/b/");
@@ -1132,7 +1169,10 @@ rejections:
         // "..." is ordinary data per RFC 3986; other percent-encodings
         // (e.g. Bedrock model ARNs) are never decoded or altered.
         assert_eq!(normalize_path("/a/.../b"), "/a/.../b");
-        assert_eq!(normalize_path("/model/arn%3Aaws%2Fthing/invoke"), "/model/arn%3Aaws%2Fthing/invoke");
+        assert_eq!(
+            normalize_path("/model/arn%3Aaws%2Fthing/invoke"),
+            "/model/arn%3Aaws%2Fthing/invoke"
+        );
         // Non-origin-form targets are left for routing to reject.
         assert_eq!(normalize_path("*"), "*");
     }
@@ -1159,12 +1199,20 @@ rejections:
             "routes:\n  - prefix: /openai/v1/special\n    provider: openai-main",
         );
         let cfg = Config::from_yaml(&yaml).unwrap();
-        assert_eq!(cfg.match_route("/openai/v1/chat", &ctx()).unwrap().prefix, "/openai");
         assert_eq!(
-            cfg.match_route("/openai/v1/special/x", &ctx()).unwrap().prefix,
+            cfg.match_route("/openai/v1/chat", &ctx()).unwrap().prefix,
+            "/openai"
+        );
+        assert_eq!(
+            cfg.match_route("/openai/v1/special/x", &ctx())
+                .unwrap()
+                .prefix,
             "/openai/v1/special"
         );
-        assert_eq!(cfg.match_route("/openai", &ctx()).unwrap().prefix, "/openai");
+        assert_eq!(
+            cfg.match_route("/openai", &ctx()).unwrap().prefix,
+            "/openai"
+        );
         assert!(cfg.match_route("/openaix/v1", &ctx()).is_none());
         assert!(cfg.match_route("/other", &ctx()).is_none());
     }
@@ -1192,7 +1240,10 @@ rejections:
         assert!(post.condition.is_none());
 
         // GET → the conditioned route wins over the unconditioned fallback.
-        let get_ctx = EvalCtx { method: "GET".to_string(), ..EvalCtx::default() };
+        let get_ctx = EvalCtx {
+            method: "GET".to_string(),
+            ..EvalCtx::default()
+        };
         let get = cfg.match_route("/openai/v1/chat", &get_ctx).unwrap();
         assert_eq!(get.condition.as_deref(), Some(r#"request.method == "GET""#));
 

@@ -1,13 +1,13 @@
 apiVersion: v2
 name: gateway-operator
 description: >-
-  Open Source Gateway Kubernetes operator. Installs the LLMGateway CRD and the
+  smallgateway Kubernetes operator. Installs the LLMGateway CRD and the
   controller that reconciles an LLMGateway CR into a running gatewayctl control
   plane and one or more gatewayd data planes joined over gRPC, enforcing
   cost-attribution (GB-1), operator pins (GB-3), operator-owned rejections
   (GB-4), and streaming metering. Optionally installs a sample CR.
 type: application
-version: 0.1.0
+version: 0.2.0
 # Matches the prebuilt binaries baked into the images.
 appVersion: "smoke"
 keywords:

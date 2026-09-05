@@ -1,4 +1,4 @@
-# Control-plane image for Open Source Gateway: gatewayctl.
+# Control-plane image for smallgateway: gatewayctl.
 #
 # Ships the PREBUILT release binary (glibc-linked, same as the gatewayd smoke
 # image). bookworm-slim carries glibc 2.36; the binary needs at most GLIBC_2.34.

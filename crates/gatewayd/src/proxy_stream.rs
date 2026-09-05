@@ -98,7 +98,7 @@ pub(crate) fn log_meter_report(
 /// `None`). A cap tightened mid-stream does NOT retroactively apply — the
 /// caller passes the caps the request BOUND (docs/03 limitation 2).
 ///
-/// `streaming` is the bound snapshot's `missing_attribution.streaming`
+/// `streaming` is the bound snapshot's `default_response.streaming`
 /// template; `cfg_version` and `route_prefix` are for the cut log line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn charge_caps_and_cut(

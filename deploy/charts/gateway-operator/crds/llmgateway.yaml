@@ -1,12 +1,12 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: llmgateways.gateway.opensourcegateway.com
+  name: llmgateways.gateway.smallgateway.vercel.app
   labels:
     app.kubernetes.io/part-of: the-gateway-project
     app.kubernetes.io/component: crd
 spec:
-  group: gateway.opensourcegateway.com
+  group: gateway.smallgateway.vercel.app
   scope: Namespaced
   names:
     kind: LLMGateway
@@ -242,8 +242,9 @@ spec:
                     defaults. Placeholders {{key}} and {{route}} are honored by
                     the data plane, not by the operator.
                   properties:
-                    missingAttribution:
+                    defaultResponse:
                       type: object
+                      description: Default response for attribution failures and refusals without a dedicated template.
                       required: [status, contentType, body]
                       properties:
                         status:

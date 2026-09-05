@@ -173,19 +173,19 @@ func renderAttribution(a *gwv1.Attribution) map[string]any {
 }
 
 func renderRejections(r *gwv1.Rejections) map[string]any {
-	missing := defaultMissing
+	response := defaultRejectionResponse
 	unknown := defaultUnknown
 	if r != nil {
-		if r.MissingAttribution != nil {
-			missing = renderTemplate(r.MissingAttribution)
+		if r.DefaultResponse != nil {
+			response = renderTemplate(r.DefaultResponse)
 		}
 		if r.UnknownRoute != nil {
 			unknown = renderTemplate(r.UnknownRoute)
 		}
 	}
 	return map[string]any{
-		"missing_attribution": missing,
-		"unknown_route":       unknown,
+		"default_response": response,
+		"unknown_route":    unknown,
 	}
 }
 
@@ -207,7 +207,7 @@ func renderTemplate(t *gwv1.RejectionTemplate) map[string]any {
 
 // Conservative GB-4 defaults, used when the CR omits a reason. Placeholders
 // {{key}} / {{route}} are honored by the data plane at rejection time.
-var defaultMissing = map[string]any{
+var defaultRejectionResponse = map[string]any{
 	"status":       428,
 	"content_type": "application/json",
 	"body":         `{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}`,

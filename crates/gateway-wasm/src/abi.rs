@@ -168,7 +168,7 @@ impl From<&Event> for WireEvent {
 /// - [`Decision::Continue`]  — proceed unchanged.
 /// - [`Decision::MutateHeaders`] — set/remove upstream headers (on_request).
 /// - [`Decision::Reject`] — refuse the request with the operator's GB-4
-///   `missing_attribution` template (on_request); the `reason` names why.
+///   `default_response` template (on_request); the `reason` names why.
 /// - [`Decision::CutStream`] — cut the in-flight stream with the operator's
 ///   GB-4 streaming terminal event (on_response_event) — the exact
 ///   machinery GB-5 mid-stream enforcement already uses.

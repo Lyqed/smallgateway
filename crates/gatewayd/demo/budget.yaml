@@ -24,7 +24,7 @@ rejections:
   # GB-4 makes the hard cap livable: a request over its cap gets THIS operator
   # body (with {{cap}}/{{spend}} in tokens), and a stream exhausted
   # mid-generation is cut with the `streaming` terminal event below.
-  missing_attribution:
+  default_response:
     status: 429
     content_type: application/json
     body: '{"error":"budget_exhausted","spender":"{{key}}","cap_tokens":"{{cap}}","spend_tokens":"{{spend}}","route":"{{route}}"}'

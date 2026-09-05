@@ -50,6 +50,9 @@ Run `pnpm build` in that directory to build the site. A deployment from the comb
 
 ## Development checks
 
+Upgrading an existing configuration? See the [API and configuration naming
+changes](docs/14-naming-migration.md).
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings

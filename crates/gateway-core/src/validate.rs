@@ -387,8 +387,8 @@ pub(crate) fn validate_wasm(cfg: &Config, errs: &mut Vec<String>) {
 
 pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<String>) {
     validate_template(
-        &r.missing_attribution,
-        &format!("{ctx}.missing_attribution"),
+        &r.default_response,
+        &format!("{ctx}.default_response"),
         // GB-1/GB-4: {{key}}/{{route}}. GB-5 adds the optional {{cap}}/{{spend}}
         // (tokens) so a budget rejection or a cut stream's terminal event can
         // name the exhausted limit; a template that omits them is still valid.
@@ -418,10 +418,10 @@ pub(crate) fn validate_rejections(r: &Rejections, ctx: &str, errs: &mut Vec<Stri
 }
 
 pub(crate) fn validate_rejection_overrides(o: &RejectionOverrides, ctx: &str, errs: &mut Vec<String>) {
-    if let Some(t) = &o.missing_attribution {
+    if let Some(t) = &o.default_response {
         validate_template(
             t,
-            &format!("{ctx}.missing_attribution"),
+            &format!("{ctx}.default_response"),
             &["key", "route", "cap", "spend"],
             errs,
         );
@@ -623,4 +623,3 @@ fn check_placeholders(text: &str, ctx: &str, allowed: &[&str], errs: &mut Vec<St
         Err(e) => errs.push(format!("{ctx}: {e}")),
     }
 }
-

@@ -306,10 +306,10 @@ pub mod builtin {
     /// invent-your-own-body failure GB-4 forbids.)
     pub fn rejection_templates_present(cfg: &Config) -> Vec<RuleFailure> {
         let mut out = Vec::new();
-        if cfg.rejections.missing_attribution.body.trim().is_empty() {
+        if cfg.rejections.default_response.body.trim().is_empty() {
             out.push(RuleFailure {
                 rule: "GB-4".to_string(),
-                detail: "rejections.missing_attribution.body is empty — the operator must own \
+                detail: "rejections.default_response.body is empty — the operator must own \
                          the rejection body (GB-4), never ship a blank 4xx"
                     .to_string(),
             });
@@ -527,7 +527,7 @@ routes:
   - prefix: /openai
     provider: openai-main
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"missing {{key}} on {{route}}"}'
@@ -634,7 +634,7 @@ routes:
   - prefix: /openai
     provider: openai-main
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{{"error":"missing {{{{key}}}} on {{{{route}}}}"}}'

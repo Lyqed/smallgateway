@@ -12,7 +12,7 @@ use gateway_core::adapters::Adapter;
 use gateway_core::event::Event;
 use gateway_core::metering::Meter;
 
-const EXPECTED_TEXT: &str = "Open Source Gateway keeps truth in Git.";
+const EXPECTED_TEXT: &str = "The Gateway Project keeps truth in Git.";
 
 /// The spike's fixture corpus, from crates/gateway-core two levels up.
 const FIXTURES: &str = "../../spikes/event-model/fixtures";

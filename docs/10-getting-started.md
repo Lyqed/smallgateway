@@ -69,7 +69,7 @@ topology.
 
 ```yaml
 # gateway.yaml
-apiVersion: gateway.opensourcegateway.com/v1alpha1
+apiVersion: gateway.smallgateway.vercel.app/v1alpha1
 kind: LLMGateway
 metadata:
   name: demo
@@ -100,7 +100,7 @@ spec:
         window: day
         alertAt: 80
   rejections:
-    missingAttribution:
+    defaultResponse:
       status: 428
       contentType: application/json
       body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
@@ -407,7 +407,7 @@ auth:
     hs256_secret: replace-with-the-fleet-signing-secret
 
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}","help":"Authenticate with your app token; its claims prove cost_center and workload. Research IT: ext 4571."}'
@@ -419,7 +419,7 @@ rejections:
     status: 403
     content_type: application/json
     body: '{"error":"model_not_allowed","asked":"{{model}}","route":"{{route}}","help":"This fleet runs Claude models only."}'
-  cap_exceeded:                        # optional; absent, missing_attribution speaks
+  cap_exceeded:                        # optional; absent, default_response speaks
     status: 429
     content_type: application/json
     body: '{"error":"token_budget_exhausted","who":"{{key}}","spent":"{{spend}}","cap":"{{cap}}"}'
@@ -562,7 +562,7 @@ routes:
       - { key: residency, value: eu }
 
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
@@ -611,7 +611,7 @@ routes:
     provider: foundry
 
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
@@ -704,7 +704,7 @@ routes:
     provider: llm-pool
 
 rejections:
-  missing_attribution:
+  default_response:
     status: 428
     content_type: application/json
     body: '{"error":"attribution_required","missing":"{{key}}","route":"{{route}}"}'
@@ -758,7 +758,7 @@ The refusal itself can carry a dedicated voice, too: an optional
 `cap_exceeded` template (`{{cap}}`/`{{spend}}`, plus a `streaming:` half
 for the terminal event of a mid-generation cut) and `value_not_allowed`
 for the allow-list gate (`{{value}}`, the refused value). Absent,
-`missing_attribution` speaks for both — nothing breaks by not writing
+`default_response` speaks for both — nothing breaks by not writing
 them.
 
 ## A WASM module a client actually asked for: the MRN tripwire
