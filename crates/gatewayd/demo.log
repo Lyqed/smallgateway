@@ -31,7 +31,7 @@ Connection: close
 
 {"error":"attribution_required","missing":"team","route":"/openai","hint":"send x-attr-<key> request headers"}
 --- gateway log ---
-[2026-08-01T14:40:21Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai (rejecting: missing_attribution: team) cfg=v1
+[2026-08-01T14:40:21Z INFO  gatewayd::proxy] [req] POST /openai/v1/chat/completions -> route=/openai (rejecting: default_response: team) cfg=v1
 
 === (2) GB-3: caller sends x-attr-env: shadow-prod, but env is pinned to prod ===
     (x-echo-attr-* headers show what the UPSTREAM actually received)
@@ -174,7 +174,7 @@ Connection: close
 [2026-08-01T14:40:26Z INFO  gatewayd::proxy] [tap openai] MessageEnd { stop_reason: Some("stop") }
 [2026-08-01T14:40:26Z INFO  gatewayd::proxy] [meter /claims] cfg=v1 provider=openai-demo(openai) attribution{env=prod(assigned),purpose=research(assigned),team=ml-research(caller),user=alice(proven)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
 [2026-08-01T14:40:28Z INFO  gatewayd::proxy] [app /claims] team=ml-research -> app override cfg=v1
-[2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user) cfg=v1
+[2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: default_response: user) cfg=v1
 
 === (6) hardening: /openai/../claims resolves to /claims BEFORE route matching ===
     (the traversal spelling lands on the STRONGER contract: user must be proven)
@@ -197,10 +197,10 @@ Connection: close
 --- gateway log ---
 [2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] path normalized: /openai/../claims/v1/chat/completions -> /claims/v1/chat/completions cfg=v1
 [2026-08-01T14:40:28Z INFO  gatewayd::proxy] [app /claims] team=ml-research -> app override cfg=v1
-[2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user) cfg=v1
+[2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: default_response: user) cfg=v1
 [2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] path normalized: /openai/%2e%2e/claims/v1/chat/completions -> /claims/v1/chat/completions cfg=v1
 [2026-08-01T14:40:28Z INFO  gatewayd::proxy] [app /claims] team=ml-research -> app override cfg=v1
-[2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: missing_attribution: user) cfg=v1
+[2026-08-01T14:40:28Z INFO  gatewayd::proxy] [req] POST /claims/v1/chat/completions -> route=/claims (rejecting: default_response: user) cfg=v1
 
 === (7) hot swap: SIGHUP mid-stream; v1 stream drains while v2 serves new requests ===
     (demo/gateway.v2.yaml flips the /openai pin env=prod -> env=canary)
@@ -262,7 +262,7 @@ Date: Sat, 01 Aug 2026 14:40:37 GMT
 --- gateway log: precise errors + still-active version, from BOTH triggers ---
 [2026-08-01T14:40:37Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=sighup): new config invalid; still serving cfg=v2 hash=f41bc5696a12
     invalid config:
-      - rejections.missing_attribution.body: unknown placeholder {{keys}} (allowed: {{key}}, {{route}})
+      - rejections.default_response.body: unknown placeholder {{keys}} (allowed: {{key}}, {{route}})
       - route "/openai": unknown provider "openai-typo" (defined providers: openai-demo)
     
 [2026-08-01T14:40:37Z INFO  gatewayd::proxy] [app /openai] team=ml-research -> app override cfg=v2
@@ -277,7 +277,7 @@ Date: Sat, 01 Aug 2026 14:40:37 GMT
 [2026-08-01T14:40:38Z INFO  gatewayd::proxy] [meter /openai] cfg=v2 provider=openai-demo(openai) attribution{env=canary(assigned),purpose=research(assigned),team=ml-research(caller)} events{MessageStart=1 ContentDelta=3 UsageDelta=1 MessageEnd=1} chunks=7 bytes=1047 est_output_tokens=10 auth_input_tokens=14 auth_output_tokens=9 est_err=+11.1%
 [2026-08-01T14:40:38Z ERROR gatewayd::reload] [reload] REJECTED (NACK, trigger=poll): new config invalid; still serving cfg=v2 hash=f41bc5696a12
     invalid config:
-      - rejections.missing_attribution.body: unknown placeholder {{keys}} (allowed: {{key}}, {{route}})
+      - rejections.default_response.body: unknown placeholder {{keys}} (allowed: {{key}}, {{route}})
       - route "/openai": unknown provider "openai-typo" (defined providers: openai-demo)
     
 

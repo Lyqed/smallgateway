@@ -39,9 +39,6 @@ func TestCRDSchemaMatchesOperatorNames(t *testing.T) {
 	if _, ok := rejections["defaultResponse"]; !ok {
 		t.Fatal("CRD would prune the operator's defaultResponse field")
 	}
-	if _, ok := rejections["missingAttribution"]; ok {
-		t.Fatal("new API group still exposes the old field name")
-	}
 }
 
 func TestDefaultResponseFromResourceToConfig(t *testing.T) {

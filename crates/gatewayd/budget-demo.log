@@ -35,8 +35,8 @@ gatewayd enforcement log (GB-6 alerts + GB-5 budget lines) for free-tier:
     [2026-08-01T19:13:09Z WARN  gatewayd::budget] [gb6 HARD-CAP] spender=team=free-tier spend=25/25 tokens (100%) node=standalone
     [2026-08-01T19:13:09Z ERROR gatewayd::proxy] [gb5 /openai] team=free-tier EXCEEDED mid-stream: spent 28/25 tokens; CUTTING the stream with the GB-4 terminal event cfg=v1
     [2026-08-01T19:13:09Z INFO  gatewayd::budget] [budget /openai] team=free-tier no usage frame; spent=28/25 tokens (share=25, estimate stands) [CUT] cfg=v1
-    [2026-08-01T19:13:09Z INFO  gatewayd::proxy] [gb5 /openai] team=free-tier DENIED at admission: spent 28/25 tokens (rejecting: missing_attribution) cfg=v1
-    [2026-08-01T19:13:09Z INFO  gatewayd::proxy] [gb5 /openai] team=free-tier DENIED at admission: spent 28/25 tokens (rejecting: missing_attribution) cfg=v1
+    [2026-08-01T19:13:09Z INFO  gatewayd::proxy] [gb5 /openai] team=free-tier DENIED at admission: spent 28/25 tokens (rejecting: default_response) cfg=v1
+    [2026-08-01T19:13:09Z INFO  gatewayd::proxy] [gb5 /openai] team=free-tier DENIED at admission: spent 28/25 tokens (rejecting: default_response) cfg=v1
 
 --------------------------------------------------------------
 (4) GB-5 MID-STREAM CUT with the GB-4 terminal event

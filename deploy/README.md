@@ -1,8 +1,5 @@
 # Deploying smallgateway on Kubernetes
 
-Existing installation? Chart 0.2.0 changes the Kubernetes API group. Read the
-[migration notes](../docs/14-naming-migration.md) before upgrading.
-
 Kubernetes is the primary deployment target. This directory makes the k8s path
 first-class: a `LLMGateway` CRD, an operator that reconciles it into a running
 control plane and data planes, and a production Helm chart. The heterogeneous

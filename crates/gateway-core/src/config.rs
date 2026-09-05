@@ -656,7 +656,6 @@ pub struct Rejections {
     /// Default refusal response: required attribution failures and fallback
     /// for rejection reasons without a dedicated template.
     /// Placeholders: `{{key}}` (the missing keys), `{{route}}` (the prefix).
-    #[serde(alias = "missing_attribution")]
     pub default_response: RejectionTemplate,
     /// Placeholders: `{{route}}` (the unmatched request path).
     pub unknown_route: RejectionTemplate,
@@ -754,7 +753,7 @@ pub fn default_model_not_allowed() -> RejectionTemplate {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RejectionOverrides {
-    #[serde(default, alias = "missing_attribution")]
+    #[serde(default)]
     pub default_response: Option<RejectionTemplate>,
     #[serde(default)]
     pub unknown_route: Option<RejectionTemplate>,
@@ -1096,30 +1095,6 @@ rejections:
         assert_eq!(policy.required_keys, vec!["team"]);
         let streaming = cfg.rejections.default_response.streaming.as_ref().unwrap();
         assert_eq!(streaming.event.as_deref(), Some("error"));
-    }
-
-    #[test]
-    fn legacy_rejection_template_name_still_parses() {
-        let yaml = valid_yaml().replace("default_response:", "missing_attribution:");
-        let cfg = Config::from_yaml(&yaml).unwrap();
-        assert_eq!(cfg.rejections.default_response.status, 428);
-        let overrides: RejectionOverrides = serde_yaml::from_str(
-            "missing_attribution:\n  status: 403\n  content_type: text/plain\n  body: denied\n",
-        )
-        .unwrap();
-        assert_eq!(overrides.default_response.unwrap().body, "denied");
-    }
-
-    #[test]
-    fn duplicate_rejection_template_names_are_rejected() {
-        let yaml = valid_yaml().replace(
-            "  unknown_route:",
-            "  missing_attribution:\n    status: 403\n    content_type: text/plain\n    body: denied\n  unknown_route:",
-        );
-        assert!(matches!(
-            Config::from_yaml(&yaml),
-            Err(ConfigError::Parse(_))
-        ));
     }
 
     #[test]
