@@ -21,6 +21,7 @@
 //! shown end-to-end in `../gatewayctl/scripts/budget-demo.sh`.
 
 mod harness;
+mod neoclouds;
 use std::process::Command;
 
 use harness::*;

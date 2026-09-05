@@ -1113,11 +1113,19 @@ impl ProxyHttp for Gateway {
             upstream_request.insert_header("authorization", format!("Bearer {bearer}"))?;
         }
 
-        // Vertex location routing: the Host header names the derived
-        // regional host (bare on the standard ports, host:port otherwise).
-        if let Some(host) = &ctx.vertex_host {
+        // External endpoints route by Host. Use the destination, including
+        // Vertex's derived regional host. A caller's SigV4 signature binds
+        // Host, so preserve it when forwarding a signed request unchanged.
+        if !caller_signed_passthrough {
             let binding = ctx.route.as_ref().expect("route bound in request_filter");
-            let port = ctx.snapshot.config.providers[&binding.provider].upstream.port;
+            let up = &ctx.snapshot.config.providers[&binding.provider].upstream;
+            let host = ctx.vertex_host.as_deref().unwrap_or(&up.host);
+            let host = if host.contains(':') && !host.starts_with('[') {
+                format!("[{host}]")
+            } else {
+                host.to_string()
+            };
+            let port = up.port;
             let value = if port == 443 || port == 80 {
                 host.clone()
             } else {

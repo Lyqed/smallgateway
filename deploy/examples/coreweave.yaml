@@ -1,0 +1,23 @@
+# Local, single-team recipe. See docs/14-neoclouds.md.
+# Set upstream.host to the hostname in your CoreWeave status.endpoints.
+# Assumes coreWeaveAuth and body-based routing. Bearer token passes through.
+providers:
+  coreweave:
+    kind: openai
+    upstream: { host: your-gateway.example.com, port: 443, tls: true }
+fleet:
+  attribution:
+    required_keys: [team, app, billing_service]
+    pinned: { team: team, app: app, billing_service: coreweave-inference }
+routes:
+  - prefix: /v1
+    provider: coreweave
+rejections:
+  default_response:
+    status: 403
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'

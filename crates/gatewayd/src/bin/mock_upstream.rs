@@ -333,6 +333,10 @@ fn handle(
         })
         .collect();
 
+    // Request routing visibility for the external-provider recipes.
+    echo.push(("x-echo-host".into(), req.header("host").unwrap_or("").into()));
+    echo.push(("x-echo-request-line".into(), req.line.clone()));
+
     // GB-7 visibility + enforcement (bedrock with --require-sigv4).
     if provider == "bedrock" && require_sigv4 {
         match verify_sigv4(&req) {

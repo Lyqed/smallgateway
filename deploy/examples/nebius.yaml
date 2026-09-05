@@ -1,0 +1,22 @@
+# Local, single-team recipe. See docs/14-neoclouds.md.
+# The caller supplies its Nebius provider token as Authorization: Bearer.
+providers:
+  nebius:
+    kind: openai
+    upstream: { host: api.tokenfactory.nebius.com, port: 443, tls: true }
+fleet:
+  attribution:
+    required_keys: [team, app, billing_service]
+    pinned: { team: team, app: app, billing_service: nebius-token-factory }
+routes:
+  - prefix: /v1
+    provider: nebius
+rejections:
+  default_response:
+    status: 403
+    content_type: application/json
+    body: '{"error":"attribution_required","missing":"{{key}}"}'
+  unknown_route:
+    status: 404
+    content_type: application/json
+    body: '{"error":"unknown_route","path":"{{route}}"}'

@@ -9,9 +9,9 @@
 export const SITE_CONFIG = {
   name: "smallgateway",
   workingName: "smallgateway",
-  tagline: "Small enough to read end to end",
+  tagline: "Know who used the models",
   description:
-    "An LLM gateway you can read in an afternoon. Two binaries and a Git repository, no database in the request path, and every number on this page measured rather than claimed.",
+    "An experimental LLM gateway for token usage, caller attribution, and provider billing tags, with an optional control plane managed from Git.",
   url: "https://smallgateway.vercel.app",
   repoUrl: "https://github.com/Lyqed/smallgateway",
   sisterUrl: "https://thegatewaybaseline.com",

@@ -26,17 +26,14 @@ export function Masthead() {
 
         <div className="mt-10 grid gap-x-12 gap-y-6 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">
           <p className="text-lg leading-relaxed text-ink">
-            A small, self-hosted gateway and Git-managed control plane for LLM
-            traffic. It is early, readable, and still changing.
+            Know who used the models. Carry that identity into provider billing
+            where supported. A small gateway, with fleet configuration in Git.
           </p>
           <p className="leading-relaxed text-steel-dark">
-            Provider-native requests stay in the data plane. Fleet
-            configuration stays in Git. Every figure below says where it came
-            from. The ones marked
-            measured were written down by a run rather than by a person.
-            The ones marked bounded are limits the code refuses to cross.
-            The ones marked chosen are decisions, with the reasoning
-            written down somewhere you can go and disagree with it.
+            Inspired by working with Azure API Management across clouds.
+            The gateway tracks tokens, checks attribution, and attaches billing
+            tags on supported provider paths. Invoice import and reconciliation
+            are still planned. Current limits are in tokens.
           </p>
         </div>
 
@@ -82,9 +79,12 @@ export function Masthead() {
         </Reveal>
 
         <div className="mt-12 flex flex-wrap items-center gap-x-6 gap-y-4">
-          <ButtonLink href="#shape">Read the shape of it</ButtonLink>
+          <ButtonLink href="#shape">How it works</ButtonLink>
+          <a href={`${SITE_CONFIG.repoUrl}#why-i-started-this`} className="link-skylight text-sm">
+            Why I started this
+          </a>
           <a href={SITE_CONFIG.sisterUrl} className="link-skylight text-sm">
-            The standard it is measured against
+            Cost-attribution comparison
           </a>
         </div>
       </div>
